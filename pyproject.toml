@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ifc-file-converter"
+version = "0.1.0"
+description = "Convert IFC building models to 3D formats (glTF/GLB, OBJ, Rhino 3DM)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["ifcopenshell>=0.8", "rhino3dm>=8", "PySide6-Essentials>=6.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ifc-convert = "ifc_converter.cli:main"
+
+[project.gui-scripts]
+ifc-converter-gui = "ifc_converter.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
