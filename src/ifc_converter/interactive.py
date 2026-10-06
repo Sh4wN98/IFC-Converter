@@ -7,10 +7,12 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TextIO
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from ifc_converter.converter import FORMATS, convert, memory_warning
+from ifc_converter.converter import FORMATS, ConversionResult, memory_warning
+from ifc_converter.process import convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
 # where a backslash may escape a space (Linux/macOS terminals).
@@ -110,6 +112,79 @@ def check_memory(path: Path) -> str | None:
         return None
 
 
+class ProgressLine:
+    """One terminal line with a conversion's progress, rewritten in place after a carriage return.
+
+    Only shown if the stream is a terminal; redirected output gets no progress at all.
+    """
+
+    def __init__(self, label: str = "", stream: TextIO | None = None):
+        self.stream = stream or sys.stdout
+        self.label = label
+        try:
+            self.enabled = self.stream.isatty()
+        except (AttributeError, ValueError, OSError):  # no stdout (pythonw) or a closed one
+            self.enabled = False
+        self._text: str | None = None
+        self._width = 0
+
+    def show(self, text: str) -> None:
+        if not self.enabled or text == self._text:
+            return
+        self._text = text
+        line = self.label + text
+        # Pad with spaces to overwrite a longer previous text; ANSI erase codes need not work on Windows.
+        self.stream.write("\r" + line.ljust(self._width))
+        self.stream.flush()
+        self._width = max(self._width, len(line))
+
+    def percent(self, value: int) -> None:
+        self.show(f"{value} %")
+
+    def clear(self) -> None:
+        if self._width:
+            self.stream.write("\r" + " " * self._width + "\r")
+            self.stream.flush()
+            self._width, self._text = 0, None
+
+
+def _discard(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def convert_in_terminal(
+    source: Path,
+    target: Path | None,
+    fmt: str,
+    threads: int | None = None,
+    geometry: str = "brep",
+    label: str = "",
+) -> ConversionResult:
+    """convert() in a child process with a progress line on stdout.
+
+    Running out of memory or a crash in the geometry kernel then only fails this file (as an
+    exception), so a batch can go on. Partial output is removed after a failure, but only files this
+    conversion created, never ones that existed before.
+    """
+    target = Path(target) if target else source.with_suffix(f".{fmt}")
+    outputs = [target, target.with_suffix(".mtl")] if fmt == "obj" else [target]
+    created = [path for path in outputs if not path.exists()]
+    line = ProgressLine(label)
+    # convert() reports 0 % only once the IFC file is read, which can take minutes.
+    line.show("IFC wird gelesen …")
+    try:
+        return convert_in_child(source, target, fmt, threads, line.percent, geometry=geometry)
+    except BaseException:
+        for path in created:
+            _discard(path)
+        raise
+    finally:
+        line.clear()
+
+
 def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
     """Split dropped paths into IFC files (folders are searched) and rejected paths."""
     files, rejected = [], []
@@ -165,7 +240,7 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
                 print(f"  ⚠ {warning}")
             print(f"  … {source.name} wird umgewandelt")
             try:
-                result = convert(source, target, fmt, geometry=geometry)
+                result = convert_in_terminal(source, target, fmt, geometry=geometry, label="    ")
             except Exception as exc:
                 print(f"  ✗ Fehler bei {source.name}: {exc}")
                 continue
