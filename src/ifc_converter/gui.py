@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
 import threading
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from ifc_converter.converter import FORMATS, convert
 from ifc_converter.interactive import check_memory, collect_ifc_files, desktop_dir, unique_path
+from ifc_converter.process import Cancelled, convert_in_child
 
 APP_NAME = "IFC File Converter"
 DEFAULT_FORMAT = "3dm"
@@ -188,10 +190,6 @@ class FileQueue:
 # -------------------------------------------------------------------------- worker
 
 
-class _Cancelled(Exception):
-    pass
-
-
 def _discard(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -200,7 +198,14 @@ def _discard(path: Path) -> None:
 
 
 class ConversionWorker(QObject):
-    """Converts a batch of files one after another; meant to live in a QThread."""
+    """Converts a batch of files one after another; meant to live in a QThread.
+
+    Each file is converted in a child process (see ifc_converter.process), so running out of memory or
+    a crash in the geometry kernel fails that file instead of closing the window, and a cancel takes
+    effect immediately. With ``use_subprocess`` False it calls convert() directly (used by tests).
+    """
+
+    use_subprocess = True
 
     file_started = Signal(int, object)  # row, target path
     file_warning = Signal(int, str)  # row, RAM warning
@@ -257,7 +262,7 @@ class ConversionWorker(QObject):
         def progress(percent: int) -> None:
             nonlocal last
             if self._cancel.is_set():
-                raise _Cancelled
+                raise Cancelled
             percent = max(0, min(100, int(percent)))
             if percent != last:
                 last = percent
@@ -266,8 +271,13 @@ class ConversionWorker(QObject):
         try:
             # The geometry mode only exists for Rhino, so GLB/OBJ calls leave it out.
             options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
-            result = convert(source, target, self.fmt, self.threads, progress, **options)
-        except _Cancelled:
+            if self.use_subprocess:
+                result = convert_in_child(
+                    source, target, self.fmt, self.threads, progress, self._cancel.is_set, **options
+                )
+            else:
+                result = convert(source, target, self.fmt, self.threads, progress, **options)
+        except Cancelled:
             for path in [target, *side_files]:
                 _discard(path)
             self.file_cancelled.emit(row)
@@ -428,7 +438,6 @@ class MainWindow(QMainWindow):
         self._run_done = 0
         self._run_failed = 0
         self._last_output_dir: Path | None = None
-        self._current_row: int | None = None
         self._warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
 
         self.setWindowTitle(APP_NAME)
@@ -834,18 +843,12 @@ class MainWindow(QMainWindow):
         if self._worker is not None and not self._worker.cancelled:
             self._worker.cancel()
             self.cancel_button.setEnabled(False)
-            current = self.queue[self._current_row] if self._current_row is not None else None
-            if current and current.status is Status.RUNNING and current.progress == READING:
-                # convert() cannot be interrupted while ifcopenshell reads the file.
-                self.status_label.setText("Wird abgebrochen, sobald die IFC-Datei fertig gelesen ist …")
-            else:
-                self.status_label.setText("Wird abgebrochen …")
+            self.status_label.setText("Wird abgebrochen …")
             self.log("■ Abbruch angefordert")
 
     def _on_file_started(self, row: int, target: Path) -> None:
         item = self.queue[row]
         item.status, item.progress = Status.RUNNING, READING
-        self._current_row = row
         self._refresh_row(row)
         self.table.scrollToItem(self.table.item(row, 0))
         self._update_overall(0)
@@ -902,7 +905,6 @@ class MainWindow(QMainWindow):
             self._thread.deleteLater()
         self._thread = None
         self._worker = None
-        self._current_row = None
 
         seconds = time.monotonic() - self._started_at
         summary = f"{self._run_done} von {len(self._run_rows)} Datei(en) fertig"
@@ -1013,6 +1015,10 @@ class MainWindow(QMainWindow):
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Conversions run in "spawn" child processes. A frozen build (e.g. PyInstaller) starts its own
+    # executable for them, and this makes it do the child's work instead of opening another window.
+    # A no-op otherwise.
+    multiprocessing.freeze_support()
     app = QApplication.instance() or QApplication(sys.argv if argv is None else [sys.argv[0], *argv])
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)

@@ -4,8 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from ifc_converter.converter import FORMATS, GEOMETRIES, convert
-from ifc_converter.interactive import check_memory
+from ifc_converter.converter import FORMATS, GEOMETRIES
+from ifc_converter.interactive import check_memory, convert_in_terminal
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,7 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         if warning:
             print(f"⚠ {warning}", file=sys.stderr)
         try:
-            result = convert(source, target, args.format, args.threads, geometry=args.geometry)
+            # In a child process, so running out of memory or a crash only fails this file.
+            result = convert_in_terminal(
+                source, target, args.format, args.threads, args.geometry, label=f"{source.name}: "
+            )
         except Exception as exc:
             print(f"✗ {source}: {exc}", file=sys.stderr)
             failed += 1

@@ -1,4 +1,7 @@
 import os
+import sys
+import time
+from functools import partial
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -7,7 +10,8 @@ from PySide6.QtCore import QEventLoop, QMimeData, QPointF, QSettings, Qt, QTimer
 from PySide6.QtGui import QDropEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from ifc_converter import gui  # noqa: E402
+import child_helpers  # noqa: E402
+from ifc_converter import gui, process  # noqa: E402
 from ifc_converter.converter import ConversionResult  # noqa: E402
 from ifc_converter.gui import ConversionWorker, FileQueue, Status, format_size  # noqa: E402
 
@@ -230,9 +234,65 @@ def test_cancel_hint_while_reading(window, wall_ifc, tmp_path):
         window._on_file_started(0, tmp_path / "out" / "wall.glb")
         assert "wird gelesen" in window.status_label.text()
         window.cancel_conversion()
-        assert window.status_label.text() == "Wird abgebrochen, sobald die IFC-Datei fertig gelesen ist …"
+        # The child process is terminated right away, even while it reads the file.
+        assert window.status_label.text() == "Wird abgebrochen …"
     finally:
         window._worker = None
+
+
+def use_child_func(monkeypatch, func):
+    """Let the worker's child processes run ``func`` (a top-level function) instead of convert()."""
+    monkeypatch.setattr(gui, "convert_in_child", partial(process.convert_in_child, func=func))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is POSIX only")
+def test_killed_conversion_fails_file_and_batch_continues(window, wall_ifc, tmp_path, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.killed_if_named_crash)
+    crash = tmp_path / "crash.ifc"
+    crash.write_text("x")
+    window.set_format("glb")
+    window.add_paths([crash, wall_ifc])
+    window.start_conversion()
+    assert wait_finished(window) is False
+
+    out = tmp_path / "out"
+    assert window.queue[0].status is Status.FAILED
+    assert window.status_text(0) == f"Fehler: {process.MEMORY_MESSAGE}"
+    assert f"✗ Fehler bei crash.ifc: {process.MEMORY_MESSAGE}" in window.log_view.toPlainText()
+    assert not (out / "crash.glb").exists()  # partial output removed
+    assert window.queue[1].status is Status.DONE
+    assert (out / "wall.glb").stat().st_size > 0
+
+
+def test_crashed_conversion_reports_exit_code(app, wall_ifc, tmp_path, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.exit_hard)
+    worker = ConversionWorker([(0, wall_ifc)], "glb", tmp_path)
+    failures = []
+    worker.file_failed.connect(lambda row, message: failures.append((row, message)))
+    worker.run()
+    assert failures == [(0, "Umwandlung abgestürzt (Code 3)")]
+
+
+def test_cancel_terminates_slow_child_quickly(window, wall_ifc, tmp_path, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.sleep_while_reading)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    pid_file = tmp_path / "out" / "wall.pid"
+    # Cancel once the child is busy "reading" the file (it would sleep for 2 minutes).
+    timer = QTimer()
+    timer.timeout.connect(lambda: pid_file.exists() and window.cancel_conversion())
+    timer.start(50)
+
+    started = time.monotonic()
+    window.start_conversion()
+    assert wait_finished(window, timeout_ms=30_000) is True
+    timer.stop()
+    assert time.monotonic() - started < 15
+    assert window.queue[0].status is Status.CANCELLED
+    assert not (tmp_path / "out" / "wall.glb").exists()  # partial output removed
+    if sys.platform != "win32":
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
 
 
 def test_worker_reports_first_progress_only_after_reading(app, wall_ifc, tmp_path):
@@ -318,6 +378,8 @@ def fake_convert(monkeypatch):
         return ConversionResult(output=target, elements=3)
 
     monkeypatch.setattr("ifc_converter.gui.convert", fake)
+    # The fake records its calls in this process, so convert in-process.
+    monkeypatch.setattr(ConversionWorker, "use_subprocess", False)
     return calls
 
 

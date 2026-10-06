@@ -39,6 +39,7 @@ Die Geometrie wird mit [IfcOpenShell](https://ifcopenshell.org) berechnet und in
 - **Geometrie in Paketen:** Die Geometrie wird in Paketen zu 200 Bauteilen berechnet, und der Speicher wird nach jedem Paket wieder freigegeben. Der Bedarf wächst also nicht mit der Modellgröße.
 - **Threads:** Die Zahl der Rechen-Threads passt sich dem freien RAM an. Bei wenig Speicher geht es langsamer, statt abzustürzen.
 - **Fortschritt:** Das Einlesen großer Dateien dauert einige Minuten. Das Fenster zeigt solange „IFC wird gelesen …“.
+- **Eigener Prozess:** Jede Umwandlung läuft in einem eigenen Prozess (im Fenster wie im Terminal). Reicht der Arbeitsspeicher nicht und das System beendet die Umwandlung (oder sie stürzt ab), wird nur diese Datei als Fehler markiert, und die nächste wird umgewandelt. „Abbrechen“ im Fenster wirkt sofort, auch während die IFC-Datei noch gelesen wird. Im Terminal zeigt eine Zeile den Fortschritt in Prozent.
 - **Richtwert** (gemessen an einem 140-MB-Revit-Modell auf einem Laptop mit 8 Kernen / 8 GB RAM):
   - `.3dm` mit Polyflächen: ca. 8 min, 425 MB Datei, höchstens 3,7 GB RAM;
   - `.3dm` mit Netzen: ca. 7 min, 131 MB Datei;
