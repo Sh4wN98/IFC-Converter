@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
-from ifc_converter.converter import FORMATS, GEOMETRIES
-from ifc_converter.interactive import check_memory, convert_in_terminal
+from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
+from ifc_converter.interactive import check_memory, convert_in_terminal, skipped_warning
+from ifc_converter.process import RETRY_MESSAGE
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,12 +32,19 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
     parser.add_argument("-j", "--threads", type=int, help="geometry threads (default: all CPU cores)")
+    parser.add_argument(
+        "--kernel", choices=KERNELS,
+        help="geometry kernel: hybrid (default, much faster) or opencascade (slowest, most faithful)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.kernel:
+        # Inherited by the child processes that do the conversions.
+        os.environ["IFC_CONVERTER_KERNEL"] = args.kernel
 
     if not args.inputs:
         from ifc_converter.interactive import run
@@ -60,13 +69,17 @@ def main(argv: list[str] | None = None) -> int:
         try:
             # In a child process, so running out of memory or a crash only fails this file.
             result = convert_in_terminal(
-                source, target, args.format, args.threads, args.geometry, label=f"{source.name}: "
+                source, target, args.format, args.threads, args.geometry, label=f"{source.name}: ",
+                on_retry=lambda: print(f"⚠ {source.name}: {RETRY_MESSAGE}", file=sys.stderr),
             )
         except Exception as exc:
             print(f"✗ {source}: {exc}", file=sys.stderr)
             failed += 1
             continue
-        print(f"✓ {source} → {result.output} ({result.elements} elements)")
+        skipped = f", {result.skipped} without geometry" if result.skipped > 0 else ""
+        print(f"✓ {source} → {result.output} ({result.elements} elements{skipped})")
+        if result.skipped > 0:
+            print(f"⚠ {source.name}: {skipped_warning(result.skipped)}", file=sys.stderr)
 
     return 1 if failed else 0
 

@@ -1,4 +1,5 @@
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -152,3 +153,92 @@ def _process_gone(pid: int) -> bool:
         except ProcessLookupError:
             return True
         return False
+
+
+def test_skipped_count_survives_the_transfer(wall_ifc, tmp_path):
+    result = convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.report_skipped)
+    assert (result.elements, result.skipped) == (1, 3)
+
+
+def test_real_conversion_reports_no_skipped_elements(wall_ifc, tmp_path):
+    assert convert_in_child(wall_ifc, tmp_path / "wall.glb").skipped == 0
+
+
+def test_model_without_geometry_fails_with_converter_message(tmp_path):
+    import ifcopenshell.api as api
+
+    model = api.run("project.create_file", version="IFC4")
+    api.run("root.create_entity", model, ifc_class="IfcProject", name="Leer")
+    path = tmp_path / "leer.ifc"
+    model.write(str(path))
+    with pytest.raises(ConversionFailed) as info:
+        convert_in_child(path, tmp_path / "leer.glb")
+    assert info.value.type_name == "ValueError"
+    assert "keine Bauteile mit Geometrie" in str(info.value)
+    assert not (tmp_path / "leer.glb").exists()
+
+
+def _attempts(target: Path) -> list[str]:
+    return target.with_suffix(".attempts").read_text().split()
+
+
+@posix_only
+def test_hybrid_kernel_crash_is_retried_with_opencascade(wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    target = tmp_path / "wall.glb"
+    events = []
+    result = convert_in_child(
+        wall_ifc, target, progress=events.append, on_retry=lambda: events.append("retry"),
+        func=child_helpers.segfault_unless_opencascade,
+    )
+    assert result.elements == 1 and target.stat().st_size > 0
+    assert _attempts(target) == ["None", "opencascade"]
+    # Progress of the crashed attempt, then the retry, which starts again at 0 %.
+    assert events[:3] == [0, 40, "retry"] and events[3] == 0 and events[-1] == 100
+
+
+@posix_only
+def test_crash_of_the_retry_fails_with_crash_message(wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    target = tmp_path / "wall.glb"
+    retries = []
+    with pytest.raises(ConversionCrashed, match=r"^Umwandlung abgestürzt \(Code -11\)$"):
+        convert_in_child(wall_ifc, target, on_retry=lambda: retries.append(1), func=child_helpers.always_segfault)
+    assert retries == [1]
+    assert _attempts(target) == ["None", "opencascade"]
+
+
+@posix_only
+@pytest.mark.parametrize("how", ["argument", "environment"])
+def test_no_retry_when_opencascade_was_chosen(wall_ifc, tmp_path, monkeypatch, how):
+    target = tmp_path / "wall.glb"
+    options = {}
+    if how == "argument":
+        options["kernel"] = "opencascade"
+    else:
+        monkeypatch.setenv("IFC_CONVERTER_KERNEL", "opencascade")
+    with pytest.raises(ConversionCrashed):
+        convert_in_child(
+            wall_ifc, target, on_retry=lambda: pytest.fail("retried"), func=child_helpers.always_segfault,
+            **options,
+        )
+    assert len(_attempts(target)) == 1
+
+
+@posix_only
+def test_no_retry_after_out_of_memory_or_python_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    crash = tmp_path / "crash.ifc"
+    crash.write_text("x")
+    no_retry = lambda: pytest.fail("retried")  # noqa: E731
+    with pytest.raises(ConversionCrashed, match=re.escape(MEMORY_MESSAGE)):
+        convert_in_child(crash, tmp_path / "crash.glb", on_retry=no_retry, func=child_helpers.killed_if_named_crash)
+    with pytest.raises(ConversionFailed):
+        convert_in_child(crash, tmp_path / "x.glb", on_retry=no_retry, func=child_helpers.raise_error)
+
+
+def test_native_stdout_of_the_child_is_silenced(wall_ifc, tmp_path, capfd):
+    result = convert_in_child(wall_ifc, tmp_path / "wall.glb", "glb", func=child_helpers.chatty_native_code)
+    assert result.elements == 1
+    out, _ = capfd.readouterr()
+    assert "local z" not in out and "chatter" not in out

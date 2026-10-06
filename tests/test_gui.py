@@ -423,3 +423,73 @@ def test_real_3dm_conversion_with_geometry(window, wall_ifc, tmp_path, mode):
     wait_finished(window)
     assert window.queue[0].status is Status.DONE, window.queue[0].error
     assert (tmp_path / "out" / "wall.3dm").stat().st_size > 0
+
+
+def test_skipped_elements_are_shown_in_row_tooltip_and_log(window, wall_ifc, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.report_skipped)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+
+    assert window.queue[0].status is Status.DONE
+    assert window.status_text(0) == "Fertig – 1 Bauteile (3 ohne Geometrie)"
+    tooltip = window.table.item(0, 2).toolTip()
+    assert "3 Bauteile ohne Geometrie" in tooltip
+    assert "nicht unterstützte Geometrietypen" in tooltip
+    assert "⚠ wall.ifc: 3 Bauteile ohne Geometrie. Diese Bauteile haben Geometrie" in window.log_view.toPlainText()
+
+
+def test_no_skipped_elements_no_hint(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._on_file_done(0, tmp_path / "wall.glb", 5, 0)
+    assert window.status_text(0) == "Fertig – 5 Bauteile"
+    assert "ohne Geometrie" not in window.table.item(0, 2).toolTip()
+    assert "⚠" not in window.log_view.toPlainText()
+
+    window._on_file_done(0, tmp_path / "wall.glb", 5, 1)
+    assert window.status_text(0) == "Fertig – 5 Bauteile (1 ohne Geometrie)"
+    assert "1 Bauteil ohne Geometrie" in window.table.item(0, 2).toolTip()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSEGV via os.kill is POSIX only")
+def test_kernel_crash_is_retried_and_logged(window, wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    use_child_func(monkeypatch, child_helpers.segfault_unless_opencascade)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+
+    assert window.queue[0].status is Status.DONE, window.queue[0].error
+    assert (tmp_path / "out" / "wall.glb").stat().st_size > 0
+    log = window.log_view.toPlainText()
+    assert f"⚠ {process.RETRY_MESSAGE}" in log
+    assert log.index("⚠ Absturz") < log.index("✓ wall.ifc")
+
+
+def test_retry_goes_back_to_reading_state(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._worker = ConversionWorker([], "glb", tmp_path)  # pretend a batch is running
+    try:
+        window._on_file_started(0, tmp_path / "out" / "wall.glb")
+        window._on_file_progress(0, 40)
+        window._on_file_retrying(0)
+        assert window.status_text(0) == "IFC wird gelesen …"
+        assert window.overall_progress.maximum() == 0  # busy indicator again
+        assert "OpenCASCADE" in window.status_label.text()
+        window._on_file_progress(0, 0)
+        assert window.status_text(0) == "Läuft … 0 %"
+    finally:
+        window._worker = None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSEGV via os.kill is POSIX only")
+def test_crash_removes_glb_temp_files(window, wall_ifc, tmp_path, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.leave_glb_temp_files_and_segfault)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert window.queue[0].status is Status.FAILED
+    assert list((tmp_path / "out").iterdir()) == []
