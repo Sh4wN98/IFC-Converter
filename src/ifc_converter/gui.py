@@ -42,8 +42,17 @@ from PySide6.QtWidgets import (
 )
 
 from ifc_converter.converter import FORMATS, convert
-from ifc_converter.interactive import check_memory, collect_ifc_files, desktop_dir, unique_path
-from ifc_converter.process import Cancelled, convert_in_child
+from ifc_converter.interactive import (
+    SKIPPED_HINT,
+    check_memory,
+    collect_ifc_files,
+    desktop_dir,
+    output_files,
+    skipped_count,
+    skipped_warning,
+    unique_path,
+)
+from ifc_converter.process import RETRY_MESSAGE, Cancelled, convert_in_child
 
 APP_NAME = "IFC File Converter"
 DEFAULT_FORMAT = "3dm"
@@ -92,6 +101,7 @@ class QueueItem:
     status: Status = Status.WAITING
     progress: int = 0
     elements: int = 0
+    skipped: int = 0  # elements whose geometry could not be converted
     output: Path | None = None
     error: str = ""
     warning: str = ""  # RAM warning for large files, shown as tooltip
@@ -103,7 +113,8 @@ class QueueItem:
                 return "IFC wird gelesen …"
             return f"Läuft … {self.progress} %"
         if self.status is Status.DONE:
-            return f"Fertig – {self.elements} Bauteile"
+            skipped = f" ({self.skipped} ohne Geometrie)" if self.skipped > 0 else ""
+            return f"Fertig – {self.elements} Bauteile{skipped}"
         if self.status is Status.FAILED:
             return f"Fehler: {self.error}"
         if self.status is Status.CANCELLED:
@@ -210,7 +221,8 @@ class ConversionWorker(QObject):
     file_started = Signal(int, object)  # row, target path
     file_warning = Signal(int, str)  # row, RAM warning
     file_progress = Signal(int, int)  # row, percent
-    file_done = Signal(int, object, int)  # row, output path, elements
+    file_retrying = Signal(int)  # row; converting again with the OpenCASCADE kernel after a crash
+    file_done = Signal(int, object, int, int)  # row, output path, elements, skipped elements
     file_failed = Signal(int, str)  # row, message
     file_cancelled = Signal(int)
     finished = Signal(bool)  # True if cancelled
@@ -249,9 +261,8 @@ class ConversionWorker(QObject):
 
     def _convert_one(self, row: int, source: Path) -> None:
         target = target_path(source, self.fmt, self.out_dir)
-        # OBJ also writes a .mtl; only clean that up after a failure if we created it.
-        side_files = [target.with_suffix(".mtl")] if self.fmt == "obj" else []
-        side_files = [p for p in side_files if not p.exists()]
+        # Side files (.mtl, GLB temp files) are only cleaned up after a failure if we created them.
+        side_files = [p for p in output_files(target, self.fmt)[1:] if not p.exists()]
         self.file_started.emit(row, target)
         # Checked here rather than in the GUI thread; for a large file it is the only hint for minutes.
         warning = check_memory(source)
@@ -272,8 +283,15 @@ class ConversionWorker(QObject):
             # The geometry mode only exists for Rhino, so GLB/OBJ calls leave it out.
             options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
             if self.use_subprocess:
+
+                def retrying() -> None:
+                    nonlocal last
+                    last = READING
+                    self.file_retrying.emit(row)
+
                 result = convert_in_child(
-                    source, target, self.fmt, self.threads, progress, self._cancel.is_set, **options
+                    source, target, self.fmt, self.threads, progress, self._cancel.is_set,
+                    on_retry=retrying, **options,
                 )
             else:
                 result = convert(source, target, self.fmt, self.threads, progress, **options)
@@ -286,7 +304,7 @@ class ConversionWorker(QObject):
                 _discard(path)
             self.file_failed.emit(row, str(exc) or type(exc).__name__)
         else:
-            self.file_done.emit(row, result.output, result.elements)
+            self.file_done.emit(row, result.output, result.elements, result.skipped)
 
 
 # ------------------------------------------------------------------------- widgets
@@ -772,6 +790,8 @@ class MainWindow(QMainWindow):
         if item.status is Status.DONE:
             cell.setForeground(DONE_COLOR)
             tooltip = str(item.output)
+            if item.skipped > 0:
+                tooltip += f"\n\n⚠ {skipped_count(item.skipped)}: {SKIPPED_HINT}"
         elif item.status is Status.FAILED:
             cell.setForeground(ERROR_COLOR)
             tooltip = item.error
@@ -825,6 +845,7 @@ class MainWindow(QMainWindow):
         self._worker.file_started.connect(self._on_file_started)
         self._worker.file_warning.connect(self._on_file_warning)
         self._worker.file_progress.connect(self._on_file_progress)
+        self._worker.file_retrying.connect(self._on_file_retrying)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.file_failed.connect(self._on_file_failed)
         self._worker.file_cancelled.connect(self._on_file_cancelled)
@@ -857,6 +878,18 @@ class MainWindow(QMainWindow):
         self._set_activity(f"IFC wird gelesen ({format_size(item.size)}) – kann einige Minuten dauern …")
         self.log(f"… {item.path.name} ({format_size(item.size)}) → {target.name}")
 
+    def _on_file_retrying(self, row: int) -> None:
+        item = self.queue[row]
+        if item.status is not Status.RUNNING:
+            return
+        # The file is read again from the start, so back to the reading state and the busy bar.
+        item.progress = READING
+        self._refresh_row(row)
+        self._update_overall(0)
+        self.overall_progress.setRange(0, 0)
+        self._set_activity(f"{item.path.name}: neuer Versuch mit dem OpenCASCADE-Kern – IFC wird gelesen …")
+        self.log(f"⚠ {RETRY_MESSAGE}")
+
     def _on_file_warning(self, row: int, message: str) -> None:
         item = self.queue[row]
         item.warning = message
@@ -877,14 +910,17 @@ class MainWindow(QMainWindow):
         self._refresh_row(row)
         self._update_overall(percent)
 
-    def _on_file_done(self, row: int, output: Path, elements: int) -> None:
+    def _on_file_done(self, row: int, output: Path, elements: int, skipped: int) -> None:
         item = self.queue[row]
         item.status, item.progress, item.output, item.elements = Status.DONE, 100, output, elements
+        item.skipped = skipped
         self._refresh_row(row)
         self._run_done += 1
         self._last_output_dir = output.parent
         self._update_overall(0)
         self.log(f"✓ {item.path.name} → {output}  ({elements} Bauteile)")
+        if skipped > 0:
+            self.log(f"⚠ {item.path.name}: {skipped_warning(skipped)}")
 
     def _on_file_failed(self, row: int, message: str) -> None:
         item = self.queue[row]

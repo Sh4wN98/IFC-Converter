@@ -6,19 +6,26 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from ifc_converter.converter import FORMATS, ConversionResult, memory_warning
-from ifc_converter.process import convert_in_child
+from ifc_converter.process import RETRY_MESSAGE, convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
 # where a backslash may escape a space (Linux/macOS terminals).
 _TOKEN = re.compile(r'"([^"]+)"|\'([^\']+)\'|((?:\\ |\S)+)')
 
 QUIT_WORDS = {"q", "quit", "exit", "ende", "beenden"}
+
+# Explains ConversionResult.skipped wherever results are shown.
+SKIPPED_HINT = (
+    "Diese Bauteile haben Geometrie, die nicht umgewandelt werden konnte – "
+    "z. B. nicht unterstützte Geometrietypen, oder sie werden von ihren Öffnungen vollständig weggeschnitten."
+)
 
 
 def parse_dropped(line: str, windows: bool | None = None) -> list[Path]:
@@ -104,6 +111,16 @@ def unique_path(path: Path) -> Path:
         n += 1
 
 
+def skipped_count(skipped: int) -> str:
+    """"3 Bauteile ohne Geometrie" (elements whose geometry could not be converted)."""
+    return f"{skipped} {'Bauteil' if skipped == 1 else 'Bauteile'} ohne Geometrie"
+
+
+def skipped_warning(skipped: int) -> str:
+    """The warning for elements that were left out for lack of geometry, or "" if there are none."""
+    return f"{skipped_count(skipped)}. {SKIPPED_HINT}" if skipped > 0 else ""
+
+
 def check_memory(path: Path) -> str | None:
     """The RAM warning for `path`, or None (also if the file cannot be read; convert() reports that)."""
     try:
@@ -148,6 +165,16 @@ class ProgressLine:
             self._width, self._text = 0, None
 
 
+def output_files(target: Path, fmt: str) -> list[Path]:
+    """Every file converting to ``target`` may write: OBJ adds a .mtl, and IfcOpenShell's GLB
+    serializer buffers in two temporary files that a crashed or terminated conversion leaves behind."""
+    if fmt == "obj":
+        return [target, target.with_suffix(".mtl")]
+    if fmt == "glb":
+        return [target, Path(f"{target}.indices.tmp"), Path(f"{target}.vertices.tmp")]
+    return [target]
+
+
 def _discard(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -162,6 +189,7 @@ def convert_in_terminal(
     threads: int | None = None,
     geometry: str = "brep",
     label: str = "",
+    on_retry: Callable[[], None] | None = None,
 ) -> ConversionResult:
     """convert() in a child process with a progress line on stdout.
 
@@ -170,13 +198,22 @@ def convert_in_terminal(
     conversion created, never ones that existed before.
     """
     target = Path(target) if target else source.with_suffix(f".{fmt}")
-    outputs = [target, target.with_suffix(".mtl")] if fmt == "obj" else [target]
-    created = [path for path in outputs if not path.exists()]
+    created = [path for path in output_files(target, fmt) if not path.exists()]
     line = ProgressLine(label)
     # convert() reports 0 % only once the IFC file is read, which can take minutes.
     line.show("IFC wird gelesen …")
+
+    def retrying() -> None:
+        # After a crash in the fast kernel the file is read and converted once more.
+        line.clear()
+        if on_retry:
+            on_retry()
+        line.show("IFC wird gelesen …")
+
     try:
-        return convert_in_child(source, target, fmt, threads, line.percent, geometry=geometry)
+        return convert_in_child(
+            source, target, fmt, threads, line.percent, geometry=geometry, on_retry=retrying
+        )
     except BaseException:
         for path in created:
             _discard(path)
@@ -240,11 +277,17 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
                 print(f"  ⚠ {warning}")
             print(f"  … {source.name} wird umgewandelt")
             try:
-                result = convert_in_terminal(source, target, fmt, geometry=geometry, label="    ")
+                result = convert_in_terminal(
+                    source, target, fmt, geometry=geometry, label="    ",
+                    on_retry=lambda: print(f"  ⚠ {RETRY_MESSAGE}"),
+                )
             except Exception as exc:
                 print(f"  ✗ Fehler bei {source.name}: {exc}")
                 continue
-            print(f"  ✓ Fertig: {result.output}  ({result.elements} Bauteile)")
+            skipped = f", {result.skipped} ohne Geometrie" if result.skipped > 0 else ""
+            print(f"  ✓ Fertig: {result.output}  ({result.elements} Bauteile{skipped})")
+            if result.skipped > 0:
+                print(f"  ⚠ {skipped_warning(result.skipped)}")
         print()
 
 

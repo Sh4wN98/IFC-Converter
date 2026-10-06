@@ -1,3 +1,7 @@
+import math
+from types import SimpleNamespace
+
+import numpy
 import pytest
 import rhino3dm
 
@@ -36,7 +40,8 @@ def test_wall_is_written_as_mesh(wall_ifc):
     obj = rhino.Objects[0]
     mesh = obj.Geometry
     assert isinstance(mesh, rhino3dm.Mesh)
-    assert len(mesh.Normals) == len(mesh.Vertices) > 0
+    # A box has only sharp edges: each of its 6 faces keeps its own 4 vertices.
+    assert len(mesh.Normals) == len(mesh.Vertices) == 24
     assert _size(mesh) == pytest.approx((5, 0.2, 3))
 
 
@@ -157,3 +162,212 @@ def test_cli_geometry_flag(wall_ifc, tmp_path):
     assert isinstance(_read(target).Objects[0].Geometry, rhino3dm.Brep)
     with pytest.raises(SystemExit):
         main([str(wall_ifc), "--geometry", "nurbs"])
+
+
+@pytest.mark.parametrize("geometry", ["brep", "mesh"])
+def test_georeferenced_coordinates_keep_their_precision(georeferenced_ifc, geometry):
+    # Single-precision vertices would collapse the 0.2 m thickness at a northing of 5.4 million metres.
+    result = convert(georeferenced_ifc, fmt="3dm", geometry=geometry)
+    obj = _read(result.output).Objects[0]
+    box = obj.Geometry.GetBoundingBox()
+    assert abs(box.Min.X - 512345.678) < 1e-6 and abs(box.Min.Y - 5423456.789) < 1e-6
+    assert all(abs(a - b) < 1e-6 for a, b in zip(_size(obj.Geometry), (5, 0.2, 3)))
+
+
+def _objects_by_layer(rhino):
+    paths = _layer_paths(rhino)
+    objects = {}
+    for obj in rhino.Objects:
+        objects.setdefault(paths[obj.Attributes.LayerIndex], []).append(obj)
+    return objects
+
+
+def test_bridge_layers_follow_facility_and_parts(bridge_ifc):
+    result = convert(bridge_ifc, fmt="3dm")
+    assert result.elements == 5
+
+    rhino = _read(result.output)
+    objects = _objects_by_layer(rhino)
+    # Unnamed parts are named after their predefined type, made unique among their siblings.
+    # A part with geometry of its own is drawn in its own layer.
+    assert {path: len(objs) for path, objs in objects.items()} == {
+        "River bridge::Deck::IfcBridgePart": 1,
+        "River bridge::Substructure::PIER::IfcColumn": 1,
+        "River bridge::Substructure::PIER (2)::IfcColumn": 1,
+        "River bridge::IfcBeam": 1,
+        "Ohne Geschoss::IfcBuildingElementProxy": 1,
+    }
+    # The spatial layers come first, in the order of the spatial structure.
+    assert [layer.FullPath for layer in rhino.Layers if "::Ifc" not in layer.FullPath] == [
+        "River bridge", "River bridge::Deck", "River bridge::Substructure",
+        "River bridge::Substructure::PIER", "River bridge::Substructure::PIER (2)", "Ohne Geschoss",
+    ]
+    layers = {layer.FullPath: layer for layer in rhino.Layers}
+    assert layers["River bridge::Substructure::PIER"].ParentLayerId == layers["River bridge::Substructure"].Id
+    assert objects["River bridge::IfcBeam"][0].Attributes.GetUserString("IfcName") == "Deck beam"
+
+
+def test_several_buildings_become_the_top_level(buildings_ifc):
+    rhino = _read(convert(buildings_ifc, fmt="3dm").output)
+    objects = _objects_by_layer(rhino)
+    assert set(objects) == {"Haus A::EG::IfcWall", "Haus B::EG::IfcWall", "Haus A::IfcSlab", "Haus A::EG::IfcGrid"}
+    # The storey layers come first, as before: created up front, grouped by building.
+    assert [layer.FullPath for layer in rhino.Layers][:4] == ["Haus A", "Haus A::EG", "Haus B", "Haus B::EG"]
+
+
+def test_grid_axes_become_grouped_lines(buildings_ifc):
+    rhino = _read(convert(buildings_ifc, fmt="3dm").output)
+    lines = _objects_by_layer(rhino)["Haus A::EG::IfcGrid"]
+    assert len(lines) == 2
+    assert all(isinstance(line.Geometry, rhino3dm.PolylineCurve) for line in lines)
+    assert [line.Geometry.ToPolyline().Length for line in lines] == pytest.approx([10, 10])
+    assert lines[0].Attributes.GetGroupList() == lines[1].Attributes.GetGroupList() == (0,)
+    assert rhino.Groups.FindIndex(0).Name == "Grid"
+
+
+@pytest.mark.parametrize("geometry", ["brep", "mesh"])  # world and placed (local) coordinates
+def test_alignments_become_polylines(alignment_ifc, geometry):
+    result = convert(alignment_ifc, fmt="3dm", geometry=geometry)
+    assert result.elements == 2
+
+    rhino = _read(result.output)
+    curves = {obj.Attributes.Name: obj for obj in rhino.Objects}
+    assert {_layer_paths(rhino)[obj.Attributes.LayerIndex] for obj in curves.values()} == {"Achsen::IfcAlignment"}
+    for obj in curves.values():
+        assert isinstance(obj.Geometry, rhino3dm.PolylineCurve)
+        assert obj.Attributes.GetUserString("IfcClass") == "IfcAlignment"
+        assert len(obj.Attributes.GetUserString("IfcGlobalId")) == 22
+
+    # The 3D axis: 80 m straight, a quarter circle of 20 m radius, then straight again up to the
+    # end of the vertical layout at 191 m, rising to 302 m.
+    axis = curves["Main axis"].Geometry
+    box = axis.GetBoundingBox()
+    assert axis.PointCount > 20
+    assert axis.ToPolyline().Length == pytest.approx(191, abs=0.5)
+    assert (box.Min.X, box.Min.Y, box.Min.Z) == pytest.approx((512000, 5423000, 300))
+    assert 301.5 < box.Max.Z < 302.1
+
+    # The plan-only polyline keeps its vertices to the millimetre at UTM coordinates.
+    ramp = curves["Ramp"].Geometry
+    assert ramp.PointCount == 3
+    assert ramp.ToPolyline().Length == pytest.approx(150.5)
+    assert (ramp.Point(2).X, ramp.Point(2).Y) == (512100.0, 5422950.5)
+
+
+def test_alignment_layout_parts_are_not_drawn(alignment_ifc):
+    # Their geometry repeats the axis in plan, or as a profile in distance/height coordinates.
+    rhino = _read(convert(alignment_ifc, fmt="3dm").output)
+    assert {obj.Attributes.GetUserString("IfcClass") for obj in rhino.Objects} == {"IfcAlignment"}
+
+
+def _prism(sides):
+    """A prism of radius 1 and height 2 as the kernel delivers it: each planar face with its own vertices."""
+    ring = [(math.cos(2 * math.pi * k / sides), math.sin(2 * math.pi * k / sides)) for k in range(sides)]
+    points, triangles = [], []
+
+    def face(corners):  # a planar polygon, triangulated as a fan
+        start = len(points)
+        points.extend(corners)
+        triangles.extend((start, start + k, start + k + 1) for k in range(1, len(corners) - 1))
+
+    for k in range(sides):
+        (x0, y0), (x1, y1) = ring[k], ring[(k + 1) % sides]
+        face([(x0, y0, 0), (x1, y1, 0), (x1, y1, 2), (x0, y0, 2)])
+    face([(x, y, 0) for x, y in reversed(ring)])
+    face([(x, y, 2) for x, y in ring])
+    points, triangles = numpy.array(points, dtype=float), numpy.array(triangles, dtype=numpy.int32)
+    return SimpleNamespace(
+        verts=tuple(points.ravel()), faces=tuple(triangles.ravel()),
+        verts_buffer=points.tobytes(), faces_buffer=triangles.tobytes(),
+    )
+
+
+def _vertices_and_normals(mesh):
+    points = [(p.X, p.Y, p.Z) for p in mesh.Vertices.ToPoint3dArray()]
+    normals = [(n.X, n.Y, n.Z) for n in mesh.Normals]
+    return points, normals
+
+
+def test_curved_surfaces_are_welded_and_shade_smoothly():
+    prism = _prism(16)  # 22.5 degrees between the sides
+    mesh = rhino._mesh(prism)
+    points, normals = _vertices_and_normals(mesh)
+    # Each side vertex is shared by both sides meeting there; the caps keep their own.
+    assert len(points) == 16 * 2 + 16 * 2 < len(prism.verts) // 3
+    assert len(mesh.Faces) == len(prism.faces) // 3
+    for (x, y, z), (nx, ny, nz) in zip(points, normals):
+        if abs(nz) > 0.5:  # cap vertex: straight up or down, not bent towards the sides
+            assert nz == pytest.approx(1 if z else -1, abs=1e-6)
+        else:  # side vertex: points away from the axis, like on a cylinder
+            assert (nx, ny, nz) == pytest.approx((x, y, 0), abs=1e-6)
+
+
+def test_edges_steeper_than_the_crease_angle_stay_sharp():
+    prism = _prism(8)  # 45 degrees between the sides
+    mesh = rhino._mesh(prism)
+    points, normals = _vertices_and_normals(mesh)
+    assert len(points) == len(prism.verts) // 3
+    for n in normals:  # every normal is a face normal: one of 8 side directions or the cap axis
+        assert abs(n[2]) == pytest.approx(1) or n[2] == pytest.approx(0, abs=1e-9)
+
+
+def test_welding_keeps_every_triangle():
+    for sides in (8, 16, 48):
+        prism = _prism(sides)
+        before = numpy.frombuffer(prism.verts_buffer).reshape(-1, 3)[numpy.frombuffer(prism.faces_buffer, numpy.int32).reshape(-1, 3)]
+        points, triangles, _ = rhino._weld(
+            numpy.frombuffer(prism.verts_buffer).reshape(-1, 3), numpy.frombuffer(prism.faces_buffer, numpy.int32).reshape(-1, 3)
+        )
+        assert numpy.array_equal(points[triangles], before)
+
+
+def _signed_volume(mesh):
+    points = numpy.array([(p.X, p.Y, p.Z) for p in mesh.Vertices.ToPoint3dArray()])
+    a, b, c = (points[[mesh.Faces[i][k] for i in range(len(mesh.Faces))]] for k in range(3))
+    return numpy.einsum("ij,ij->i", a, numpy.cross(b, c)).sum() / 6
+
+
+def test_shared_geometry_is_placed_like_the_kernel_places_it(mirrored_type_ifc, monkeypatch):
+    # The mesh export builds the type geometry once and copies it to both places; the reference is
+    # the kernel's own world-coordinate geometry, which the polysurface export falls back to as mesh.
+    placed = {o.Attributes.Name: o.Geometry for o in _read(convert(mirrored_type_ifc, fmt="3dm", geometry="mesh").output).Objects}
+    monkeypatch.setattr(rhino, "MAX_BREP_FACES", 0)
+    reference = {o.Attributes.Name: o.Geometry for o in _read(convert(mirrored_type_ifc, fmt="3dm").output).Objects}
+
+    assert set(placed) == set(reference) == {"Cabinet", "Cabinet mirrored"}
+    for name, mesh in placed.items():
+        box, expected = mesh.GetBoundingBox(), reference[name].GetBoundingBox()
+        assert (box.Min.X, box.Min.Y, box.Min.Z, box.Max.X, box.Max.Y, box.Max.Z) == pytest.approx(
+            (expected.Min.X, expected.Min.Y, expected.Min.Z, expected.Max.X, expected.Max.Y, expected.Max.Z)
+        )
+        # The same orientation. (The kernel delivers the mirrored copy inside out: volume -1.)
+        assert _signed_volume(mesh) == pytest.approx(_signed_volume(reference[name]))
+        assert abs(_signed_volume(mesh)) == pytest.approx(1.0)
+    assert placed["Cabinet"].GetBoundingBox().Min.X != placed["Cabinet mirrored"].GetBoundingBox().Min.X
+
+
+def test_mesh_cache_limit_does_not_change_the_output(mirrored_type_ifc, monkeypatch):
+    def boxes():
+        objects = _read(convert(mirrored_type_ifc, fmt="3dm", geometry="mesh").output).Objects
+        return sorted((o.Attributes.Name, len(o.Geometry.Faces), _size(o.Geometry)) for o in objects)
+
+    cached = boxes()
+    monkeypatch.setattr(rhino, "MESH_CACHE_VERTICES", 1)  # every mesh is dropped right away
+    assert boxes() == cached
+
+
+def test_standard_quantities_are_kept_vendor_quantity_dumps_dropped(wall_ifc):
+    import ifcopenshell
+    import ifcopenshell.api as api
+
+    model = ifcopenshell.open(str(wall_ifc))
+    wall = model.by_type("IfcWall")[0]
+    standard = api.run("pset.add_qto", model, product=wall, name="Qto_WallBaseQuantities")
+    api.run("pset.edit_qto", model, qto=standard, properties={"NetSideArea": 15.0})
+    vendor = api.run("pset.add_qto", model, product=wall, name="ArchiCADQuantities")
+    api.run("pset.edit_qto", model, qto=vendor, properties={"Surface Area": 15.0})
+    model.write(str(wall_ifc))
+
+    attributes = _read(convert(wall_ifc, fmt="3dm").output).Objects[0].Attributes
+    assert attributes.GetUserString("Qto_WallBaseQuantities.NetSideArea") == "15.0"
+    assert not any(key.startswith("ArchiCADQuantities") for key, _ in attributes.GetUserStrings())

@@ -222,3 +222,98 @@ def test_progress_line_is_silent_without_a_terminal():
     line.clear()
     assert stream.getvalue() == ""
     assert not interactive.ProgressLine(stream=None).enabled or sys.stdout.isatty()
+
+
+def test_cli_shows_skipped_elements(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    use_child_func(monkeypatch, child_helpers.report_skipped)
+    assert main([str(wall_ifc), "-d", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.rstrip().endswith("(1 elements, 3 without geometry)")
+    assert f"⚠ wall.ifc: 3 Bauteile ohne Geometrie. {interactive.SKIPPED_HINT}" in captured.err
+
+
+def test_cli_without_skipped_elements_has_no_hint(wall_ifc, tmp_path, capsys):
+    from ifc_converter.cli import main
+
+    assert main([str(wall_ifc), "-d", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.rstrip().endswith("(1 elements)")
+    assert "Geometrie" not in captured.err
+
+
+def test_session_shows_skipped_elements(wall_ifc, tmp_path, monkeypatch, capsys):
+    use_child_func(monkeypatch, child_helpers.report_skipped)
+    lines = iter([f"'{wall_ifc}'", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert interactive.run(output_dir=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "(1 Bauteile, 3 ohne Geometrie)" in out
+    assert f"  ⚠ 3 Bauteile ohne Geometrie. {interactive.SKIPPED_HINT}" in out
+
+
+def test_skipped_warning_texts():
+    assert interactive.skipped_warning(0) == ""
+    assert interactive.skipped_warning(1).startswith("1 Bauteil ohne Geometrie. Diese Bauteile")
+    assert interactive.skipped_warning(3).startswith("3 Bauteile ohne Geometrie. ")
+
+
+@posix_only
+def test_cli_retries_kernel_crash_with_opencascade(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    use_child_func(monkeypatch, child_helpers.segfault_unless_opencascade)
+    assert main([str(wall_ifc), "-f", "glb", "-d", str(tmp_path / "out")]) == 0
+    captured = capsys.readouterr()
+    assert f"⚠ wall.ifc: {process.RETRY_MESSAGE}" in captured.err
+    assert "✓ " in captured.out and (tmp_path / "out" / "wall.glb").stat().st_size > 0
+
+
+@posix_only
+def test_cli_kernel_flag_opencascade_disables_retry(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    # main() puts --kernel into the environment for the child processes; undo that afterwards.
+    monkeypatch.setenv("IFC_CONVERTER_KERNEL", "")
+    use_child_func(monkeypatch, child_helpers.always_segfault)
+    assert main([str(wall_ifc), "-d", str(tmp_path), "--kernel", "opencascade"]) == 1
+    captured = capsys.readouterr()
+    assert "Absturz im schnellen" not in captured.err
+    assert "Umwandlung abgestürzt (Code -11)" in captured.err
+
+
+@posix_only
+def test_session_retries_kernel_crash(wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    use_child_func(monkeypatch, child_helpers.segfault_unless_opencascade)
+    terminal = FakeTerminal()
+    monkeypatch.setattr(sys, "stdout", terminal)
+    lines = iter([f"'{wall_ifc}'", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert interactive.run(output_dir=tmp_path) == 0
+    text = terminal.getvalue()
+    retry = text.index(f"  ⚠ {process.RETRY_MESSAGE}")
+    # The progress line starts over with reading after the retry message.
+    assert text.index("\r    IFC wird gelesen …", retry) < text.index("✓ Fertig")
+    assert (tmp_path / "wall.glb").exists()
+
+
+def test_output_files_include_side_and_temp_files(tmp_path):
+    target = tmp_path / "a.glb"
+    assert interactive.output_files(target, "glb") == [
+        target, tmp_path / "a.glb.indices.tmp", tmp_path / "a.glb.vertices.tmp",
+    ]
+    assert interactive.output_files(tmp_path / "a.obj", "obj") == [tmp_path / "a.obj", tmp_path / "a.mtl"]
+    assert interactive.output_files(tmp_path / "a.3dm", "3dm") == [tmp_path / "a.3dm"]
+
+
+@posix_only
+def test_cli_removes_glb_temp_files_after_crash(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    use_child_func(monkeypatch, child_helpers.leave_glb_temp_files_and_segfault)
+    assert main([str(wall_ifc), "-f", "glb", "-d", str(tmp_path / "out")]) == 1
+    assert list((tmp_path / "out").iterdir()) == []
