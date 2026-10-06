@@ -8,6 +8,7 @@ from PySide6.QtGui import QDropEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from ifc_converter import gui  # noqa: E402
+from ifc_converter.converter import ConversionResult  # noqa: E402
 from ifc_converter.gui import ConversionWorker, FileQueue, Status, format_size  # noqa: E402
 
 
@@ -206,3 +207,157 @@ def test_settings_are_remembered(app, settings, tmp_path):
     assert second.beside_check.isChecked()
     assert second.output_dir == tmp_path / "out"
     second.close()
+
+
+def test_reading_state_until_first_progress(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._on_file_started(0, tmp_path / "out" / "wall.glb")
+    assert window.queue[0].progress == gui.READING
+    assert window.status_text(0) == "IFC wird gelesen …"
+    assert window.overall_progress.maximum() == 0  # busy indicator while reading
+
+    window._on_file_progress(0, 0)  # convert() reports 0 % once the file is read
+    assert window.status_text(0) == "Läuft … 0 %"
+    assert window.overall_progress.maximum() == 100
+    window._on_file_progress(0, 40)
+    assert window.status_text(0) == "Läuft … 40 %"
+
+
+def test_cancel_hint_while_reading(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._worker = ConversionWorker([], "glb", tmp_path)  # pretend a batch is running
+    try:
+        window._on_file_started(0, tmp_path / "out" / "wall.glb")
+        assert "wird gelesen" in window.status_label.text()
+        window.cancel_conversion()
+        assert window.status_label.text() == "Wird abgebrochen, sobald die IFC-Datei fertig gelesen ist …"
+    finally:
+        window._worker = None
+
+
+def test_worker_reports_first_progress_only_after_reading(app, wall_ifc, tmp_path):
+    worker = ConversionWorker([(0, wall_ifc)], "glb", tmp_path)
+    events = []
+    worker.file_started.connect(lambda row, target: events.append("started"))
+    worker.file_progress.connect(lambda row, pct: events.append(pct))
+    worker.run()
+    assert events[0] == "started"
+    assert events[1] == 0 and events[-1] == 100
+
+
+def test_memory_warning_is_logged_and_shown_as_tooltip(window, wall_ifc, monkeypatch):
+    monkeypatch.setattr("ifc_converter.interactive.memory_warning", lambda path: f"{path.name} ist riesig")
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+
+    assert "⚠ wall.ifc ist riesig" in window.log_view.toPlainText()
+    assert "wall.ifc ist riesig" in window.row_tooltip(0)
+    assert "wall.ifc ist riesig" in window.table.item(0, 2).toolTip()
+    assert not window.table.item(0, 0).icon().isNull()
+    # The warning does not stop the conversion.
+    assert window.queue[0].status is Status.DONE
+
+
+def test_no_warning_no_icon(window, wall_ifc, monkeypatch):
+    monkeypatch.setattr("ifc_converter.interactive.memory_warning", lambda path: None)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert "⚠" not in window.log_view.toPlainText()
+    assert window.table.item(0, 0).icon().isNull()
+
+
+def test_geometry_option_defaults_to_brep_and_follows_format(window):
+    assert window.fmt == "3dm"
+    assert window.geometry == "brep"
+    assert window.geometry_box.isEnabled()
+    assert "Polyflächen" in window.geometry_buttons["brep"].text()
+    assert "2–3×" in window.format_hint.text()
+
+    window.set_format("glb")
+    assert not window.geometry_box.isEnabled()
+    assert window.format_hint.text().startswith("glTF binär")
+    window.set_format("obj")
+    assert not window.geometry_box.isEnabled()
+    window.set_format("3dm")
+    assert window.geometry_box.isEnabled()
+
+    window.set_geometry("mesh")
+    assert window.format_hint.text().startswith("Kleinste Dateien")
+
+
+def test_geometry_option_is_remembered(app, settings):
+    first = gui.MainWindow(settings=settings)
+    first.set_geometry("mesh")
+    first.close()
+    second = gui.MainWindow(settings=settings)
+    assert second.geometry == "mesh"
+    second.close()
+
+
+def test_invalid_saved_geometry_falls_back_to_brep(app, settings):
+    settings.setValue("rhino_geometry", "nurbs")
+    window = gui.MainWindow(settings=settings)
+    assert window.geometry == "brep"
+    window.close()
+
+
+@pytest.fixture
+def fake_convert(monkeypatch):
+    """Replace convert() in the GUI module and record its arguments."""
+    calls = []
+
+    def fake(source, target, fmt, threads=None, progress=None, **kwargs):
+        calls.append({"source": source, "fmt": fmt, **kwargs})
+        progress(0)
+        target.write_text("fake")
+        progress(100)
+        return ConversionResult(output=target, elements=3)
+
+    monkeypatch.setattr("ifc_converter.gui.convert", fake)
+    return calls
+
+
+@pytest.mark.parametrize("mode, label", [("brep", "3DM (Polyflächen)"), ("mesh", "3DM (Netze)")])
+def test_geometry_is_passed_to_convert_and_logged(window, wall_ifc, fake_convert, mode, label):
+    window.set_format("3dm")
+    window.set_geometry(mode)
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    assert not window.geometry_box.isEnabled()  # locked while running
+    wait_finished(window)
+
+    assert fake_convert == [{"source": wall_ifc, "fmt": "3dm", "geometry": mode}]
+    assert label in window.log_view.toPlainText()
+    assert window.status_text(0) == "Fertig – 3 Bauteile"
+    assert window.geometry_box.isEnabled()
+
+
+def test_geometry_is_not_passed_for_other_formats(window, wall_ifc, fake_convert):
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert fake_convert == [{"source": wall_ifc, "fmt": "glb"}]
+    assert "→ GLB," in window.log_view.toPlainText()
+
+
+def test_geometry_options_match_converter():
+    from ifc_converter.converter import GEOMETRIES
+
+    assert set(gui.GEOMETRY_INFO) == set(GEOMETRIES)
+    assert gui.DEFAULT_GEOMETRY in GEOMETRIES
+
+
+@pytest.mark.parametrize("mode", ["brep", "mesh"])
+def test_real_3dm_conversion_with_geometry(window, wall_ifc, tmp_path, mode):
+    window.set_format("3dm")
+    window.set_geometry(mode)
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert window.queue[0].status is Status.DONE, window.queue[0].error
+    assert (tmp_path / "out" / "wall.3dm").stat().st_size > 0

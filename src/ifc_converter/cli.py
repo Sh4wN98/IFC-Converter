@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from ifc_converter.converter import FORMATS, convert
+from ifc_converter.converter import FORMATS, GEOMETRIES, convert
+from ifc_converter.interactive import check_memory
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-f", "--format", choices=FORMATS, default="glb",
         help="output format: glb, obj or 3dm (Rhino) (default: glb)",
     )
+    parser.add_argument(
+        "-g", "--geometry", choices=GEOMETRIES, default="brep",
+        help="3dm only: brep = joined polysurfaces (very detailed elements stay meshes), "
+             "mesh = meshes only (default: brep)",
+    )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
@@ -34,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.inputs:
         from ifc_converter.interactive import run
 
-        return run(args.format, args.out_dir)
+        return run(args.format, args.out_dir, args.geometry)
 
     if args.output and len(args.inputs) > 1:
         parser.error("--output only works with a single input; use --out-dir instead")
@@ -48,8 +54,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             target = None
 
+        warning = check_memory(source)
+        if warning:
+            print(f"⚠ {warning}", file=sys.stderr)
         try:
-            result = convert(source, target, args.format, args.threads)
+            result = convert(source, target, args.format, args.threads, geometry=args.geometry)
         except Exception as exc:
             print(f"✗ {source}: {exc}", file=sys.stderr)
             failed += 1

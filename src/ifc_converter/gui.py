@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRect, QSettings, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPalette, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -30,7 +30,9 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
+    QStyle,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -39,10 +41,12 @@ from PySide6.QtWidgets import (
 )
 
 from ifc_converter.converter import FORMATS, convert
-from ifc_converter.interactive import collect_ifc_files, desktop_dir, unique_path
+from ifc_converter.interactive import check_memory, collect_ifc_files, desktop_dir, unique_path
 
 APP_NAME = "IFC File Converter"
 DEFAULT_FORMAT = "3dm"
+DEFAULT_GEOMETRY = "brep"
+SIDE_WIDTH = 320  # settings column on the right
 
 # Format -> (label, hint), in the order shown in the window.
 FORMAT_INFO = {
@@ -51,9 +55,21 @@ FORMAT_INFO = {
     "obj": ("OBJ", "Wavefront OBJ (.obj + .mtl) – lässt sich in fast jedem 3D-Programm öffnen."),
 }
 
+# Rhino geometry mode (convert(..., geometry=...), only used for 3DM) -> (label, hint).
+GEOMETRY_INFO = {
+    "brep": (
+        "Polyflächen (empfohlen)",
+        "Wände, Decken, Fenster … als geschlossene Polyflächen mit echten Öffnungen. Sehr detaillierte "
+        "Objekte (Möbel, Sanitär, Leuchten) bleiben Netze. Datei ca. 2–3× größer.",
+    ),
+    "mesh": ("Netze (Meshes)", "Kleinste Dateien, schnellste Umwandlung."),
+}
+
 DONE_COLOR = QColor("#2e9d57")
 ERROR_COLOR = QColor("#d64545")
 PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 1
+# QueueItem.progress while the IFC file is still being read: convert() reports progress(0) only afterwards.
+READING = -1
 
 
 # --------------------------------------------------------------------------- model
@@ -76,10 +92,13 @@ class QueueItem:
     elements: int = 0
     output: Path | None = None
     error: str = ""
+    warning: str = ""  # RAM warning for large files, shown as tooltip
 
     @property
     def status_text(self) -> str:
         if self.status is Status.RUNNING:
+            if self.progress == READING:
+                return "IFC wird gelesen …"
             return f"Läuft … {self.progress} %"
         if self.status is Status.DONE:
             return f"Fertig – {self.elements} Bauteile"
@@ -162,7 +181,7 @@ class FileQueue:
             rows = list(range(len(self.items)))
         for row in rows:
             item = self.items[row]
-            item.status, item.progress, item.error = Status.WAITING, 0, ""
+            item.status, item.progress, item.error, item.warning = Status.WAITING, 0, "", ""
         return rows
 
 
@@ -184,16 +203,25 @@ class ConversionWorker(QObject):
     """Converts a batch of files one after another; meant to live in a QThread."""
 
     file_started = Signal(int, object)  # row, target path
+    file_warning = Signal(int, str)  # row, RAM warning
     file_progress = Signal(int, int)  # row, percent
     file_done = Signal(int, object, int)  # row, output path, elements
     file_failed = Signal(int, str)  # row, message
     file_cancelled = Signal(int)
     finished = Signal(bool)  # True if cancelled
 
-    def __init__(self, jobs: list[tuple[int, Path]], fmt: str, out_dir: Path | None, threads: int | None = None):
+    def __init__(
+        self,
+        jobs: list[tuple[int, Path]],
+        fmt: str,
+        out_dir: Path | None,
+        threads: int | None = None,
+        geometry: str = DEFAULT_GEOMETRY,
+    ):
         super().__init__()
         self.jobs = jobs
         self.fmt = fmt
+        self.geometry = geometry
         self.out_dir = out_dir
         self.threads = threads
         self._cancel = threading.Event()
@@ -220,7 +248,11 @@ class ConversionWorker(QObject):
         side_files = [target.with_suffix(".mtl")] if self.fmt == "obj" else []
         side_files = [p for p in side_files if not p.exists()]
         self.file_started.emit(row, target)
-        last = -1
+        # Checked here rather than in the GUI thread; for a large file it is the only hint for minutes.
+        warning = check_memory(source)
+        if warning:
+            self.file_warning.emit(row, warning)
+        last = READING
 
         def progress(percent: int) -> None:
             nonlocal last
@@ -232,7 +264,9 @@ class ConversionWorker(QObject):
                 self.file_progress.emit(row, percent)
 
         try:
-            result = convert(source, target, self.fmt, self.threads, progress)
+            # The geometry mode only exists for Rhino, so GLB/OBJ calls leave it out.
+            options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
+            result = convert(source, target, self.fmt, self.threads, progress, **options)
         except _Cancelled:
             for path in [target, *side_files]:
                 _discard(path)
@@ -320,6 +354,7 @@ QLabel#DropTitle { font-size: 15px; font-weight: 600; }
     border-color: palette(highlight);
     background: palette(alternate-base);
 }
+#Side, #SideViewport, #SideContent { background: transparent; }
 QGroupBox {
     font-weight: 600;
     border: 1px solid palette(mid);
@@ -346,9 +381,34 @@ QProgressBar::chunk { background: palette(highlight); border-radius: 5px; }
 """
 
 
+class HintLabel(QLabel):
+    """Word-wrapped label that reserves the height of the longest of its possible texts.
+
+    Layouts don't account for the height of word-wrapped labels reliably (the hint got clipped), and a
+    constant height also keeps the box from jumping when the text changes.
+    """
+
+    def __init__(self, texts: list[str], parent: QWidget | None = None):
+        super().__init__(parent)
+        self._texts = texts
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        rect = QRect(0, 0, max(1, self.width()), 10_000)
+        flags = Qt.TextFlag.TextWordWrap
+        height = max(self.fontMetrics().boundingRect(rect, flags, text).height() for text in self._texts) + 2
+        if height != self.minimumHeight():
+            self.setMinimumHeight(height)
+
+
 def _muted(label: QLabel) -> QLabel:
     palette = label.palette()
-    palette.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.PlaceholderText))
+    muted = palette.color(QPalette.ColorRole.PlaceholderText)
+    # Only the enabled groups, so a disabled hint still looks disabled.
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        palette.setColor(group, QPalette.ColorRole.WindowText, muted)
     label.setPalette(palette)
     return label
 
@@ -368,15 +428,20 @@ class MainWindow(QMainWindow):
         self._run_done = 0
         self._run_failed = 0
         self._last_output_dir: Path | None = None
+        self._current_row: int | None = None
+        self._warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
 
         self.setWindowTitle(APP_NAME)
-        self.setMinimumSize(860, 620)
-        self.resize(1000, 720)
+        self.setMinimumSize(860, 600)
+        available = self.screen().availableGeometry()
+        self.resize(min(1000, available.width() - 40), min(720, available.height() - 40))
         self.setAcceptDrops(True)
         self.setStyleSheet(STYLESHEET)
 
         self._build_ui()
         self._load_settings()
+        # Never allow the window to get smaller than its content needs.
+        self.setMinimumSize(self.minimumSize().expandedTo(self.centralWidget().minimumSizeHint()))
         self._update_actions()
 
     # ---------------------------------------------------------------- layout
@@ -447,10 +512,19 @@ class MainWindow(QMainWindow):
         right = QVBoxLayout()
         right.setSpacing(10)
         side = QWidget()
+        side.setObjectName("SideContent")
         side.setLayout(right)
-        side.setFixedWidth(300)
         right.setContentsMargins(0, 0, 0, 0)
-        body.addWidget(side)
+        # Scrollable, so the window still fits small screens (e.g. laptops with 150 % scaling).
+        side_scroll = QScrollArea()
+        side_scroll.setObjectName("Side")
+        side_scroll.viewport().setObjectName("SideViewport")
+        side_scroll.setWidget(side)
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        side_scroll.setFixedWidth(SIDE_WIDTH)
+        body.addWidget(side_scroll)
 
         format_box = QGroupBox("Zielformat")
         format_layout = QVBoxLayout(format_box)
@@ -464,9 +538,9 @@ class MainWindow(QMainWindow):
             self.format_buttons[fmt] = button
             format_layout.addWidget(button)
             button.toggled.connect(self._format_changed)
-        self.format_hint = _muted(QLabel())
-        self.format_hint.setWordWrap(True)
-        self.format_hint.setMinimumHeight(40)
+            if fmt == "3dm":
+                format_layout.addWidget(self._build_geometry_options())
+        self.format_hint = _muted(HintLabel([hint for _label, hint in (*FORMAT_INFO.values(), *GEOMETRY_INFO.values())]))
         self.format_hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         format_layout.addSpacing(2)
         format_layout.addWidget(self.format_hint)
@@ -485,9 +559,9 @@ class MainWindow(QMainWindow):
         self.beside_check = QCheckBox("Neben der IFC-Datei speichern")
         self.beside_check.toggled.connect(self._beside_changed)
         output_layout.addWidget(self.beside_check)
-        note = _muted(QLabel("Gibt es den Dateinamen schon, wird (2), (3) … angehängt."))
-        note.setWordWrap(True)
-        output_layout.addWidget(note)
+        collision_hint = "Vorhandene Dateien werden nie überschrieben: Gibt es den Namen schon, wird (2), (3) … angehängt."
+        self.output_button.setToolTip(collision_hint)
+        self.beside_check.setToolTip(collision_hint)
         right.addWidget(output_box)
         right.addStretch()
 
@@ -502,7 +576,7 @@ class MainWindow(QMainWindow):
         self.log_view.setObjectName("Log")
         self.log_view.setReadOnly(True)
         self.log_view.setPlaceholderText("Protokoll")
-        self.log_view.setFixedHeight(110)
+        self.log_view.setFixedHeight(96)
         root.addWidget(self.log_view)
 
         actions = QHBoxLayout()
@@ -524,6 +598,24 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
 
+    def _build_geometry_options(self) -> QWidget:
+        """Sub-options under 3DM: polysurfaces or meshes."""
+        self.geometry_box = QWidget()
+        layout = QVBoxLayout(self.geometry_box)
+        layout.setContentsMargins(24, 0, 0, 4)
+        layout.setSpacing(2)
+        layout.addWidget(QLabel("Geometrie:"))
+        self.geometry_group = QButtonGroup(self)
+        self.geometry_buttons: dict[str, QRadioButton] = {}
+        for mode, (label, hint) in GEOMETRY_INFO.items():
+            button = QRadioButton(label)
+            button.setToolTip(hint)
+            self.geometry_group.addButton(button)
+            self.geometry_buttons[mode] = button
+            layout.addWidget(button)
+            button.toggled.connect(self._geometry_changed)
+        return self.geometry_box
+
     # -------------------------------------------------------------- settings
 
     def _load_settings(self) -> None:
@@ -538,6 +630,9 @@ class MainWindow(QMainWindow):
 
         self.beside_check.setChecked(self.settings.value("beside_input", False, type=bool))
         self._beside_changed(self.beside_check.isChecked())
+
+        mode = str(self.settings.value("rhino_geometry", DEFAULT_GEOMETRY))
+        self.geometry_buttons[mode if mode in self.geometry_buttons else DEFAULT_GEOMETRY].setChecked(True)
 
         geometry = self.settings.value("geometry")
         if geometry is not None:
@@ -554,18 +649,42 @@ class MainWindow(QMainWindow):
     def output_dir(self) -> Path:
         return Path(self.output_edit.text())
 
+    @property
+    def geometry(self) -> str:
+        for mode, button in self.geometry_buttons.items():
+            if button.isChecked():
+                return mode
+        return DEFAULT_GEOMETRY
+
     def set_format(self, fmt: str) -> None:
         self.format_buttons[fmt].setChecked(True)
+
+    def set_geometry(self, mode: str) -> None:
+        self.geometry_buttons[mode].setChecked(True)
 
     def _format_changed(self, checked: bool) -> None:
         if not checked:
             return
-        self.format_hint.setText(FORMAT_INFO[self.fmt][1])
+        self._update_hint()
         self.settings.setValue("format", self.fmt)
+        self._update_actions()
+
+    def _geometry_changed(self, checked: bool) -> None:
+        if not checked:
+            return
+        self._update_hint()
+        self.settings.setValue("rhino_geometry", self.geometry)
+
+    def _update_hint(self) -> None:
+        # For 3DM the geometry choice is what matters, so its hint replaces the format hint.
+        if self.fmt == "3dm":
+            self.format_hint.setText(GEOMETRY_INFO[self.geometry][1])
+        else:
+            self.format_hint.setText(FORMAT_INFO[self.fmt][1])
 
     def _set_output_dir(self, path: Path, save: bool = True) -> None:
         self.output_edit.setText(str(path))
-        self.output_edit.setToolTip(str(path))
+        self.output_edit.setToolTip(f"{path}\n\nVorhandene Dateien werden nie überschrieben: (2), (3) … wird angehängt.")
         self.output_edit.setCursorPosition(0)
         if save:
             self.settings.setValue("output_dir", str(path))
@@ -643,13 +762,21 @@ class MainWindow(QMainWindow):
         cell.setData(PROGRESS_ROLE, item.progress if item.status is Status.RUNNING else None)
         if item.status is Status.DONE:
             cell.setForeground(DONE_COLOR)
-            cell.setToolTip(str(item.output))
+            tooltip = str(item.output)
         elif item.status is Status.FAILED:
             cell.setForeground(ERROR_COLOR)
-            cell.setToolTip(item.error)
+            tooltip = item.error
         else:
             cell.setData(Qt.ItemDataRole.ForegroundRole, None)
-            cell.setToolTip("")
+            tooltip = ""
+        warning = f"⚠ {item.warning}" if item.warning else ""
+        cell.setToolTip("\n\n".join(t for t in (tooltip, warning) if t))
+        name = self.table.item(row, 0)
+        name.setToolTip("\n\n".join(t for t in (str(item.path), warning) if t))
+        name.setIcon(self._warning_icon if item.warning else QIcon())
+
+    def row_tooltip(self, row: int) -> str:
+        return self.table.item(row, 0).toolTip()
 
     def status_text(self, row: int) -> str:
         return self.table.item(row, 2).text()
@@ -677,14 +804,17 @@ class MainWindow(QMainWindow):
 
         fmt = self.fmt
         target = "neben den IFC-Dateien" if out_dir is None else str(out_dir)
-        self.log(f"▶ {len(rows)} Datei(en) → {fmt.upper()}, Ziel: {target}")
+        geometry = self.geometry
+        label = f"3DM ({GEOMETRY_INFO[geometry][0].split(' (')[0]})" if fmt == "3dm" else fmt.upper()
+        self.log(f"▶ {len(rows)} Datei(en) → {label}, Ziel: {target}")
 
         jobs = [(row, self.queue[row].path) for row in rows]
-        self._worker = ConversionWorker(jobs, fmt, out_dir)
+        self._worker = ConversionWorker(jobs, fmt, out_dir, geometry=geometry)
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.file_started.connect(self._on_file_started)
+        self._worker.file_warning.connect(self._on_file_warning)
         self._worker.file_progress.connect(self._on_file_progress)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.file_failed.connect(self._on_file_failed)
@@ -704,20 +834,42 @@ class MainWindow(QMainWindow):
         if self._worker is not None and not self._worker.cancelled:
             self._worker.cancel()
             self.cancel_button.setEnabled(False)
-            self.status_label.setText("Wird abgebrochen … (die aktuelle Datei wird noch fertig geladen)")
+            current = self.queue[self._current_row] if self._current_row is not None else None
+            if current and current.status is Status.RUNNING and current.progress == READING:
+                # convert() cannot be interrupted while ifcopenshell reads the file.
+                self.status_label.setText("Wird abgebrochen, sobald die IFC-Datei fertig gelesen ist …")
+            else:
+                self.status_label.setText("Wird abgebrochen …")
             self.log("■ Abbruch angefordert")
 
     def _on_file_started(self, row: int, target: Path) -> None:
         item = self.queue[row]
-        item.status, item.progress = Status.RUNNING, 0
+        item.status, item.progress = Status.RUNNING, READING
+        self._current_row = row
         self._refresh_row(row)
         self.table.scrollToItem(self.table.item(row, 0))
-        self.log(f"… {item.path.name} → {target.name}")
+        self._update_overall(0)
+        # Reading gives no progress at all, so show a busy bar to make clear the app is not frozen.
+        self.overall_progress.setRange(0, 0)
+        self._set_activity(f"IFC wird gelesen ({format_size(item.size)}) – kann einige Minuten dauern …")
+        self.log(f"… {item.path.name} ({format_size(item.size)}) → {target.name}")
+
+    def _on_file_warning(self, row: int, message: str) -> None:
+        item = self.queue[row]
+        item.warning = message
+        self._refresh_row(row)
+        self.log(f"⚠ {message}")
+
+    def _set_activity(self, text: str) -> None:
+        if self._worker is not None and not self._worker.cancelled:
+            self.status_label.setText(text)
 
     def _on_file_progress(self, row: int, percent: int) -> None:
         item = self.queue[row]
         if item.status is not Status.RUNNING:
             return
+        if item.progress == READING:
+            self._set_activity(f"{item.path.name} wird umgewandelt …")
         item.progress = percent
         self._refresh_row(row)
         self._update_overall(percent)
@@ -750,6 +902,7 @@ class MainWindow(QMainWindow):
             self._thread.deleteLater()
         self._thread = None
         self._worker = None
+        self._current_row = None
 
         seconds = time.monotonic() - self._started_at
         summary = f"{self._run_done} von {len(self._run_rows)} Datei(en) fertig"
@@ -759,6 +912,7 @@ class MainWindow(QMainWindow):
             summary += " – abgebrochen"
         summary += f" ({seconds:.1f} s)".replace(".", ",")
         self.status_label.setText(("Abgebrochen" if cancelled else "Fertig") + f" nach {seconds:.1f} s".replace(".", ","))
+        self.overall_progress.setRange(0, 100)
         self.overall_progress.setFormat(summary.split(" (")[0])
         if not cancelled:
             self.overall_progress.setValue(100)
@@ -769,6 +923,7 @@ class MainWindow(QMainWindow):
     def _update_overall(self, current_percent: int) -> None:
         total = len(self._run_rows) or 1
         finished = self._run_done + self._run_failed
+        self.overall_progress.setRange(0, 100)
         value = int((finished * 100 + (current_percent if finished < total else 0)) / total)
         self.overall_progress.setValue(min(100, value))
         self.overall_progress.setFormat(f"{finished} / {total} Dateien – %p %")
@@ -797,6 +952,7 @@ class MainWindow(QMainWindow):
         self.open_button.setEnabled(not running and self._last_output_dir is not None)
         for button in self.format_buttons.values():
             button.setEnabled(not running)
+        self.geometry_box.setEnabled(not running and self.fmt == "3dm")
         self.beside_check.setEnabled(not running)
         beside = self.beside_check.isChecked()
         self.output_edit.setEnabled(not running and not beside)
