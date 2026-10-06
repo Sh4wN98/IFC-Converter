@@ -77,3 +77,27 @@ def test_session_reports_non_ifc_and_exits_on_eof(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr("builtins.input", fake_input)
     assert interactive.run(output_dir=tmp_path) == 0
     assert "Keine IFC-Datei" in capsys.readouterr().out
+
+
+def test_check_memory_ignores_missing_files(tmp_path):
+    assert interactive.check_memory(tmp_path / "fehlt.ifc") is None
+
+
+def test_session_prints_memory_warning(wall_ifc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("ifc_converter.interactive.memory_warning", lambda path: "zu wenig RAM")
+    lines = iter([f"'{wall_ifc}'", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert interactive.run(output_dir=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "⚠ zu wenig RAM" in out
+    assert "Fertig" in out
+
+
+def test_cli_prints_memory_warning_to_stderr(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    monkeypatch.setattr("ifc_converter.interactive.memory_warning", lambda path: "zu wenig RAM")
+    assert main([str(wall_ifc), "-f", "glb", "-d", str(tmp_path / "out")]) == 0
+    captured = capsys.readouterr()
+    assert "⚠ zu wenig RAM" in captured.err
+    assert (tmp_path / "out" / "wall.glb").exists()

@@ -1,4 +1,6 @@
+import ifcopenshell
 import ifcopenshell.api as api
+import numpy
 import pytest
 
 
@@ -72,3 +74,34 @@ def storey_ifc(tmp_path):
     path = tmp_path / "storey.ifc"
     model.write(str(path))
     return path
+
+
+@pytest.fixture
+def opening_ifc(wall_ifc):
+    """The wall model plus an opening cut into the wall and a room (IfcSpace) next to it."""
+    model = ifcopenshell.open(str(wall_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    site = model.by_type("IfcSite")[0]
+    wall = model.by_type("IfcWall")[0]
+
+    opening = api.run("root.create_entity", model, ifc_class="IfcOpeningElement", name="Window opening")
+    opening_rep = api.run(
+        "geometry.add_wall_representation", model, context=body, length=1, height=1, thickness=0.2
+    )
+    api.run("geometry.assign_representation", model, product=opening, representation=opening_rep)
+    # In the middle of the wall (x 2-3 m, z 1-2 m), so it becomes a hole through it.
+    placement = numpy.eye(4)
+    placement[0][3], placement[2][3] = 2.0, 1.0
+    api.run("geometry.edit_object_placement", model, product=opening, matrix=placement)
+    api.run("feature.add_feature", model, feature=opening, element=wall)
+
+    space = api.run("root.create_entity", model, ifc_class="IfcSpace", name="Room")
+    space_rep = api.run(
+        "geometry.add_wall_representation", model, context=body, length=4, height=2.5, thickness=4
+    )
+    api.run("geometry.assign_representation", model, product=space, representation=space_rep)
+    api.run("geometry.edit_object_placement", model, product=space)
+    api.run("aggregate.assign_object", model, relating_object=site, products=[space])
+
+    model.write(str(wall_ifc))
+    return wall_ifc

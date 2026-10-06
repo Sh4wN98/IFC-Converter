@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 
 import ifcopenshell
@@ -11,25 +10,23 @@ import ifcopenshell.geom as geom
 import ifcopenshell.util.element as element_util
 import rhino3dm
 
-from ifc_converter.converter import ProgressCallback
+from ifc_converter.converter import ProgressCallback, iter_shapes
+from ifc_converter.polysurface import planar_polysurface
 
 NO_STOREY = "Ohne Geschoss"
 FILE_VERSION = 7
 MAX_STRING_LENGTH = 1000
 # Share of the progress range used by the geometry iterator; the rest covers writing the file.
 ITERATOR_SHARE = 90
+# Elements with more triangles than this are mostly tessellated organic shapes (sanitary objects,
+# lamps, plants). As polysurfaces they would cost ~1.7 kB per face without any benefit: they stay meshes.
+MAX_BREP_FACES = 1000
 
 Color = tuple[int, int, int, int]
 
-
-@dataclass
-class _Entry:
-    storey: ifcopenshell.entity_instance | None
-    ifc_class: str
-    mesh: rhino3dm.Mesh
-    attributes: rhino3dm.ObjectAttributes
-    color: Color
-    material: tuple[str, Color, float]
+# Opening volumes would show up as solid boxes over every window and door. Spaces stay: they get
+# their own layers in Rhino, where they are easy to switch off.
+EXCLUDED_CLASSES = ["IfcOpeningElement"]
 
 
 def write_3dm(
@@ -37,71 +34,85 @@ def write_3dm(
     output_path: Path,
     threads: int,
     progress: ProgressCallback | None = None,
+    geometry: str = "brep",
 ) -> int:
-    """Write every element with geometry as a Rhino mesh, layered by storey and IFC class."""
-    entries = list(_iter_entries(model, threads, progress))
+    """Write every element with geometry, layered by storey and IFC class.
 
-    rhino = rhino3dm.File3dm()
-    rhino.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
-    layers = _LayerTable(rhino)
-    materials: dict[tuple[str, Color, float], int] = {}
+    With ``geometry="brep"`` elements become joined planar polysurfaces; elements with more than
+    MAX_BREP_FACES triangles (tessellated organic shapes) or without a valid Brep stay meshes.
+    With ``geometry="mesh"`` every element is a mesh.
+    """
+    writer = _Writer(model)
+    for shape in iter_shapes(model, _settings(), threads, EXCLUDED_CLASSES, progress, ITERATOR_SHARE):
+        triangles = shape.geometry.faces
+        if not shape.geometry.verts or not triangles:
+            continue
+        brep = None
+        if geometry == "brep" and len(triangles) <= 3 * MAX_BREP_FACES:
+            brep = _brep(shape.geometry)
+        writer.add(shape, _mesh(shape.geometry) if brep is None else brep)
 
-    for entry in sorted(entries, key=lambda e: _storey_sort_key(e.storey)):
-        entry.attributes.LayerIndex = layers.get(entry.storey, entry.ifc_class, entry.color)
-        entry.attributes.MaterialIndex = _material_index(rhino, materials, entry.material)
-        entry.attributes.MaterialSource = rhino3dm.ObjectMaterialSource.MaterialFromObject
-        rhino.Objects.AddMesh(entry.mesh, entry.attributes)
-
-    if not rhino.Write(str(output_path), FILE_VERSION):
+    if not writer.rhino.Write(str(output_path), FILE_VERSION):
         raise OSError(f"Could not write Rhino file: {output_path}")
-    return len(entries)
+    return writer.elements
 
 
-def _iter_entries(model: ifcopenshell.file, threads: int, progress: ProgressCallback | None):
+class _Writer:
+    """Adds objects to a Rhino file with the layers, colours, materials and user text of their element."""
+
+    def __init__(self, model: ifcopenshell.file):
+        self.model = model
+        self.rhino = rhino3dm.File3dm()
+        self.rhino.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
+        self.layers = _LayerTable(self.rhino)
+        # Storey layers are created up front so the layer panel lists them by elevation.
+        for storey in sorted(model.by_type("IfcBuildingStorey"), key=_storey_sort_key):
+            self.layers.storey_layer(storey)
+        self.materials: dict[tuple[str, Color, float], int] = {}
+        self.elements = 0
+
+    def add(self, shape, geometry: rhino3dm.Mesh | rhino3dm.Brep | None) -> None:
+        # Each object goes into the Rhino file right away, so only one copy of the geometry is kept.
+        if geometry is None:
+            return
+        element = self.model.by_id(shape.id)
+        name, color, transparency = _material(shape.geometry)
+        attributes = _attributes(element, color)
+        attributes.LayerIndex = self.layers.get(_storey(element), element.is_a(), color)
+        attributes.MaterialIndex = _material_index(self.rhino, self.materials, (name, color, transparency))
+        attributes.MaterialSource = rhino3dm.ObjectMaterialSource.MaterialFromObject
+        if isinstance(geometry, rhino3dm.Brep):
+            self.rhino.Objects.AddBrep(geometry, attributes)
+        else:
+            self.rhino.Objects.AddMesh(geometry, attributes)
+        self.elements += 1
+
+
+def _settings() -> geom.settings:
     settings = geom.settings()
     settings.set("use-world-coords", True)
     # Unwelded vertices keep hard edges between faces sharp when Rhino shades the mesh.
     settings.set("weld-vertices", False)
     settings.set("use-material-names", True)
     settings.set("no-normals", True)
-
-    # Opening volumes would show up as solid boxes over every window and door.
-    iterator = geom.iterator(settings, model, threads, exclude=["IfcOpeningElement"])
-    if not iterator.initialize():
-        return
-    while True:
-        shape = iterator.get()
-        entry = _entry(model, shape)
-        if entry:
-            yield entry
-        if progress:
-            progress(iterator.progress() * ITERATOR_SHARE // 100)
-        if not iterator.next():
-            break
+    return settings
 
 
-def _entry(model: ifcopenshell.file, shape) -> _Entry | None:
-    mesh = _mesh(shape.geometry)
-    if mesh is None:
-        return None
+def _brep(geometry) -> rhino3dm.Brep | None:
+    """The element as a joined polysurface: coplanar triangles become one face (with holes)."""
+    indices = geometry.faces
+    triangles = [[indices[i:i + 3]] for i in range(0, len(indices), 3)]
+    return planar_polysurface(geometry.verts, triangles, geometry.item_ids)
 
-    element = model.by_id(shape.id)
-    name, color, transparency = _material(shape.geometry)
+
+def _attributes(element: ifcopenshell.entity_instance, color: Color) -> rhino3dm.ObjectAttributes:
     attributes = rhino3dm.ObjectAttributes()
     attributes.Name = element.Name or element.GlobalId
     attributes.ObjectColor = color
     attributes.ColorSource = rhino3dm.ObjectColorSource.ColorFromObject
     for key, value in _user_strings(element).items():
         attributes.SetUserString(key, value)
-
-    return _Entry(
-        storey=_storey(element),
-        ifc_class=element.is_a(),
-        mesh=mesh,
-        attributes=attributes,
-        color=color,
-        material=(name, color, transparency),
-    )
+    return attributes
 
 
 def _mesh(geometry) -> rhino3dm.Mesh | None:
@@ -206,12 +217,13 @@ class _LayerTable:
         storey_key = storey.id() if storey is not None else None
         key = (storey_key, ifc_class)
         if key not in self._classes:
-            parent = self._storey_layer(storey_key, storey)
+            parent = self.storey_layer(storey)
             # The class layer takes the colour of its first element.
             self._classes[key] = self._add(ifc_class, color[:3] + (255,), parent.Id)
         return self._classes[key]
 
-    def _storey_layer(self, key: int | None, storey: ifcopenshell.entity_instance | None) -> rhino3dm.Layer:
+    def storey_layer(self, storey: ifcopenshell.entity_instance | None) -> rhino3dm.Layer:
+        key = storey.id() if storey is not None else None
         if key not in self._storeys:
             name = _clean_name(storey.Name, f"Geschoss #{key}") if storey is not None else NO_STOREY
             name = self._unique(name)

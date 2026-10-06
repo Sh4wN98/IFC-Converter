@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from ifc_converter.converter import FORMATS, convert
+from ifc_converter.converter import FORMATS, convert, memory_warning
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
 # where a backslash may escape a space (Linux/macOS terminals).
@@ -102,6 +102,14 @@ def unique_path(path: Path) -> Path:
         n += 1
 
 
+def check_memory(path: Path) -> str | None:
+    """The RAM warning for `path`, or None (also if the file cannot be read; convert() reports that)."""
+    try:
+        return memory_warning(path)
+    except OSError:
+        return None
+
+
 def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
     """Split dropped paths into IFC files (folders are searched) and rejected paths."""
     files, rejected = [], []
@@ -119,7 +127,7 @@ def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
     return files, rejected
 
 
-def run(fmt: str = "glb", output_dir: Path | None = None) -> int:
+def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep") -> int:
     output_dir = output_dir or desktop_dir()
     print("=" * 60)
     print("  IFC File Converter")
@@ -152,9 +160,12 @@ def run(fmt: str = "glb", output_dir: Path | None = None) -> int:
 
         for source in files:
             target = unique_path(output_dir / f"{source.stem}.{fmt}")
+            warning = check_memory(source)
+            if warning:
+                print(f"  ⚠ {warning}")
             print(f"  … {source.name} wird umgewandelt")
             try:
-                result = convert(source, target, fmt)
+                result = convert(source, target, fmt, geometry=geometry)
             except Exception as exc:
                 print(f"  ✗ Fehler bei {source.name}: {exc}")
                 continue
