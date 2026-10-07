@@ -1,10 +1,11 @@
 @echo off
 setlocal
-rem Startet den IFC File Converter (Fenster). Mit Dateien als Argument laeuft die Kommandozeilen-Version.
-rem Beim ersten Start (und nach Updates) wird alles automatisch eingerichtet.
+rem Startet den IFC Converter aus dem Quellcode (Fenster). Mit Dateien als Argument laeuft die
+rem Kommandozeilen-Version. Beim ersten Start (und nach Updates) wird alles automatisch eingerichtet.
+rem Fuer die normale Nutzung gibt es den Installer "IFC-Converter-...-Setup.exe" (siehe README).
 chcp 65001 >nul
 set PYTHONIOENCODING=utf-8
-title IFC File Converter
+title IFC Converter
 cd /d "%~dp0"
 
 rem Aus einer ZIP-Datei heraus gestartet, fehlt alles ausser dieser Datei.

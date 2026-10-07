@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Startet den IFC File Converter (Fenster). Mit Dateien als Argument läuft die Kommandozeilen-Version.
-# Beim ersten Start (und nach Updates) wird alles automatisch eingerichtet.
+# Startet den IFC Converter aus dem Quellcode (Fenster). Mit Dateien als Argument läuft die
+# Kommandozeilen-Version. Beim ersten Start (und nach Updates) wird alles automatisch eingerichtet.
 set -euo pipefail
 cd "$(dirname "$0")"
 

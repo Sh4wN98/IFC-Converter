@@ -11,10 +11,24 @@ Kleines Programm (mit Fenster oder als Kommandozeilen-Tool), das IFC-Gebäudemod
 Die Geometrie wird mit [IfcOpenShell](https://ifcopenshell.org) berechnet und in Metern ausgegeben.
 Öffnungskörper (`IfcOpeningElement`) werden nie exportiert. Raumvolumen (`IfcSpace`) landen nur in `.3dm`, dort auf eigenen Layern zum Ausblenden.
 
+## Installation unter Windows
+
+Der Converter wird wie ein normales Windows-Programm installiert, Python ist dafür nicht nötig.
+
+- **Installer:** `IFC-Converter-<Version>-Setup.exe` (aus den [Releases](https://github.com/Sh4wN98/IFC-Converter/releases)) doppelklicken.
+  - Keine Administratorrechte nötig: installiert wird nur für den angemeldeten Benutzer nach `%LOCALAPPDATA%\Programs\IFC Converter`, dazu ein Eintrag im Startmenü.
+  - Desktop-Symbol und ein „Öffnen mit“-Eintrag für `.ifc`-Dateien sind wählbar, aber standardmäßig aus. Das Standardprogramm für IFC-Dateien wird nie geändert.
+  - Keine Dienste, kein Autostart, keine Hintergrund-Updates, keine Internetverbindung im Betrieb.
+- **Portable Version:** `IFC-Converter-<Version>-portable.zip` entpacken (z. B. in „Dokumente“) und `IFC Converter.exe` im entpackten Ordner starten. Nichts wird installiert.
+- **Windows SmartScreen:** Das Programm ist nicht digital signiert. Beim ersten Start des Installers (bzw. der portablen exe) erscheint deshalb „Der Computer wurde durch Windows geschützt“. Dann auf **„Weitere Informationen“ → „Trotzdem ausführen“** klicken. Blockiert der Virenscanner der Firma das Programm, die IT um eine Ausnahme für den Programmordner bitten.
+- **Update:** Den Installer der neuen Version ausführen. Er ersetzt die alte Version (ein laufender Converter wird vorher geschlossen); Einstellungen bleiben erhalten.
+- **Deinstallation:** Windows-Einstellungen → Apps → „IFC Converter“ → Deinstallieren. Einstellungen und Logdateien (`%APPDATA%\IFC Converter`, `%LOCALAPPDATA%\IFC Converter`) bleiben liegen und können bei Bedarf von Hand gelöscht werden. Die portable Version wird einfach gelöscht.
+- **Kommandozeile:** Neben `IFC Converter.exe` liegt `ifc-convert.exe` mit denselben Optionen wie unten beschrieben, z. B. `"%LOCALAPPDATA%\Programs\IFC Converter\ifc-convert.exe" haus.ifc -f 3dm`. Ohne Argumente (Doppelklick) startet der Terminal-Modus.
+
 ## Schnellstart (Programmfenster)
 
-1. **Windows:** `start.bat` doppelklicken. **Linux/macOS:** `./start.sh` ausführen.
-2. Beim ersten Start richtet sich der Converter selbst ein (Internet nötig für den Download von IfcOpenShell, rhino3dm und Qt). Nach einem Update passiert das automatisch noch einmal.
+1. **Installiert:** „IFC Converter“ im Startmenü öffnen. **Aus dem Quellcode:** unter Windows `start.bat` doppelklicken, unter Linux/macOS `./start.sh` ausführen.
+2. Aus dem Quellcode richtet sich der Converter beim ersten Start selbst ein (Internet nötig für den Download von IfcOpenShell, rhino3dm und Qt; Python 3.10 oder neuer muss installiert sein). Nach einem Update passiert das automatisch noch einmal.
 3. IFC-Dateien oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“).
 4. Format wählen (Standard: 3DM), Ausgabeordner prüfen und auf „Konvertieren“ klicken.
 5. Die fertigen Dateien landen standardmäßig auf dem Desktop. Gibt es den Namen schon, wird `(2)`, `(3)` … angehängt.
@@ -38,11 +52,28 @@ Die Geometrie wird mit [IfcOpenShell](https://ifcopenshell.org) berechnet und in
 - **Georeferenzierte Modelle** (Koordinaten in UTM/Gauß-Krüger, z. B. bei Brücken) behalten volle Genauigkeit.
 - Die Datei wird im Rhino-7-Format geschrieben und lässt sich damit in Rhino 7 und 8 öffnen.
 
+### Maßhaltigkeit
+
+- **Einheiten:** Die Ausgabe ist immer in Metern, ob die IFC in mm, m, Fuß oder Zoll vorliegt. Die Rhino-Datei hat die Einheit Meter, die absolute Toleranz 0,001 m (1 mm) und die Winkeltoleranz 1°.
+- **Koordinaten:** Die Bauteile liegen in den Projektkoordinaten der IFC, wie im Autorenprogramm. Eine Georeferenzierung (`IfcMapConversion`: Rechts-/Hochwert, Drehung, Maßstab) wird nicht angewendet. Auch Hunderte Kilometer vom Ursprung bleiben die Koordinaten genau: `.3dm` speichert sie in doppelter Genauigkeit, `.obj` mit 15 Stellen, `.glb` jedes Bauteil um seinen Einfügepunkt.
+- **Ebene Geometrie** (Wände, Decken, Öffnungen, Profile) kommt eckpunktgenau heraus. Gemessen an 11 echten Modellen (mm, m, Fuß; IFC2X3, IFC4, IFC4X3) gegen IfcOpenShells eigene Geometrie und gegen die Maße in der IFC (Profile, Extrusionen, Mengen): Abweichung unter 0,001 mm in `.3dm` und `.obj`, unter 0,02 mm in `.glb`.
+- **Runde Geometrie** (Stützen, Rohre, Bögen) wird facettiert: Die Eckpunkte liegen genau auf der Rundung, die Sehnen höchstens 0,5 mm innen (mit OpenCASCADE, also im Standard „Genau“, 0,25 mm). Ein dünnes Rohr (Ø 10 cm) hat dadurch etwa 0,6 % weniger Volumen.
+- **Vollständig und reproduzierbar:** Der Standard-Geometriekern „Genau“ liefert jedes Bauteil vollständig und bei jedem Lauf gleich, unabhängig von der Zahl der Threads (siehe „Geometriekern“).
+- **Selbst prüfen:** `tools/accuracy.py` wandelt eine IFC in allen Formaten um und vergleicht jedes Bauteil mit IfcOpenShells Geometrie und den Maßen aus der IFC:
+
+```bash
+python tools/accuracy.py modell.ifc --out-dir out --report genauigkeit.md
+```
+
 ### Große Modelle (mehrere GB)
 
 - **Arbeitsspeicher:** Die IFC-Datei wird komplett eingelesen. Das allein braucht etwa das 6-Fache ihrer Größe, die Umwandlung 1–2 GB mehr; bei `.3dm` bleibt zusätzlich die Ausgabe bis zum Speichern im Speicher. **Faustregel: eine 2-GB-IFC braucht ca. 14–16 GB RAM.** Ist absehbar zu wenig frei, warnt der Converter vor dem Start, wandelt aber trotzdem um.
 - **Geometrie in Paketen:** Die Geometrie wird in Paketen zu 200 Bauteilen berechnet, und der Speicher wird nach jedem Paket wieder freigegeben. Die Zahl der Rechen-Threads passt sich dem freien RAM an.
-- **Schneller Geometriekern:** Standard ist IfcOpenShells Hybrid-Kern (CGAL + OpenCASCADE), auf echten Modellen 3–13× schneller als OpenCASCADE allein; Geländemodelle aus Dreiecksnetzen dauern Sekunden statt über 20 Minuten. Bauteile, die er nicht schafft, werden automatisch mit OpenCASCADE nachberechnet. Stürzt er ab, wird die ganze Datei automatisch mit OpenCASCADE wiederholt. Mit `--kernel opencascade` lässt sich OpenCASCADE erzwingen.
+- **Geometriekern** (Einstellungen bzw. `--kernel`):
+  - **Genau** (Standard, `accurate`): Alle Bauteile werden mit OpenCASCADE berechnet, nur reine Dreiecksnetze ab 1000 Dreiecken (Geländemodelle, `IfcTriangulatedFaceSet` ohne Öffnungen) mit IfcOpenShells schnellem Hybrid-Kern, der sie unverändert übernimmt (auf allen Testmodellen identisch mit OpenCASCADE). Ein Gelände dauert so Sekunden statt über 20 Minuten.
+  - **Schnell** (`hybrid`): alles mit dem Hybrid-Kern (CGAL + OpenCASCADE), auf echten Modellen 3–13× schneller. Er lässt aber bei einzelnen Bauteilen Flächen weg oder erzeugt sie doppelt, je nach Zahl der Threads (z. B. fehlte einer ArchiCAD-Wand ein Viertel ihrer Fläche).
+  - **Nur OpenCASCADE** (`opencascade`): alles mit OpenCASCADE, auch Geländemodelle.
+  - Stürzt der Hybrid-Kern ab („Genau“ und „Schnell“), wird die ganze Datei automatisch nur mit OpenCASCADE wiederholt.
 - **Eigener Prozess:** Jede Umwandlung läuft in einem eigenen Prozess (im Fenster wie im Terminal). Reicht der Arbeitsspeicher nicht und das System beendet die Umwandlung (oder sie stürzt ab), wird nur diese Datei als Fehler markiert, und die nächste wird umgewandelt. „Abbrechen“ im Fenster wirkt sofort, auch während die IFC-Datei noch gelesen wird. Im Terminal zeigt eine Zeile den Fortschritt in Prozent.
 - **Fortschritt:** Das Einlesen großer Dateien dauert einige Minuten. Das Fenster zeigt solange „IFC wird gelesen …“.
 - **GLB:** Das Format ist auf 4 GB Ausgabe begrenzt. Für riesige Modelle `.3dm` oder `.obj` nehmen.
@@ -57,6 +88,8 @@ Die Geometrie wird mit [IfcOpenShell](https://ifcopenshell.org) berechnet und in
 | Landsarkivet (Revit, georeferenziert) | 178 MB | 10.056 | 5,5 min | 15,5 min (691 MB) | 4,5 min | 3,7 GB |
 | 210 King Street (39 Geschosse, 3 Fachmodelle) | 155 MB | 12.934 | 2 min | 3 min | 1,5 min | 1,3 GB |
 | ACCA Viadotto Acerno (Brücke, IFC4.3) | 33 MB | 6.546 | 1,5 min | 2,5 min | 1,5 min | 1,5 GB |
+
+Die Zeiten wurden mit dem Kern „Schnell“ gemessen. Mit dem Standard „Genau“ dauert die Umwandlung auf dem Laptop (4 Threads) meist 1,2–2× so lang (210 King: `.3dm` Netze 2,2 statt 1,4 min, `.glb` 1,7 statt 0,8 min), bei kleinen Modellen mit vielen detaillierten Revit-Familien bis 8× (revit_arc, 14 MB: 22 statt 3 s); Geländemodelle sind gleich schnell. Auf Rechnern mit vielen Kernen schrumpft der Unterschied, weil dann das Schreiben der Datei den Takt vorgibt.
 
 **Polyflächen bei sehr großen Modellen:** Die Ausgabe wird 1,2–4,5× so groß wie mit Netzen und liegt bis zum Speichern komplett im Arbeitsspeicher (Landsarkivet: 5,7 GB statt 3,7 GB). Für Modelle ab einigen hundert MB ist „Netze“ meist die bessere Wahl; Polyflächen lohnen sich vor allem, wenn in Rhino an Wänden, Decken und Öffnungen weitergearbeitet wird.
 
@@ -107,7 +140,7 @@ Optionen:
 - `-o, --output PFAD`: Ausgabedatei (nur bei einer Eingabedatei)
 - `-d, --out-dir ORDNER`: Ausgabeordner für mehrere Dateien
 - `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: alle Kerne)
-- `--kernel {hybrid,opencascade}`: Geometriekern (Standard: `hybrid`, deutlich schneller)
+- `--kernel {accurate,hybrid,opencascade}`: Geometriekern (Standard: `accurate`, siehe „Geometriekern“)
 
 Auch aus Python nutzbar:
 
@@ -123,6 +156,40 @@ print(result.output, result.elements)
 ```bash
 pytest
 ```
+
+## Windows-App bauen und veröffentlichen
+
+Die Windows-App ist ein mit [PyInstaller](https://pyinstaller.org) gebauter Programmordner (`IFC Converter.exe` ohne Konsole, `ifc-convert.exe` für die Kommandozeile, Bibliotheken in `_internal`), daraus entstehen die portable ZIP und mit [Inno Setup](https://jrsoftware.org/isinfo.php) der Installer. Alles dazu liegt in `packaging/`.
+
+**Automatisch (GitHub Actions, `.github/workflows/build.yml`)** bei jedem Push:
+
+1. Tests unter Linux und Windows.
+2. Build der App, der portablen ZIP und des Installers unter Windows.
+3. Test der gebauten exe: eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben; außerdem muss das Programmfenster starten.
+4. Test des Installers: stille Installation, Umwandlung mit dem installierten Programm, Deinstallation.
+5. Installer und ZIP liegen 7 Tage als Artefakt „IFC-Converter-windows“ am Workflow-Lauf.
+
+**Neue Version veröffentlichen:** `version` in `pyproject.toml` erhöhen, committen und pushen, dann ein Tag setzen:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Der Workflow baut und testet wie oben und legt danach ein GitHub-Release mit Installer, ZIP und `SHA256SUMS.txt` an. Passt das Tag nicht zur Version in `pyproject.toml`, bricht der Build ab.
+
+**Lokal unter Windows bauen** (Python 3.13 und [Inno Setup 6](https://jrsoftware.org/isdl.php) installiert):
+
+```bat
+py -3.13 -m venv .venv-build
+.venv-build\Scripts\python -m pip install -c packaging\constraints.txt ".[build]"
+.venv-build\Scripts\python packaging\build.py
+.venv-build\Scripts\python packaging\smoke_test.py "dist\IFC Converter" --gui
+```
+
+Ergebnis in `dist\`. Ohne Inno Setup: `build.py --no-installer`.
+
+**Feste Versionen:** `packaging/constraints.txt` legt die genauen Versionen von IfcOpenShell, rhino3dm, Qt, NumPy und PyInstaller für Tests und Build fest, damit ein Release genau das enthält, was getestet wurde. Beim Aktualisieren die Maßhaltigkeit mit echten Modellen erneut prüfen (`tools/benchmark.py`).
 
 ## Stresstest mit echten Modellen
 

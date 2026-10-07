@@ -1,7 +1,9 @@
 import os
 import sys
+import threading
 import time
 from functools import partial
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,7 +13,7 @@ from PySide6.QtGui import QDropEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import child_helpers  # noqa: E402
-from ifc_converter import gui, process  # noqa: E402
+from ifc_converter import __version__, gui, process  # noqa: E402
 from ifc_converter.converter import ConversionResult  # noqa: E402
 from ifc_converter.gui import ConversionWorker, FileQueue, Status, format_size  # noqa: E402
 
@@ -56,7 +58,7 @@ def wait_finished(window, timeout_ms=60_000):
 
 
 def test_window_builds_with_defaults(window, tmp_path):
-    assert window.windowTitle() == "IFC File Converter"
+    assert window.windowTitle() == f"IFC Converter {__version__}"
     assert window.fmt == "3dm"
     assert window.output_dir == tmp_path / "out"
     assert not window.convert_button.isEnabled()
@@ -335,7 +337,8 @@ def test_geometry_option_defaults_to_brep_and_follows_format(window):
     assert window.geometry == "brep"
     assert window.geometry_box.isEnabled()
     assert "Polyflächen" in window.geometry_buttons["brep"].text()
-    assert "2–3×" in window.format_hint.text()
+    assert "1,2–4,5× größer" in window.format_hint.text()
+    assert "bei sehr großen Modellen besser „Netze“" in window.format_hint.text()
 
     window.set_format("glb")
     assert not window.geometry_box.isEnabled()
@@ -392,7 +395,7 @@ def test_geometry_is_passed_to_convert_and_logged(window, wall_ifc, fake_convert
     assert not window.geometry_box.isEnabled()  # locked while running
     wait_finished(window)
 
-    assert fake_convert == [{"source": wall_ifc, "fmt": "3dm", "geometry": mode}]
+    assert fake_convert == [{"source": wall_ifc, "fmt": "3dm", "geometry": mode, "kernel": "accurate"}]
     assert label in window.log_view.toPlainText()
     assert window.status_text(0) == "Fertig – 3 Bauteile"
     assert window.geometry_box.isEnabled()
@@ -403,7 +406,7 @@ def test_geometry_is_not_passed_for_other_formats(window, wall_ifc, fake_convert
     window.add_paths([wall_ifc])
     window.start_conversion()
     wait_finished(window)
-    assert fake_convert == [{"source": wall_ifc, "fmt": "glb"}]
+    assert fake_convert == [{"source": wall_ifc, "fmt": "glb", "kernel": "accurate"}]
     assert "→ GLB," in window.log_view.toPlainText()
 
 
@@ -493,3 +496,311 @@ def test_crash_removes_glb_temp_files(window, wall_ifc, tmp_path, monkeypatch):
     wait_finished(window)
     assert window.queue[0].status is Status.FAILED
     assert list((tmp_path / "out").iterdir()) == []
+
+
+# ------------------------------------------------------------- app polish
+
+
+from ifc_converter.dialogs import (  # noqa: E402
+    AboutDialog,
+    ErrorDialog,
+    ErrorReporter,
+    Preferences,
+    SettingsDialog,
+)
+
+
+def test_preferences_round_trip_and_defaults(settings):
+    prefs = Preferences.load(settings)
+    assert prefs == Preferences(threads=0, kernel="accurate", low_priority=True, open_output=False)
+    assert prefs.effective_threads == process.auto_threads()
+
+    Preferences(threads=2, kernel="opencascade", low_priority=False, open_output=True).save(settings)
+    loaded = Preferences.load(settings)
+    assert loaded == Preferences(threads=2, kernel="opencascade", low_priority=False, open_output=True)
+    assert loaded.effective_threads == 2
+
+
+def test_invalid_preferences_fall_back(settings):
+    settings.setValue("threads", "viele")
+    settings.setValue("kernel_strategy", "cgal-magic")
+    assert Preferences.load(settings) == Preferences()
+    settings.setValue("threads", 100_000)  # from a machine with more cores
+    assert Preferences.load(settings).threads == process.cpu_count()
+
+
+def test_settings_of_earlier_versions(settings):
+    # "hybrid" was the default and saved along with any setting: now the accurate strategy applies.
+    settings.setValue("kernel", "hybrid")
+    assert Preferences.load(settings).kernel == "accurate"
+    settings.setValue("kernel", "opencascade")
+    assert Preferences.load(settings).kernel == "opencascade"
+    settings.setValue("kernel_strategy", "hybrid")
+    assert Preferences.load(settings).kernel == "hybrid"
+
+
+def test_settings_dialog_offers_the_kernel_strategies(app):
+    dialog = SettingsDialog(Preferences())
+    assert list(dialog.kernel_buttons) == ["accurate", "hybrid", "opencascade"]
+    assert [b.text() for b in dialog.kernel_buttons.values()] == ["Genau (empfohlen)", "Schnell", "Nur OpenCASCADE"]
+    assert dialog.kernel_buttons["accurate"].isChecked()
+    dialog.deleteLater()
+
+
+def test_settings_dialog_edits_preferences(app):
+    dialog = SettingsDialog(Preferences(threads=3, kernel="opencascade", low_priority=False, open_output=True))
+    assert dialog.preferences() == Preferences(threads=3, kernel="opencascade", low_priority=False, open_output=True)
+    assert dialog.threads_spin.maximum() == process.cpu_count()
+    assert dialog.threads_spin.specialValueText() == f"Automatisch ({process.auto_threads()})"
+
+    dialog.threads_spin.setValue(0)
+    dialog.kernel_buttons["hybrid"].setChecked(True)
+    assert dialog.preferences().kernel == "hybrid" and dialog.preferences().threads == 0
+
+    dialog.buttons.button(dialog.buttons.StandardButton.RestoreDefaults).click()
+    assert dialog.preferences() == Preferences()
+    dialog.deleteLater()
+
+
+def test_settings_from_the_dialog_are_saved_and_used(window, settings, monkeypatch):
+    chosen = Preferences(threads=2, kernel="opencascade", low_priority=False, open_output=False)
+    monkeypatch.setattr(SettingsDialog, "exec", lambda self: SettingsDialog.DialogCode.Accepted)
+    monkeypatch.setattr(SettingsDialog, "preferences", lambda self: chosen)
+    window.show_settings()
+    assert window.preferences == chosen
+    assert Preferences.load(settings) == chosen
+
+
+@pytest.fixture
+def child_calls(monkeypatch):
+    """Replace convert_in_child() in the GUI module and record its arguments."""
+    calls = []
+
+    def fake(source, target, fmt, threads, progress, cancelled, on_retry=None, low_priority=True, **options):
+        calls.append({"threads": threads, "low_priority": low_priority, **options})
+        progress(0)
+        target.write_text("fake")
+        progress(100)
+        return ConversionResult(output=target, elements=1)
+
+    monkeypatch.setattr(gui, "convert_in_child", fake)
+    return calls
+
+
+def test_preferences_reach_the_conversion(window, wall_ifc, child_calls):
+    window.preferences = Preferences(threads=3, kernel="opencascade", low_priority=False)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert child_calls == [{"threads": 3, "low_priority": False, "kernel": "opencascade"}]
+    assert "Geometriekern Nur OpenCASCADE" in window.log_view.toPlainText()
+
+
+def test_automatic_threads_and_low_priority_by_default(window, wall_ifc, child_calls):
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert child_calls == [{"threads": process.auto_threads(), "low_priority": True, "kernel": "accurate"}]
+    assert "Geometriekern" not in window.log_view.toPlainText()
+
+
+def test_keyboard_shortcuts(window):
+    def keys(action):
+        return [s.toString() for s in action.shortcuts()]
+
+    assert keys(window.add_files_action) == ["Ctrl+O"]
+    assert keys(window.convert_action) == ["Ctrl+Return", "Ctrl+Enter"]
+    assert "Del" in keys(window.remove_action)
+    assert keys(window.settings_action) == ["Ctrl+,"]
+    # Every action lives on the window, so its shortcut works without opening a menu.
+    for action in (window.add_files_action, window.convert_action, window.remove_action):
+        assert action in window.actions()
+
+
+def test_convert_and_remove_actions(window, wall_ifc, tmp_path, child_calls):
+    other = tmp_path / "zweite.ifc"
+    other.write_text("x")
+    window.add_paths([wall_ifc, other])
+    window.table.selectRow(1)
+    assert window.remove_action.isEnabled()
+    window.remove_action.trigger()
+    assert [item.path for item in window.queue.items] == [wall_ifc]
+
+    window.set_format("glb")
+    window.convert_action.trigger()
+    assert not window.convert_action.isEnabled() and not window.add_files_action.isEnabled()
+    wait_finished(window)
+    assert window.queue[0].status is Status.DONE
+    assert window.convert_action.isEnabled()
+
+
+def test_help_menu_has_log_output_and_about(window):
+    menus = {action.text(): action.menu() for action in window.menuBar().actions()}
+    assert list(menus) == ["&Datei", "&Bearbeiten", "E&xtras", "&Hilfe"]
+    help_items = [action.text() for action in menus["&Hilfe"].actions() if not action.isSeparator()]
+    assert help_items == ["Ausgabeordner öffnen", "Logdatei öffnen", "Über IFC Converter"]
+
+
+def test_finished_notification_in_background(window, wall_ifc, child_calls, monkeypatch):
+    alerts = []
+    monkeypatch.setattr(gui.QApplication, "alert", lambda widget, msec=0: alerts.append(widget))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+    titles = []
+    window.windowTitleChanged.connect(titles.append)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+
+    assert any(title.startswith("100 % – IFC Converter") for title in titles)  # progress in the taskbar
+    assert window.windowTitle() == f"✓ Fertig – IFC Converter {__version__}"
+    assert alerts == [window]
+    assert window.status_label.text().startswith("✓ Fertig nach")
+    assert window.status_label.property("state") == "done"
+
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    window.changeEvent(gui.QEvent(gui.QEvent.Type.ActivationChange))
+    assert window.windowTitle() == f"IFC Converter {__version__}"
+
+
+def test_failures_are_shown_in_the_status(window, wall_ifc, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.raise_error)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert window.status_label.property("state") == "failed"
+    assert "1 mit Fehler" in window.status_label.text()
+
+
+def test_output_folder_opens_after_batch_if_wanted(window, wall_ifc, tmp_path, child_calls, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert opened == []
+
+    window.preferences = Preferences(open_output=True)
+    window.start_conversion()
+    wait_finished(window)
+    assert [Path(p) for p in opened] == [tmp_path / "out"]
+
+
+def test_window_state_and_table_columns_are_remembered(app, settings):
+    first = gui.MainWindow(settings=settings)
+    first.table.setColumnWidth(2, 345)
+    first.close()
+    second = gui.MainWindow(settings=settings)
+    assert second.table.columnWidth(2) == 345
+    second.close()
+
+
+def test_receive_paths_from_another_start(window, wall_ifc):
+    window.receive_paths([str(wall_ifc)])
+    assert [item.path for item in window.queue.items] == [wall_ifc]
+    window.receive_paths([])  # only brings the window to the front
+    assert len(window.queue) == 1
+
+
+def _unique_name():
+    return f"ifc-converter-test-{os.getpid()}-{time.monotonic_ns()}"
+
+
+def test_second_start_hands_its_files_to_the_running_app(app, wall_ifc):
+    name = _unique_name()
+    server = gui.InstanceServer(name)
+    assert server.listen()
+    received = []
+    server.paths_received.connect(received.append)
+    sent = {}
+    # The second start blocks while it sends, so it runs in a thread; this one runs the event loop.
+    sender = threading.Thread(target=lambda: sent.setdefault("ok", gui.send_to_running_instance([str(wall_ifc)], name)))
+    sender.start()
+    deadline = time.monotonic() + 10
+    while not received and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    sender.join(5)
+    assert sent["ok"] is True
+    assert received == [[str(wall_ifc)]]
+    server.server.close()
+
+
+def test_first_start_finds_no_running_app(app):
+    assert gui.send_to_running_instance(["x.ifc"], _unique_name(), timeout_ms=200) is False
+
+
+def test_settings_are_taken_over_from_the_old_app_name(app, tmp_path):
+    legacy = QSettings(str(tmp_path / "old.ini"), QSettings.Format.IniFormat)
+    legacy.setValue("format", "obj")
+    legacy.setValue("output_dir", str(tmp_path))
+    legacy.sync()
+
+    path = tmp_path / "new" / "settings.ini"
+    settings = gui.open_settings(path, legacy)
+    assert settings.value("format") == "obj"
+    assert path.is_file()
+    assert QSettings(str(path), QSettings.Format.IniFormat).value("output_dir") == str(tmp_path)
+
+    legacy.setValue("format", "glb")  # only taken over once
+    assert gui.open_settings(path, legacy).value("format") == "obj"
+
+
+def test_about_dialog_shows_versions_and_licenses(app):
+    dialog = AboutDialog()
+    texts = "\n".join(label.text() for label in dialog.findChildren(gui.QLabel))
+    assert f"Version {__version__}" in texts
+    for expected in ("IfcOpenShell", "LGPL-3.0", "rhino3dm", "MIT", "github.com/Sh4wN98/IFC-Converter"):
+        assert expected in texts
+    dialog.copy_button.click()
+    assert f"IFC Converter: {__version__}" in QApplication.clipboard().text()
+    dialog.deleteLater()
+
+
+def test_error_dialog_copies_details(app):
+    dialog = ErrorDialog("ValueError: kaputt", "Traceback …\nValueError: kaputt")
+    dialog.copy_button.click()
+    assert QApplication.clipboard().text() == "Traceback …\nValueError: kaputt"
+    assert dialog.copy_button.text() == "Kopiert ✓"
+    dialog.deleteLater()
+
+
+def test_error_reporter_shows_one_dialog_at_a_time(app):
+    reporter = ErrorReporter()
+    threading.Thread(target=lambda: reporter.report("A", "a")).start()
+    reporter.report("B", "b")
+    deadline = time.monotonic() + 5
+    while reporter.dialog is None and time.monotonic() < deadline:
+        app.processEvents()
+    app.processEvents()
+    first = reporter.dialog
+    assert first is not None and first.details in ("a", "b")
+    assert len([w for w in QApplication.topLevelWidgets() if isinstance(w, ErrorDialog) and w.isVisible()]) <= 1
+    first.accept()
+    app.processEvents()
+    assert reporter.dialog is None
+    reporter.report("C", "c")
+    app.processEvents()
+    assert reporter.dialog is not None and reporter.dialog.details == "c"
+    reporter.dialog.accept()
+
+
+def test_error_in_a_slot_shows_the_error_dialog(app, monkeypatch):
+    from ifc_converter.app import install_exception_hooks
+
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    reporter = ErrorReporter()
+    install_exception_hooks(reporter.report)
+    QTimer.singleShot(0, lambda: {}["fehlt"])
+    deadline = time.monotonic() + 5
+    while reporter.dialog is None and time.monotonic() < deadline:
+        app.processEvents()
+    assert reporter.dialog is not None
+    assert "KeyError: 'fehlt'" in reporter.dialog.details
+    reporter.dialog.accept()
+    app.processEvents()

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import multiprocessing
 import os
 import sys
 from collections.abc import Callable, Iterator
@@ -23,12 +22,24 @@ GEOMETRIES = ("brep", "mesh")
 # Grids are only lines, which GLB/OBJ meshes cannot show (the Rhino export writes them as curves).
 EXCLUDED_CLASSES = ["IfcOpeningElement", "IfcSpace", "IfcGrid"]
 
-# Geometry kernels of IfcOpenShell. The hybrid one (CGAL for meshes and simple solids, OpenCASCADE
-# for the rest) was 3-13x faster on real models with the same geometry in all but 1 of ~8000 elements,
-# and handles large triangulated terrain in seconds where OpenCASCADE alone took over 20 minutes.
-KERNELS = {"hybrid": "hybrid-cgal-simple-opencascade", "opencascade": "opencascade"}
+# Geometry libraries of IfcOpenShell. The hybrid one (CGAL for meshes and simple solids, OpenCASCADE
+# for the rest) is 3-13x faster on real models and handles large triangulated terrain in seconds where
+# OpenCASCADE alone took over 20 minutes. But it drops or duplicates faces of some elements depending
+# on the thread count and on the other elements computed with them (an ArchiCAD wall lost 24 % of its
+# surface, Revit families and skylights got faces twice), so the result is not reproducible.
+LIBRARIES = {"hybrid": "hybrid-cgal-simple-opencascade", "opencascade": "opencascade"}
+# Kernel strategies: "accurate" computes everything with OpenCASCADE except elements made only of
+# large triangle meshes (see _triangle_mesh_only), which the hybrid kernel passes through unchanged
+# (identical to OpenCASCADE on every such element of the test models) in a fraction of the time.
+# "hybrid" uses the hybrid kernel for everything (OpenCASCADE where it gives up), "opencascade" only
+# OpenCASCADE.
+KERNELS = ("accurate", "hybrid", "opencascade")
 # IFC_CONVERTER_KERNEL overrides the default, also for conversions running in child processes.
-DEFAULT_KERNEL = "hybrid"
+DEFAULT_KERNEL = "accurate"
+# "accurate" leaves triangle meshes with fewer triangles to OpenCASCADE: they take it no time.
+MIN_HYBRID_TRIANGLES = 1000
+# Representations that never become a body (curves, boxes, points), for _triangle_mesh_only.
+NON_BODY_TYPES = ("Curve", "Curve2D", "Curve3D", "BoundingBox", "Point", "PointCloud")
 _kernel: ContextVar[str | None] = ContextVar("kernel", default=None)
 # Number of elements iter_shapes was asked to process during the current conversion.
 _candidates: ContextVar[list[int] | None] = ContextVar("candidates", default=None)
@@ -41,13 +52,35 @@ UNIT_MEASURES = {
     "PLANEANGLEUNIT": "IfcPlaneAngleMeasure",
 }
 
+# Largest distance (metres) of the triangles of curved surfaces from the true surface. The kernels'
+# default (1 mm) equals Rhino's 1 mm tolerance; half of it keeps round columns, pipes and arcs well
+# inside it, for about 1 % larger files (measured on Clinic, Revit STR/MEP).
+LINEAR_DEFLECTION = 0.0005
+
 # Called with the conversion progress in percent (0-100). It may raise to abort the conversion.
 # The first call (0) comes once the IFC file has been read, which can take minutes for large models.
 ProgressCallback = Callable[[int], None]
 
 # The geometry iterator keeps every shape it has produced until it is destroyed, so its memory
-# grows with the model. Running a fresh iterator per chunk of elements keeps that bounded.
+# grows with the model. Running a fresh iterator per chunk of elements keeps that bounded. Each
+# chunk starts the threads anew and ends with them waiting for its slowest element, so chunks grow
+# with the thread count: CHUNK_PER_THREAD elements per thread (on 2 threads, 400 instead of 200
+# took the kernel 11-16 s instead of 19-33 s for Clinic_Architectural), at least CHUNK_SIZE and at
+# most MAX_CHUNK_SIZE elements (the shapes of 1600 elements took ~10 MB more there).
 CHUNK_SIZE = 200
+CHUNK_PER_THREAD = 50
+MAX_CHUNK_SIZE = 2000
+
+# Cores left free by default for the user's other programs: it is a work PC.
+SPARE_CORES = 2
+# By default at most this many threads: beyond it the kernel only waits for the Python stage (measured),
+# while each thread can hold up to MEMORY_PER_THREAD for a heavy element.
+MAX_DEFAULT_THREADS = 16
+# The geometry iterator never runs on fewer threads than this. Running on one thread takes another
+# code path in IfcOpenShell's hybrid kernel, which gives some mapped items every triangle twice
+# (Revit fixtures, ArchiCAD skylights: 212 of 1162 triangles), so the result depended on how much
+# memory happened to be free.
+MIN_THREADS = 2
 
 # Each geometry thread can need this much RAM for a heavy element (a detailed Revit family took
 # ~700 MB), so fewer threads run when memory gets tight.
@@ -106,7 +139,7 @@ def convert(
         raise ValueError(f"IFC-Version wird nicht unterstützt ({exc}). Unterstützt werden: {supported}.") from exc
     repair_units(model)
     merge_projects(model)
-    threads = threads or multiprocessing.cpu_count()
+    threads = threads or default_threads()
     token = _kernel.set(kernel)
     candidates = [0]
     candidates_token = _candidates.set(candidates)
@@ -139,6 +172,17 @@ def convert(
     if progress:
         progress(100)
     return ConversionResult(output=output_path, elements=elements, skipped=max(0, candidates[0] - elements))
+
+
+def default_threads() -> int:
+    """All logical CPUs this process may use but SPARE_CORES, at least one, at most MAX_DEFAULT_THREADS."""
+    count = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
+    return max(1, min((count or 1) - SPARE_CORES, MAX_DEFAULT_THREADS))
+
+
+def chunk_size(threads: int) -> int:
+    """The number of elements per geometry iterator for ``threads`` threads."""
+    return min(max(CHUNK_SIZE, CHUNK_PER_THREAD * threads), MAX_CHUNK_SIZE)
 
 
 def repair_units(model: ifcopenshell.file) -> None:
@@ -191,6 +235,23 @@ def _unit_scales(project: ifcopenshell.entity_instance) -> tuple:
     )
 
 
+@dataclass
+class ChunkEnd:
+    """Yielded by ``iter_shapes(..., chunk_ends=True)`` after the last shape of a chunk."""
+
+    # The ids of the chunk's products, in model order. The kernel's threads deliver shapes in
+    # whatever order they finish, which differs from run to run.
+    ids: list[int]
+
+
+def shape_products(model: ifcopenshell.file, exclude: list[str]) -> list[ifcopenshell.entity_instance]:
+    """The products ``iter_shapes`` computes shapes for."""
+    return [
+        product for product in model.by_type("IfcProduct")
+        if _has_3d_shape(product) and not any(product.is_a(name) for name in exclude)
+    ]
+
+
 def iter_shapes(
     model: ifcopenshell.file,
     settings: geom.settings,
@@ -198,38 +259,58 @@ def iter_shapes(
     exclude: list[str],
     progress: ProgressCallback | None = None,
     progress_share: int = 100,
+    products: list[ifcopenshell.entity_instance] | None = None,
+    chunk_ends: bool = False,
 ) -> Iterator:
     """Yield the triangulated shape of every product, computed chunk by chunk to cap memory use.
 
-    Progress is reported from 0 up to ``progress_share`` percent.
+    Progress is reported from 0 up to ``progress_share`` percent. ``products`` may pass in
+    ``shape_products(model, exclude)`` if already known. With ``chunk_ends`` a ChunkEnd follows
+    the shapes of each chunk.
     """
-    products = [
-        product for product in model.by_type("IfcProduct")
-        if _has_3d_shape(product) and not any(product.is_a(name) for name in exclude)
-    ]
+    if products is None:
+        products = shape_products(model, exclude)
     counter = _candidates.get()
     if counter is not None:
         counter[0] += len(products)
+    strategy = kernel_strategy()
     library = geometry_library()
     local = not settings.get("use-world-coords")
-    for start in range(0, len(products), CHUNK_SIZE):
-        chunk = products[start:start + CHUNK_SIZE]
+    size = chunk_size(threads)
+    for start in range(0, len(products), size):
+        chunk = products[start:start + size]
+        if strategy == "accurate":
+            hybrid = [product for product in chunk if _triangle_mesh_only(product)]
+            fast = {product.id() for product in hybrid}
+            rest = [product for product in chunk if product.id() not in fast]
+            parts = [(hybrid, LIBRARIES["hybrid"]), (rest, LIBRARIES["opencascade"])]
+        else:
+            hybrid = chunk if strategy == "hybrid" else []
+            parts = [(chunk, library)]
         done = set()
         # In local coordinates the kernel returns empty geometry for type geometry (mapped items)
         # with openings cut into it, e.g. Revit cabinets with a sink cut-out: those are redone in
         # world coordinates, which the serializers and the Rhino export accept as well.
         empty = []
-        for shape in _iterate(model, settings, threads, chunk, library):
-            done.add(shape.id)
-            if local and not shape.geometry.verts:
-                empty.append(model.by_id(shape.id))
-            else:
-                yield shape
-        if library != KERNELS["opencascade"]:
-            # The hybrid kernel gives up on some shapes that OpenCASCADE can still build.
-            missing = [product for product in chunk if product.id() not in done]
+        for part, part_library in parts:
+            if not part:
+                continue
+            for shape in _iterate(model, settings, threads, part, part_library):
+                done.add(shape.id)
+                if local and not shape.geometry.verts:
+                    empty.append(model.by_id(shape.id))
+                else:
+                    yield shape
+        if hybrid:
+            # The hybrid kernel gives up on some shapes that OpenCASCADE can still build, and leaves
+            # type geometry with openings empty in local coordinates, where OpenCASCADE builds it:
+            # in world coordinates GLB would store it in single precision (0.2 m off 5,000 km out).
+            hybrid_ids = {product.id() for product in hybrid}
+            missing = [product for product in hybrid if product.id() not in done]
+            missing += [product for product in empty if product.id() in hybrid_ids]
+            empty = [product for product in empty if product.id() not in hybrid_ids]
             if missing:
-                for shape in _iterate(model, settings, threads, missing, KERNELS["opencascade"]):
+                for shape in _iterate(model, settings, threads, missing, LIBRARIES["opencascade"]):
                     if local and not shape.geometry.verts:
                         empty.append(model.by_id(shape.id))
                     else:
@@ -241,9 +322,33 @@ def iter_shapes(
             finally:
                 settings.set("use-world-coords", False)
             yield from world
+        if chunk_ends:
+            yield ChunkEnd([product.id() for product in chunk])
         _release_memory()
         if progress:
             progress((start + len(chunk)) * progress_share // len(products))
+
+
+def _triangle_mesh_only(product: ifcopenshell.entity_instance) -> bool:
+    """Whether the product's 3D body is only triangle meshes (IfcTriangulatedFaceSet, also terrain as
+    IfcTriangulatedIrregularNetwork, directly or as type geometry) with at least MIN_HYBRID_TRIANGLES
+    triangles and without openings: what "accurate" leaves to the hybrid kernel."""
+    if getattr(product, "HasOpenings", None):
+        return False
+    triangles = 0
+    for representation in product.Representation.Representations:
+        if not representation.is_a("IfcShapeModel") or representation.RepresentationType in NON_BODY_TYPES:
+            continue
+        items = list(representation.Items)
+        while items:
+            item = items.pop()
+            if item.is_a("IfcMappedItem"):
+                items.extend(item.MappingSource.MappedRepresentation.Items)
+            elif item.is_a("IfcTriangulatedFaceSet"):
+                triangles += len(item.CoordIndex)
+            else:
+                return False
+    return triangles >= MIN_HYBRID_TRIANGLES
 
 
 def _has_3d_shape(product: ifcopenshell.entity_instance) -> bool:
@@ -275,7 +380,7 @@ def _has_3d_shape(product: ifcopenshell.entity_instance) -> bool:
 def _iterate(model, settings, threads: int, products: list, library: str) -> Iterator:
     """Yield the shapes of ``products`` from one geometry iterator, which is freed afterwards."""
     iterator = geom.iterator(
-        settings, model, _affordable_threads(threads), include=products, geometry_library=library,
+        settings, model, _kernel_threads(threads), include=products, geometry_library=library,
     )
     initialized = iterator.initialize()  # False when nothing among the products has geometry...
     if not initialized:
@@ -284,7 +389,7 @@ def _iterate(model, settings, threads: int, products: list, library: str) -> Ite
         valid = [product for product in products if all(r.Items for r in product.Representation.Representations)]
         if valid and len(valid) < len(products):
             iterator = geom.iterator(
-                settings, model, _affordable_threads(threads), include=valid, geometry_library=library,
+                settings, model, _kernel_threads(threads), include=valid, geometry_library=library,
             )
             initialized = iterator.initialize()
     if initialized:
@@ -295,9 +400,20 @@ def _iterate(model, settings, threads: int, products: list, library: str) -> Ite
     del iterator
 
 
+def kernel_strategy() -> str:
+    """The kernel strategy of the running conversion (one of KERNELS)."""
+    return _kernel.get() or os.environ.get("IFC_CONVERTER_KERNEL", DEFAULT_KERNEL).lower()
+
+
 def geometry_library() -> str:
-    """The IfcOpenShell geometry library of the running conversion, for geom.iterator."""
-    return KERNELS[_kernel.get() or os.environ.get("IFC_CONVERTER_KERNEL", DEFAULT_KERNEL).lower()]
+    """The IfcOpenShell geometry library for whole groups of elements in the running conversion, for
+    geom.iterator: OpenCASCADE unless the strategy is "hybrid"."""
+    return LIBRARIES["hybrid" if kernel_strategy() == "hybrid" else "opencascade"]
+
+
+def _kernel_threads(threads: int) -> int:
+    """The threads to run a geometry iterator on: what memory allows, but at least MIN_THREADS."""
+    return max(MIN_THREADS, _affordable_threads(threads))
 
 
 def _affordable_threads(threads: int) -> int:
@@ -335,6 +451,7 @@ _malloc_trim = _load_malloc_trim()
 def _serialize(model, output_path: Path, fmt: str, threads: int, progress: ProgressCallback | None) -> int:
     """Write GLB/OBJ with IfcOpenShell's built-in serializers."""
     settings = geom.settings()
+    settings.set("mesher-linear-deflection", LINEAR_DEFLECTION)
 
     # Geometry from the iterator is already in metres, so the scale is fixed at 1.
     serializer = getattr(geom.serializers, fmt)(str(output_path), settings)
@@ -354,7 +471,9 @@ def _serialize(model, output_path: Path, fmt: str, threads: int, progress: Progr
 
 def memory_warning(input_path: str | Path) -> str | None:
     """A warning if the file probably needs more RAM than the machine has free, else None."""
-    needed = Path(input_path).stat().st_size * MEMORY_PER_IFC_BYTE + MEMORY_BASE
+    size = Path(input_path).stat().st_size
+    # The working memory on top of the model only matters for real models, not for tiny test files.
+    needed = size * MEMORY_PER_IFC_BYTE + min(MEMORY_BASE, size * 20)
     available = available_memory()
     if available is None or needed <= available:
         return None

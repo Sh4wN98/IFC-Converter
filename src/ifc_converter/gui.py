@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import getpass
+import json
+import logging
 import multiprocessing
 import os
+import re
 import sys
 import threading
 import time
@@ -11,8 +15,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRect, QSettings, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QPalette, QShortcut
+from PySide6.QtCore import QEvent, QObject, QRect, QSettings, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPalette
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -41,7 +46,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ifc_converter.converter import FORMATS, convert
+from ifc_converter import __version__
+from ifc_converter import app as app_info
+from ifc_converter.app import APP_NAME, enable_crash_log, install_exception_hooks, setup_logging
+from ifc_converter.converter import DEFAULT_KERNEL, FORMATS, convert
+from ifc_converter.dialogs import (
+    KERNEL_INFO,
+    AboutDialog,
+    ErrorReporter,
+    Preferences,
+    SettingsDialog,
+    app_icon,
+    open_log,
+)
 from ifc_converter.interactive import (
     SKIPPED_HINT,
     check_memory,
@@ -54,7 +71,8 @@ from ifc_converter.interactive import (
 )
 from ifc_converter.process import RETRY_MESSAGE, Cancelled, convert_in_child
 
-APP_NAME = "IFC File Converter"
+# The app's name before it was renamed; its settings are taken over once (see open_settings()).
+LEGACY_NAME = "IFC File Converter"
 DEFAULT_FORMAT = "3dm"
 DEFAULT_GEOMETRY = "brep"
 SIDE_WIDTH = 320  # settings column on the right
@@ -71,7 +89,8 @@ GEOMETRY_INFO = {
     "brep": (
         "Polyflächen (empfohlen)",
         "Wände, Decken, Fenster … als geschlossene Polyflächen mit echten Öffnungen. Sehr detaillierte "
-        "Objekte (Möbel, Sanitär, Leuchten) bleiben Netze. Datei ca. 2–3× größer.",
+        "Objekte (Möbel, Sanitär, Leuchten) bleiben Netze. Datei je nach Modell 1,2–4,5× größer – "
+        "bei sehr großen Modellen besser „Netze“ wählen.",
     ),
     "mesh": ("Netze (Meshes)", "Kleinste Dateien, schnellste Umwandlung."),
 }
@@ -81,6 +100,8 @@ ERROR_COLOR = QColor("#d64545")
 PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 1
 # QueueItem.progress while the IFC file is still being read: convert() reports progress(0) only afterwards.
 READING = -1
+
+log = logging.getLogger("ifc_converter.gui")  # also when run as __main__
 
 
 # --------------------------------------------------------------------------- model
@@ -234,6 +255,8 @@ class ConversionWorker(QObject):
         out_dir: Path | None,
         threads: int | None = None,
         geometry: str = DEFAULT_GEOMETRY,
+        kernel: str | None = None,
+        low_priority: bool = True,
     ):
         super().__init__()
         self.jobs = jobs
@@ -241,6 +264,8 @@ class ConversionWorker(QObject):
         self.geometry = geometry
         self.out_dir = out_dir
         self.threads = threads
+        self.kernel = kernel
+        self.low_priority = low_priority
         self._cancel = threading.Event()
 
     def cancel(self) -> None:
@@ -282,6 +307,8 @@ class ConversionWorker(QObject):
         try:
             # The geometry mode only exists for Rhino, so GLB/OBJ calls leave it out.
             options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
+            if self.kernel:
+                options["kernel"] = self.kernel
             if self.use_subprocess:
 
                 def retrying() -> None:
@@ -291,7 +318,7 @@ class ConversionWorker(QObject):
 
                 result = convert_in_child(
                     source, target, self.fmt, self.threads, progress, self._cancel.is_set,
-                    on_retry=retrying, **options,
+                    on_retry=retrying, low_priority=self.low_priority, **options,
                 )
             else:
                 result = convert(source, target, self.fmt, self.threads, progress, **options)
@@ -300,6 +327,8 @@ class ConversionWorker(QObject):
                 _discard(path)
             self.file_cancelled.emit(row)
         except Exception as exc:  # one broken file must not stop the batch
+            if not self.use_subprocess:  # convert_in_child() logs its failures itself
+                log.exception("Fehler bei %s", source)
             for path in [target, *side_files]:
                 _discard(path)
             self.file_failed.emit(row, str(exc) or type(exc).__name__)
@@ -371,6 +400,8 @@ class DropZone(QFrame):
 
 STYLESHEET = """
 QLabel#AppTitle { font-size: 20px; font-weight: 600; }
+QLabel#Status[state="done"] { color: #2e9d57; font-weight: 600; }
+QLabel#Status[state="failed"] { color: #d64545; font-weight: 600; }
 QLabel#DropIcon { font-size: 26px; color: palette(highlight); }
 QLabel#DropTitle { font-size: 15px; font-weight: 600; }
 #DropZone {
@@ -448,7 +479,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None):
         super().__init__(parent)
-        self.settings = settings or QSettings(APP_NAME, APP_NAME)
+        self.settings = settings or open_settings()
+        self.preferences = Preferences.load(self.settings)
         self.queue = FileQueue()
         self._thread: QThread | None = None
         self._worker: ConversionWorker | None = None
@@ -456,9 +488,11 @@ class MainWindow(QMainWindow):
         self._run_done = 0
         self._run_failed = 0
         self._last_output_dir: Path | None = None
+        self._started_at = time.monotonic()
         self._warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
 
-        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(app_icon())
+        self._set_title()
         self.setMinimumSize(860, 600)
         available = self.screen().availableGeometry()
         self.resize(min(1000, available.width() - 40), min(720, available.height() - 40))
@@ -466,6 +500,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLESHEET)
 
         self._build_ui()
+        self._build_menus()
         self._load_settings()
         # Never allow the window to get smaller than its content needs.
         self.setMinimumSize(self.minimumSize().expandedTo(self.centralWidget().minimumSizeHint()))
@@ -479,13 +514,19 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(10)
 
+        logo = QLabel()
+        logo.setPixmap(app_icon().pixmap(44, 44))
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
         subtitle = _muted(QLabel("IFC-Gebäudemodelle in 3D-Formate umwandeln"))
-        header = QVBoxLayout()
-        header.setSpacing(0)
-        header.addWidget(title)
-        header.addWidget(subtitle)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        header.addWidget(logo)
+        header.addLayout(titles, stretch=1)
         root.addLayout(header)
 
         body = QHBoxLayout()
@@ -521,7 +562,6 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.table.cellDoubleClicked.connect(self._open_row_folder)
         left.addWidget(self.table, stretch=1)
-        QShortcut(QKeySequence.StandardKey.Delete, self.table, activated=self.remove_selected)
 
         list_buttons = QHBoxLayout()
         self.remove_button = QPushButton("Entfernen")
@@ -608,6 +648,7 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         self.status_label = _muted(QLabel())
+        self.status_label.setObjectName("Status")
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.open_button = QPushButton("Ausgabeordner öffnen")
         self.open_button.clicked.connect(self.open_output_dir)
@@ -616,6 +657,7 @@ class MainWindow(QMainWindow):
         self.convert_button = QPushButton("Konvertieren")
         self.convert_button.setObjectName("Primary")
         self.convert_button.setDefault(True)
+        self.convert_button.setToolTip("Strg+Enter")
         self.convert_button.clicked.connect(self.start_conversion)
         actions.addWidget(self.status_label, stretch=1)
         actions.addWidget(self.open_button)
@@ -624,6 +666,45 @@ class MainWindow(QMainWindow):
         root.addLayout(actions)
 
         self.setCentralWidget(central)
+
+    def _build_menus(self) -> None:
+        def action(text: str, slot, shortcuts=()) -> QAction:
+            act = QAction(text, self)
+            act.triggered.connect(slot)
+            act.setShortcuts([QKeySequence(s) for s in shortcuts])
+            act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            self.addAction(act)  # shortcuts also work while the menu bar is hidden
+            return act
+
+        self.add_files_action = action("Dateien hinzufügen…", self.browse_files, ["Ctrl+O"])
+        self.add_folder_action = action("Ordner hinzufügen…", self.browse_folder, ["Ctrl+Shift+O"])
+        self.convert_action = action("Konvertieren", self.start_conversion, ["Ctrl+Return", "Ctrl+Enter"])
+        self.cancel_action = action("Abbrechen", self.cancel_conversion)
+        self.quit_action = action("Beenden", self.close, ["Ctrl+Q"])
+        self.remove_action = action("Entfernen", self.remove_selected, [QKeySequence.StandardKey.Delete])
+        self.clear_action = action("Liste leeren", self.clear_list)
+        self.settings_action = action("Einstellungen…", self.show_settings, ["Ctrl+,"])
+        self.open_output_action = action("Ausgabeordner öffnen", self.open_output_dir)
+        self.open_log_action = action("Logdatei öffnen", open_log)
+        self.about_action = action(f"Über {APP_NAME}", self.show_about)
+        self.drop_zone.add_button.setToolTip("Strg+O")
+        self.remove_button.setToolTip("Entf")
+
+        menus = self.menuBar()
+        file_menu = menus.addMenu("&Datei")
+        file_menu.addActions([self.add_files_action, self.add_folder_action])
+        file_menu.addSeparator()
+        file_menu.addActions([self.convert_action, self.cancel_action])
+        file_menu.addSeparator()
+        file_menu.addAction(self.quit_action)
+        edit_menu = menus.addMenu("&Bearbeiten")
+        edit_menu.addActions([self.remove_action, self.clear_action])
+        tools_menu = menus.addMenu("E&xtras")
+        tools_menu.addAction(self.settings_action)
+        help_menu = menus.addMenu("&Hilfe")
+        help_menu.addActions([self.open_output_action, self.open_log_action])
+        help_menu.addSeparator()
+        help_menu.addAction(self.about_action)
 
     def _build_geometry_options(self) -> QWidget:
         """Sub-options under 3DM: polysurfaces or meshes."""
@@ -664,6 +745,9 @@ class MainWindow(QMainWindow):
         geometry = self.settings.value("geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        header = self.settings.value("table_header")
+        if header is not None:
+            self.table.horizontalHeader().restoreState(header)
 
     @property
     def fmt(self) -> str:
@@ -720,6 +804,16 @@ class MainWindow(QMainWindow):
         self.settings.setValue("beside_input", checked)
         self._update_actions()
 
+    def show_settings(self) -> None:
+        dialog = SettingsDialog(self.preferences, self)
+        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            self.preferences = dialog.preferences()
+            self.preferences.save(self.settings)
+            log.info("Einstellungen: %s", self.preferences)
+
+    def show_about(self) -> None:
+        AboutDialog(self).exec()
+
     def choose_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Ausgabeordner wählen", str(self.output_dir))
         if path:
@@ -751,6 +845,13 @@ class MainWindow(QMainWindow):
         if files:
             self.settings.setValue("last_input_dir", str(Path(files[0]).parent))
             self.add_paths(files)
+
+    def browse_folder(self) -> None:
+        start = self.settings.value("last_input_dir", str(Path.home()))
+        folder = QFileDialog.getExistingDirectory(self, "Ordner mit IFC-Dateien hinzufügen", str(start))
+        if folder:
+            self.settings.setValue("last_input_dir", folder)
+            self.add_paths([folder])
 
     def remove_selected(self) -> None:
         if self.is_running:
@@ -835,10 +936,15 @@ class MainWindow(QMainWindow):
         target = "neben den IFC-Dateien" if out_dir is None else str(out_dir)
         geometry = self.geometry
         label = f"3DM ({GEOMETRY_INFO[geometry][0].split(' (')[0]})" if fmt == "3dm" else fmt.upper()
-        self.log(f"▶ {len(rows)} Datei(en) → {label}, Ziel: {target}")
+        prefs = self.preferences
+        kernel = "" if prefs.kernel == DEFAULT_KERNEL else f", Geometriekern {KERNEL_INFO[prefs.kernel][0]}"
+        self.log(f"▶ {len(rows)} Datei(en) → {label}, Ziel: {target}{kernel}")
 
         jobs = [(row, self.queue[row].path) for row in rows]
-        self._worker = ConversionWorker(jobs, fmt, out_dir, geometry=geometry)
+        self._worker = ConversionWorker(
+            jobs, fmt, out_dir, threads=prefs.effective_threads, geometry=geometry, kernel=prefs.kernel,
+            low_priority=prefs.low_priority,
+        )
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -856,15 +962,15 @@ class MainWindow(QMainWindow):
 
         self._update_overall(0)
         self._update_actions()
-        self.status_label.setText("Konvertierung läuft …")
+        self._set_status("Konvertierung läuft …")
         self._started_at = time.monotonic()
         self._thread.start()
 
     def cancel_conversion(self) -> None:
         if self._worker is not None and not self._worker.cancelled:
             self._worker.cancel()
-            self.cancel_button.setEnabled(False)
-            self.status_label.setText("Wird abgebrochen …")
+            self._update_actions()
+            self._set_status("Wird abgebrochen …")
             self.log("■ Abbruch angefordert")
 
     def _on_file_started(self, row: int, target: Path) -> None:
@@ -898,7 +1004,7 @@ class MainWindow(QMainWindow):
 
     def _set_activity(self, text: str) -> None:
         if self._worker is not None and not self._worker.cancelled:
-            self.status_label.setText(text)
+            self._set_status(text)
 
     def _on_file_progress(self, row: int, percent: int) -> None:
         item = self.queue[row]
@@ -949,28 +1055,68 @@ class MainWindow(QMainWindow):
         if cancelled:
             summary += " – abgebrochen"
         summary += f" ({seconds:.1f} s)".replace(".", ",")
-        self.status_label.setText(("Abgebrochen" if cancelled else "Fertig") + f" nach {seconds:.1f} s".replace(".", ","))
         self.overall_progress.setRange(0, 100)
         self.overall_progress.setFormat(summary.split(" (")[0])
         if not cancelled:
             self.overall_progress.setValue(100)
         self.log(f"■ {summary}")
+        self._notify_finished(cancelled, seconds)
         self._update_actions()
+        if self.preferences.open_output and not cancelled and self._run_done and self._last_output_dir:
+            self.open_output_dir()
         self.conversion_finished.emit(cancelled)
+
+    def _notify_finished(self, cancelled: bool, seconds: float) -> None:
+        """Say that the batch is over: in the window, its title and, if it is in the background, the taskbar."""
+        duration = f"{seconds:.1f} s".replace(".", ",")
+        if cancelled:
+            text, state, title = f"Abgebrochen nach {duration}", "", "Abgebrochen"
+        elif self._run_failed:
+            done = f"{self._run_done} fertig, " if self._run_done else ""
+            text, state, title = f"✗ {done}{self._run_failed} mit Fehler – nach {duration}", "failed", "Fehler"
+        else:
+            text, state, title = f"✓ Fertig nach {duration}", "done", "✓ Fertig"
+        self._set_status(text, state)
+        if self.isActiveWindow():
+            self._set_title()
+        else:
+            # Stays until the window is activated again; the taskbar entry flashes (Windows) or is marked.
+            self._set_title(title)
+            QApplication.alert(self)
+
+    def _set_status(self, text: str, state: str = "") -> None:
+        self.status_label.setText(text)
+        if self.status_label.property("state") != state:
+            self.status_label.setProperty("state", state)
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
+
+    def _set_title(self, prefix: str = "") -> None:
+        title = f"{APP_NAME} {__version__}"
+        self.setWindowTitle(f"{prefix} – {title}" if prefix else title)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and not self.is_running:
+            self._set_title()
+        super().changeEvent(event)
 
     def _update_overall(self, current_percent: int) -> None:
         total = len(self._run_rows) or 1
         finished = self._run_done + self._run_failed
         self.overall_progress.setRange(0, 100)
-        value = int((finished * 100 + (current_percent if finished < total else 0)) / total)
-        self.overall_progress.setValue(min(100, value))
+        value = min(100, int((finished * 100 + (current_percent if finished < total else 0)) / total))
+        self.overall_progress.setValue(value)
         self.overall_progress.setFormat(f"{finished} / {total} Dateien – %p %")
+        self._set_title(f"{value} %")  # visible in the taskbar while the window is in the background
 
     # --------------------------------------------------------------- helpers
 
     def open_output_dir(self) -> None:
         folder = self._last_output_dir or self.output_dir
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if folder.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        else:
+            self.log(f"✗ Ausgabeordner gibt es (noch) nicht: {folder}")
 
     def _open_row_folder(self, row: int, _column: int) -> None:
         item = self.queue[row]
@@ -988,6 +1134,13 @@ class MainWindow(QMainWindow):
         self.remove_button.setEnabled(not running and bool(self.table.selectionModel().selectedRows()))
         self.clear_button.setEnabled(not running and has_items)
         self.open_button.setEnabled(not running and self._last_output_dir is not None)
+        for act, button in (
+            (self.convert_action, self.convert_button), (self.cancel_action, self.cancel_button),
+            (self.remove_action, self.remove_button), (self.clear_action, self.clear_button),
+        ):
+            act.setEnabled(button.isEnabled())
+        for act in (self.add_files_action, self.add_folder_action, self.settings_action):
+            act.setEnabled(not running)
         for button in self.format_buttons.values():
             button.setEnabled(not running)
         self.geometry_box.setEnabled(not running and self.fmt == "3dm")
@@ -998,7 +1151,7 @@ class MainWindow(QMainWindow):
         count = len(self.queue)
         self.count_label.setText(f"{count} Datei" if count == 1 else f"{count} Dateien")
         if not running and not self.status_label.text():
-            self.status_label.setText("Dateien hinzufügen und auf „Konvertieren“ klicken.")
+            self._set_status("Dateien hinzufügen und auf „Konvertieren“ klicken.")
 
     # ---------------------------------------------------------- drag & drop
 
@@ -1046,8 +1199,138 @@ class MainWindow(QMainWindow):
                 self._thread.quit()
                 self._thread.wait()
         self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("table_header", self.table.horizontalHeader().saveState())
         self.settings.sync()
         super().closeEvent(event)
+
+    def receive_paths(self, paths: list[str]) -> None:
+        """Files sent by another start of the app (e.g. dropped onto its icon): add them, show the window."""
+        log.info("Zweiter Start: %d Pfad(e) übernommen", len(paths))
+        if paths:
+            if self.is_running:
+                self.log("• Neue Dateien während der Konvertierung – bitte danach erneut hinzufügen.")
+            else:
+                self.add_paths(paths)
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+
+# ------------------------------------------------------------------ app start
+
+
+def open_settings(path: Path | None = None, legacy: QSettings | None = None) -> QSettings:
+    """The settings, in an INI file (also on Windows: easy to find, back up or reset; no registry).
+
+    The first time, the settings of the app's earlier name (registry on Windows) are copied over;
+    the old ones are left alone.
+    """
+    path = path or app_info.settings_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    settings = QSettings(str(path), QSettings.Format.IniFormat)
+    if not path.exists():
+        legacy = legacy if legacy is not None else QSettings(LEGACY_NAME, LEGACY_NAME)
+        keys = legacy.allKeys()
+        for key in keys:
+            settings.setValue(key, legacy.value(key))
+        if keys:
+            settings.sync()
+            log.info("%d Einstellungen von %s übernommen", len(keys), legacy.fileName())
+    return settings
+
+
+def instance_name() -> str:
+    """Name of the local socket (a named pipe on Windows) of the running app, one per user."""
+    try:
+        user = getpass.getuser()
+    except Exception:  # noqa: BLE001 - no user name in the environment
+        user = str(Path.home().name)
+    return "ifc-converter-" + re.sub(r"[^A-Za-z0-9_.-]", "_", user)
+
+
+def send_to_running_instance(paths: list[str], name: str | None = None, timeout_ms: int = 1000) -> bool:
+    """Hand ``paths`` to an already running app; False if there is none.
+
+    Dropping files onto the app's icon starts it again; this keeps one window with one queue (two
+    conversions at once would compete for the memory).
+    """
+    socket = QLocalSocket()
+    socket.connectToServer(name or instance_name())
+    if not socket.waitForConnected(timeout_ms):
+        return False
+    if sys.platform == "win32":
+        try:  # let the running app bring its window to the front
+            import ctypes
+
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)
+        except (OSError, AttributeError):
+            pass
+    socket.write(json.dumps([str(Path(p).absolute()) for p in paths]).encode("utf-8"))
+    socket.flush()
+    sent = socket.waitForBytesWritten(timeout_ms) or socket.bytesToWrite() == 0
+    socket.disconnectFromServer()
+    if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
+        socket.waitForDisconnected(timeout_ms)
+    return sent
+
+
+class InstanceServer(QObject):
+    """Receives the paths of later starts of the app (see send_to_running_instance())."""
+
+    paths_received = Signal(list)
+
+    def __init__(self, name: str | None = None, parent: QObject | None = None):
+        super().__init__(parent)
+        self.name = name or instance_name()
+        self.server = QLocalServer(self)
+        self.server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+        self.server.newConnection.connect(self._accept)
+        self._buffers: dict[QLocalSocket, bytes] = {}
+
+    def listen(self) -> bool:
+        if self.server.listen(self.name):
+            return True
+        # A socket file left behind by a crashed app (Linux/macOS); nobody answered on it.
+        QLocalServer.removeServer(self.name)
+        return self.server.listen(self.name)
+
+    def _accept(self) -> None:
+        while self.server.hasPendingConnections():
+            socket = self.server.nextPendingConnection()
+            self._buffers[socket] = b""
+            socket.readyRead.connect(self._read)
+            socket.disconnected.connect(self._finish)
+            if socket.bytesAvailable():
+                self._read(socket)
+            if socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
+                self._finish(socket)
+
+    @Slot()
+    def _read(self, socket: QLocalSocket | None = None) -> None:
+        socket = socket or self.sender()
+        if socket in self._buffers:
+            self._buffers[socket] += bytes(socket.readAll())
+
+    @Slot()
+    def _finish(self, socket: QLocalSocket | None = None) -> None:
+        socket = socket or self.sender()
+        if socket not in self._buffers:
+            return
+        self._read(socket)
+        data = self._buffers.pop(socket)
+        socket.readyRead.disconnect(self._read)
+        socket.disconnected.disconnect(self._finish)
+        socket.deleteLater()
+        try:
+            paths = json.loads(data.decode("utf-8")) if data else []
+        except (UnicodeDecodeError, ValueError):
+            return
+        if isinstance(paths, list):
+            self.paths_received.emit([str(p) for p in paths])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1057,16 +1340,31 @@ def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     app = QApplication.instance() or QApplication(sys.argv if argv is None else [sys.argv[0], *argv])
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
     app.setOrganizationName(APP_NAME)
+    app.setWindowIcon(app_icon())
     app.setStyle("Fusion")
+    # Files passed on the command line (e.g. dropped onto the app's icon) are added right away.
+    paths = app.arguments()[1:] if argv is None else argv
+    if send_to_running_instance(paths):
+        return 0
+
+    setup_logging("GUI")
+    enable_crash_log()
+    reporter = ErrorReporter(app)
+    install_exception_hooks(reporter.report)
 
     window = MainWindow()
+    server = InstanceServer(parent=window)
+    server.paths_received.connect(window.receive_paths)
+    if not server.listen():
+        log.warning("Zweiter Start kann keine Dateien übergeben: %s", server.server.errorString())
     window.show()
-    # Files passed on the command line (e.g. dropped onto the launcher) are added right away.
-    paths = app.arguments()[1:] if argv is None else argv
     if paths:
         window.add_paths(paths)
-    return app.exec()
+    code = app.exec()
+    log.info("%s beendet", APP_NAME)
+    return code
 
 
 if __name__ == "__main__":

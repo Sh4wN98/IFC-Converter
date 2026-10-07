@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import concurrent.futures
+import functools
 import itertools
+import logging
 import math
+import multiprocessing
+import os
 import re
+import sys
+import threading
+import time
+import weakref
 from collections import OrderedDict, deque
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,8 +23,13 @@ import ifcopenshell.util.element as element_util
 import numpy
 import rhino3dm
 
-from ifc_converter.converter import ProgressCallback, geometry_library, iter_shapes
+from ifc_converter.converter import (
+    LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, available_memory, geometry_library, iter_shapes,
+    shape_products,
+)
 from ifc_converter.polysurface import planar_polysurface
+
+log = logging.getLogger(__name__)
 
 NO_STOREY = "Ohne Geschoss"
 # Root layer for curve-only elements outside the spatial structure, such as alignments.
@@ -43,6 +57,33 @@ WELD_TOLERANCE = 1e-9
 # (IFC models place the same type geometry many times: 8x on average in a plumbing model). The
 # meshes kept for that are limited by their total vertex count, ~70 bytes each (~70 MB).
 MESH_CACHE_VERTICES = 1_000_000
+
+# The geometry kernel runs on many threads, but turning its triangles into polysurfaces and meshes
+# is Python, which runs on one: on a many-core PC that would be most of the conversion time. With
+# enough elements to pay for starting them (~1 s, in parallel with the kernel), worker processes
+# build them. This process decodes their results and adds them to the file with layers and user
+# text, which only it can read: the workers never load the model.
+# (Workers could also build the attributes and return whole objects in an encoded File3dm, which
+# would save this process the slow SetUserString calls, but rhino3dm never frees a decoded File3dm
+# once one of its objects has been accessed.)
+MIN_PARALLEL_ELEMENTS = 500
+# One worker per this many threads, at most MAX_WORKERS. More would not help: the work left to this
+# process (decoding, user text, writing the file) is what limits the speed.
+THREADS_PER_WORKER = 2
+MAX_WORKERS = 8
+# RAM per worker: Python with numpy and rhino3dm (~170 MB) and the element it is building; welding
+# the largest Holter Tower element took a worker to 1 GB (the same as it takes this process when
+# building it itself). Workers are only started for the memory left after WORKER_MEMORY_RESERVE,
+# which stays for the kernel and the output file.
+WORKER_MEMORY = 1024 ** 3
+WORKER_MEMORY_RESERVE = 2 * 1024 ** 3
+# Elements go to the workers in batches of up to this many triangles or elements, which keeps the
+# overhead per batch (~0.2 ms) small. Batches sent but not finished are limited to PENDING_TRIANGLES
+# (~100 bytes each, ~200 MB) and PENDING_BATCHES.
+BATCH_TRIANGLES = 20_000
+BATCH_ELEMENTS = 64
+PENDING_TRIANGLES = 2_000_000
+PENDING_BATCHES = 64
 
 Color = tuple[int, int, int, int]
 
@@ -79,30 +120,41 @@ def write_3dm(
     curve_elements = {element.id(): element for element in _curve_elements(model)}
     yielded: set[int] = set()
     settings = _settings()
-    # Meshes are computed in their own coordinates, so shapes that share a geometry share its mesh.
-    # Polysurfaces are built from world coordinates.
-    meshes = _MeshCache() if geometry == "mesh" else None
-    if meshes is not None:
-        settings.set("use-world-coords", False)
-    shapes = iter_shapes(model, settings, threads, EXCLUDED_CLASSES, progress, ITERATOR_SHARE)
-    # The second pass is generated lazily, after the first has recorded what it yielded.
-    missing = (element for id_, element in curve_elements.items() if id_ not in yielded)
-    for shape in itertools.chain(shapes, _curve_shapes(model, missing)):
-        if shape.id in curve_elements:
-            yielded.add(shape.id)
-        triangles = shape.geometry.faces
-        if not shape.geometry.verts:
-            continue
-        if not triangles:
-            writer.add(shape, _polylines(shape.geometry, _placement(shape)))
-            continue
+    products = shape_products(model, EXCLUDED_CLASSES)
+    with _Builder(_worker_count(threads, len(products)), _SolidItems(model)) as builder:
+        # Meshes are computed in their own coordinates, so shapes that share a geometry share its
+        # mesh. Polysurfaces are built from world coordinates.
+        meshes = _MeshCache(builder) if geometry == "mesh" else None
         if meshes is not None:
-            writer.add(shape, meshes.place(shape))
-            continue
-        brep = None
-        if geometry == "brep" and len(triangles) <= 3 * MAX_BREP_FACES:
-            brep = _brep(shape.geometry)
-        writer.add(shape, _mesh(shape.geometry) if brep is None else brep)
+            settings.set("use-world-coords", False)
+        ordered = _Ordered(writer)
+        shapes = iter_shapes(
+            model, settings, threads, EXCLUDED_CLASSES, progress, ITERATOR_SHARE, products, chunk_ends=True
+        )
+        # The second pass is generated lazily, after the first has recorded what it yielded.
+        missing = (element for id_, element in curve_elements.items() if id_ not in yielded)
+        for shape in itertools.chain(shapes, _curve_shapes(model, missing)):
+            if isinstance(shape, ChunkEnd):
+                builder.flush()
+                ordered.close(shape.ids)
+                continue
+            if shape.id in curve_elements:
+                yielded.add(shape.id)
+            shape_geometry = shape.geometry
+            if not shape_geometry.verts_buffer:
+                continue
+            triangles = len(shape_geometry.faces_buffer) // 12
+            if not triangles:
+                built = _Ready(_polylines(shape_geometry, _placement(shape)))
+            elif meshes is not None:
+                built = meshes.place(shape)
+            else:
+                built = builder.build(shape_geometry, geometry == "brep" and triangles <= MAX_BREP_FACES)
+            ordered.add(shape.id, _material(shape_geometry), built)
+            ordered.commit()
+        builder.flush()
+        ordered.close(None)
+        ordered.commit(wait=True)
 
     if not writer.rhino.Write(str(output_path), FILE_VERSION):
         raise OSError(f"Could not write Rhino file: {output_path}")
@@ -116,6 +168,10 @@ class _Writer:
         self.model = model
         self.rhino = rhino3dm.File3dm()
         self.rhino.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
+        # 1 mm, as Rhino's "Large Objects - Meters" template: what joins and Booleans in Rhino work
+        # with. The geometry is far more precise (polysurface faces: MAX_PLANE_DEVIATION, 1 mm at most).
+        self.rhino.Settings.ModelAbsoluteTolerance = 0.001
+        self.rhino.Settings.ModelAngleToleranceDegrees = 1.0
         self.paths = _SpatialPaths(model)
         self.layers = _LayerTable(self.rhino)
         # Spatial layers are created up front so the layer panel lists them in the order of the
@@ -123,15 +179,18 @@ class _Writer:
         for path in sorted(self.paths.levels(model), key=_levels_sort_key):
             self.layers.spatial(path)
         self.materials: dict[tuple[str, Color, float], int] = {}
+        self.property_sets = _PropertySets(model)
         self.elements = 0
 
-    def add(self, shape, geometry: rhino3dm.Mesh | rhino3dm.Brep | list[rhino3dm.Polyline] | None) -> None:
-        # Each object goes into the Rhino file right away, so only one copy of the geometry is kept.
+    def add(
+        self, element_id: int, material: tuple[str, Color, float],
+        geometry: rhino3dm.Mesh | rhino3dm.Brep | list[rhino3dm.Polyline] | None,
+    ) -> None:
         if geometry is None:
             return
-        element = self.model.by_id(shape.id)
-        name, color, transparency = _material(shape.geometry)
-        attributes = _attributes(element, color)
+        element = self.model.by_id(element_id)
+        name, color, transparency = material
+        attributes = _attributes(element, color, self.property_sets)
         curves = isinstance(geometry, list)
         attributes.LayerIndex = self.layers.get(
             self.paths.of_element(element), element.is_a(), color, AXES if curves else NO_STOREY
@@ -186,19 +245,13 @@ def _curve_shapes(model: ifcopenshell.file, elements) -> Iterator:
 
 def _settings() -> geom.settings:
     settings = geom.settings()
+    settings.set("mesher-linear-deflection", LINEAR_DEFLECTION)
     settings.set("use-world-coords", True)
     # Unwelded vertices keep hard edges between faces sharp when Rhino shades the mesh.
     settings.set("weld-vertices", False)
     settings.set("use-material-names", True)
     settings.set("no-normals", True)
     return settings
-
-
-def _brep(geometry) -> rhino3dm.Brep | None:
-    """The element as a joined polysurface: coplanar triangles become one face (with holes)."""
-    indices = geometry.faces
-    triangles = [[indices[i:i + 3]] for i in range(0, len(indices), 3)]
-    return planar_polysurface(geometry.verts, triangles, geometry.item_ids)
 
 
 def _polylines(geometry, placement: numpy.ndarray | None = None) -> list[rhino3dm.Polyline] | None:
@@ -234,44 +287,311 @@ def _polyline(points: list[tuple[float, float, float]]) -> rhino3dm.Polyline | N
     return polyline if polyline.Length > 0 else None
 
 
-def _attributes(element: ifcopenshell.entity_instance, color: Color) -> rhino3dm.ObjectAttributes:
+def _attributes(
+    element: ifcopenshell.entity_instance, color: Color, property_sets: _PropertySets | None = None
+) -> rhino3dm.ObjectAttributes:
     attributes = rhino3dm.ObjectAttributes()
     attributes.Name = element.Name or element.GlobalId
     attributes.ObjectColor = color
     attributes.ColorSource = rhino3dm.ObjectColorSource.ColorFromObject
-    for key, value in _user_strings(element).items():
+    for key, value in _user_strings(element, property_sets).items():
         attributes.SetUserString(key, value)
     return attributes
+
+
+class _Ordered:
+    """Adds the elements to the Rhino file in model order, chunk by chunk.
+
+    The kernel's threads deliver the shapes of a chunk in the order they finish, which differs from
+    run to run, and the workers finish them in yet another order. Adding them in the order of the
+    model's products makes the file (objects, layers, materials) the same for any number of threads.
+    """
+
+    def __init__(self, writer: _Writer):
+        self._writer = writer
+        self._open: list[tuple[int, tuple, _Ready | _Deferred | _Placed]] = []
+        self._closed: deque[tuple[int, tuple, _Ready | _Deferred | _Placed]] = deque()
+
+    def add(self, element_id: int, material: tuple, built) -> None:
+        self._open.append((element_id, material, built))
+
+    def close(self, ids: list[int] | None) -> None:
+        """End the chunk of products ``ids`` (in model order; None: keep the order of arrival)."""
+        if ids is not None:
+            position = {id_: i for i, id_ in enumerate(ids)}
+            self._open.sort(key=lambda entry: position.get(entry[0], len(ids)))
+        self._closed.extend(self._open)
+        self._open = []
+
+    def commit(self, wait: bool = False) -> None:
+        """Add the elements of closed chunks that are ready (``wait``: all of them) to the file.
+
+        A closed chunk is committed after the first shape of the next one has arrived, so the
+        kernel's threads already work on that chunk meanwhile.
+        """
+        while self._closed and (wait or self._closed[0][2].ready()):
+            element_id, material, built = self._closed.popleft()
+            # Each object goes into the Rhino file right away, so only one copy of the geometry is kept.
+            self._writer.add(element_id, material, built.get())
+
+
+class _Ready:
+    """Geometry built in this process."""
+
+    def __init__(self, geometry):
+        self._geometry = geometry
+
+    def ready(self) -> bool:
+        return True
+
+    def get(self):
+        return self._geometry
+
+
+class _Batch:
+    """Elements sent to a worker process together."""
+
+    def __init__(self):
+        self.jobs: list[tuple] | None = []
+        self.triangles = 0
+        self.future: concurrent.futures.Future | None = None
+        # Per job the encoded polysurface or mesh, or None (see _build_batch).
+        self.results: list | None = None
+
+    def set_results(self, results: list) -> None:
+        self.results = results
+        self.jobs = self.future = None  # the future would keep the results
+
+
+class _Deferred:
+    """Geometry built by a worker process, decoded in this one when it is needed."""
+
+    def __init__(self, builder: _Builder, batch: _Batch, index: int):
+        self._builder, self._batch, self._index = builder, batch, index
+        self._done = False
+        self._geometry = None
+
+    def ready(self) -> bool:
+        batch = self._batch
+        return self._done or batch.results is not None or (batch.future is not None and batch.future.done())
+
+    def get(self):
+        if not self._done:
+            built = self._builder.result(self._batch)[self._index]
+            if built is not None:
+                kind, data = built
+                built = (rhino3dm.Brep if kind == "brep" else rhino3dm.Mesh).Decode(data)
+            self._geometry, self._done = built, True
+            self._builder = self._batch = None
+        return self._geometry
+
+
+class _Builder:
+    """Builds the polysurfaces and meshes of shapes, in ``workers`` worker processes or (0) right away."""
+
+    def __init__(self, workers: int, solids: _SolidItems | None = None):
+        self._workers = workers
+        self._solids = solids
+        self._pool: concurrent.futures.ProcessPoolExecutor | None = None
+        self._batch = _Batch()
+        # Batches sent to the workers: their futures and triangles.
+        self._pending: deque[tuple[concurrent.futures.Future, int]] = deque()
+        self._pending_triangles = 0
+
+    def __enter__(self) -> _Builder:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        if self._pool is not None:
+            # On an error or a cancel nothing more is needed from the workers.
+            self._pool.shutdown(wait=exc_info[0] is None, cancel_futures=True)
+            self._pool = None
+
+    def build(self, geometry, brep: bool) -> _Ready | _Deferred:
+        """The polysurface of ``geometry`` (if ``brep``) or else its mesh, or None."""
+        faces, solid_ids = geometry.faces_buffer, b""
+        if self._solids is not None:
+            faces, solid_ids = _outward(geometry, self._solids)
+        job = (brep, geometry.verts_buffer, faces, geometry.item_ids_buffer if brep else b"", solid_ids if brep else b"")
+        if not self._workers:
+            return _Ready(_build_from_buffers(*job))
+        batch = self._batch
+        batch.jobs.append(job)
+        batch.triangles += len(geometry.faces_buffer) // 12
+        built = _Deferred(self, batch, len(batch.jobs) - 1)
+        if batch.triangles >= BATCH_TRIANGLES or len(batch.jobs) >= BATCH_ELEMENTS:
+            self.flush()
+        return built
+
+    def flush(self) -> None:
+        """Send the elements collected so far to the workers."""
+        batch = self._batch
+        if not batch.jobs:
+            return
+        self._batch = _Batch()
+        if not self._workers:  # the workers broke down
+            batch.set_results(_build_batch(batch.jobs))
+            return
+        # Keep what is in flight within bounds: wait for the oldest batches.
+        while self._pending and (
+            self._pending[0][0].done()
+            or self._pending_triangles > PENDING_TRIANGLES or len(self._pending) >= PENDING_BATCHES
+        ):
+            future, triangles = self._pending.popleft()
+            self._pending_triangles -= triangles
+            concurrent.futures.wait([future])
+        if self._pool is None:
+            self._pool = concurrent.futures.ProcessPoolExecutor(
+                self._workers, multiprocessing.get_context("spawn"), _worker_init, (os.getpid(),)
+            )
+        try:
+            batch.future = self._pool.submit(_build_batch, batch.jobs)
+        except concurrent.futures.BrokenExecutor:
+            self._broken()
+            batch.set_results(_build_batch(batch.jobs))
+            return
+        # The input is only kept to build it here should a worker fail.
+        batch.future.add_done_callback(functools.partial(_release_jobs, weakref.ref(batch)))
+        self._pending.append((batch.future, batch.triangles))
+        self._pending_triangles += batch.triangles
+
+    def result(self, batch: _Batch) -> list:
+        """The results of ``batch``, built here if the workers failed."""
+        if batch.results is None:
+            if batch.future is None:
+                self.flush()
+            if batch.results is None:
+                try:
+                    batch.set_results(batch.future.result())
+                except concurrent.futures.BrokenExecutor:
+                    # A worker died (out of memory, a crash in native code): build the rest here.
+                    self._broken()
+                    batch.set_results(_build_batch(batch.jobs))
+        return batch.results
+
+    def _broken(self) -> None:
+        if self._workers:
+            log.warning("Worker process failed, building the remaining geometry in the main process")
+        self._workers = 0
+
+
+def _release_jobs(batch: weakref.ref, future: concurrent.futures.Future) -> None:
+    batch = batch()
+    if batch is not None and not future.cancelled() and future.exception() is None:
+        batch.jobs = None
+
+
+def _worker_count(threads: int, elements: int) -> int:
+    """The number of worker processes for a model with ``elements`` elements (0: build in this process)."""
+    if elements < MIN_PARALLEL_ELEMENTS:
+        return 0
+    count = min(MAX_WORKERS, threads // THREADS_PER_WORKER)
+    available = available_memory()
+    if available is not None:
+        count = min(count, (available - WORKER_MEMORY_RESERVE) // WORKER_MEMORY)
+    return max(0, count)
+
+
+def _worker_init(parent_pid: int) -> None:
+    # A worker blocks reading its next batch, also when the conversion was cancelled by killing its
+    # process: without this it would wait forever (Windows) or until killed with it (Linux only).
+    threading.Thread(target=_exit_with_parent, args=(parent_pid,), daemon=True).start()
+
+
+def _exit_with_parent(parent_pid: int) -> None:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        synchronize, infinite = 0x00100000, 0xFFFFFFFF
+        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+        if handle:  # else the parent is already gone
+            kernel32.WaitForSingleObject(handle, infinite)
+    else:
+        while os.getppid() == parent_pid:
+            time.sleep(0.5)
+    os._exit(1)
+
+
+def _build_batch(jobs: list[tuple]) -> list[tuple[str, dict] | None]:
+    """Run in a worker: the encoded polysurfaces or meshes of a batch of elements (see _build).
+
+    Each job is (brep, verts, faces, item ids, solid item ids); each result ("brep" or "mesh", the
+    geometry's Encode()) or None. Decoding gives the very same geometry.
+    """
+    results = []
+    for job in jobs:
+        geometry = _build_from_buffers(*job)
+        kind = "brep" if isinstance(geometry, rhino3dm.Brep) else "mesh"
+        results.append(None if geometry is None else (kind, geometry.Encode()))
+    return results
+
+
+def _build_from_buffers(
+    brep: bool, verts: bytes, faces: bytes, item_ids: bytes, solid_ids: bytes = b""
+) -> rhino3dm.Brep | rhino3dm.Mesh | None:
+    # The element as a joined polysurface (coplanar triangles become one face with holes), else a mesh.
+    if brep:
+        indices = tuple(numpy.frombuffer(faces, dtype=numpy.int32).tolist())
+        polysurface = planar_polysurface(
+            tuple(numpy.frombuffer(verts, dtype=numpy.float64).tolist()),
+            [[indices[i:i + 3]] for i in range(0, len(indices), 3)],
+            tuple(numpy.frombuffer(item_ids, dtype=numpy.int32).tolist()),
+            set(numpy.frombuffer(solid_ids, dtype=numpy.int32).tolist()),
+        )
+        if polysurface is not None:
+            return polysurface
+    return _mesh_from_buffers(verts, faces)
+
+
+class _Placed:
+    """A shared mesh, moved to where one of its shapes is."""
+
+    def __init__(self, mesh: _Ready | _Deferred, placement: numpy.ndarray | None):
+        self._mesh, self._placement = mesh, placement
+
+    def ready(self) -> bool:
+        return self._mesh.ready()
+
+    def get(self) -> rhino3dm.Mesh | None:
+        mesh = self._mesh.get()
+        if mesh is None:
+            return None
+        mesh = mesh.Duplicate()
+        if self._placement is not None:
+            # Like the kernel's world coordinates: points and normals move, the triangles keep
+            # their order.
+            mesh.Transform(_transform(self._placement))
+        return mesh
 
 
 class _MeshCache:
     """Meshes of the distinct geometries, in their own coordinates, the least recently used dropped first."""
 
-    def __init__(self):
-        self._meshes: OrderedDict[str, rhino3dm.Mesh | None] = OrderedDict()
+    def __init__(self, builder: _Builder):
+        self._builder = builder
+        # Per geometry its mesh and the number of input vertices.
+        self._meshes: OrderedDict[str, tuple[_Ready | _Deferred, int]] = OrderedDict()
         self._vertices = 0
 
-    def place(self, shape) -> rhino3dm.Mesh | None:
+    def place(self, shape) -> _Placed:
         """The mesh of a shape, moved to where the shape is."""
         key = shape.geometry.id
         if key in self._meshes:
             self._meshes.move_to_end(key)
-            mesh = self._meshes[key]
+            mesh = self._meshes[key][0]
         else:
-            mesh = self._meshes[key] = _mesh(shape.geometry)
-            self._vertices += len(mesh.Vertices) if mesh else 0
+            # Counted before welding: the meshes being built in the workers are not known yet.
+            vertices = len(shape.geometry.verts_buffer) // 24
+            mesh = self._builder.build(shape.geometry, False)
+            self._meshes[key] = mesh, vertices
+            self._vertices += vertices
             while self._vertices > MESH_CACHE_VERTICES and len(self._meshes) > 1:
-                dropped = self._meshes.popitem(last=False)[1]
-                self._vertices -= len(dropped.Vertices) if dropped else 0
-        if mesh is None:
-            return None
-        mesh = mesh.Duplicate()
-        placement = _placement(shape)
-        if placement is not None:
-            # Like the kernel's world coordinates: points and normals move, the triangles keep
-            # their order.
-            mesh.Transform(_transform(placement))
-        return mesh
+                self._vertices -= self._meshes.popitem(last=False)[1][1]
+        return _Placed(mesh, _placement(shape))
 
 
 def _placement(shape) -> numpy.ndarray | None:
@@ -290,12 +610,86 @@ def _transform(matrix: numpy.ndarray) -> rhino3dm.Transform:
     return transform
 
 
+class _SolidItems:
+    """Which representation items are solids, whose triangles must enclose their volume.
+
+    Surface models (Revit writes furniture and ceilings as IfcFaceBasedSurfaceModel) have no
+    inside, so their orientation is only a guess.
+    """
+
+    def __init__(self, model: ifcopenshell.file):
+        self._model = model
+        self._solid: dict[int, bool] = {}
+
+    def among(self, item_ids) -> set[int]:
+        solid = self._solid
+        for item in set(item_ids) - solid.keys():
+            try:
+                entity = self._model.by_id(item)
+            except RuntimeError:
+                solid[item] = False
+                continue
+            solid[item] = bool(
+                entity.is_a("IfcSolidModel") or entity.is_a("IfcBooleanResult") or entity.is_a("IfcCsgPrimitive3D")
+                or (entity.is_a("IfcTessellatedFaceSet") and getattr(entity, "Closed", None) is True)
+            )
+        return {item for item in set(item_ids) if solid[item]}
+
+
+def _outward(geometry, solids: _SolidItems) -> tuple[bytes, bytes]:
+    """The faces buffer with each representation item that encloses a negative volume turned
+    around, and the ids of the solid items (int32 buffers).
+
+    IfcOpenShell applies a mirroring type placement (mirrored doors, windows and furniture) to the
+    vertices without reversing the triangles, and Revit writes many closed surface models (ceilings,
+    furniture) with their faces pointing inwards: such meshes shade dark and have a negative volume
+    in Rhino. Solids are turned as a whole, so the void of a hollow solid keeps pointing inwards;
+    surface models only when they are closed (polysurfaces turn each closed shell outwards, too).
+    """
+    faces = geometry.faces_buffer
+    items = numpy.frombuffer(geometry.item_ids_buffer, dtype=numpy.int32)
+    triangles = numpy.frombuffer(faces, dtype=numpy.int32).reshape(-1, 3)
+    if not len(triangles) or len(items) != len(triangles):
+        return faces, b""
+    ids, item = numpy.unique(items, return_inverse=True)
+    solid = numpy.isin(ids, list(solids.among(ids.tolist())))
+    solid_ids = ids[solid].astype(numpy.int32).tobytes()
+    points = numpy.frombuffer(geometry.verts_buffer, dtype=numpy.float64).reshape(-1, 3)
+    local = points - points.min(axis=0)  # far from the origin the products would cancel out
+    a, b, c = local[triangles[:, 0]], local[triangles[:, 1]], local[triangles[:, 2]]
+    inside_out = numpy.bincount(item, numpy.einsum("ij,ij->i", a, numpy.cross(b, c)), len(ids)) < 0
+    if not inside_out.any():
+        return faces, solid_ids
+    surface = inside_out & ~solid
+    if surface.any():
+        # Closed: every edge (vertices matched by position) is used as often in each direction.
+        position = _group(numpy.rint(points * (1.0 / WELD_TOLERANCE)).astype(numpy.int64))[triangles]
+        edges = numpy.concatenate([position[:, [0, 1]], position[:, [1, 2]], position[:, [2, 0]]])
+        edge_items = numpy.tile(item, 3)
+        keep = (edges[:, 0] != edges[:, 1]) & surface[edge_items]
+        edges, edge_items = edges[keep], edge_items[keep]
+        if len(edges):
+            key = _group(numpy.column_stack((edge_items, edges.min(axis=1), edges.max(axis=1))))
+            balance = numpy.bincount(key, numpy.where(edges[:, 0] < edges[:, 1], 1, -1))
+            surface[edge_items[balance[key] != 0]] = False
+    flip = ((inside_out & solid) | surface)[item]
+    if not flip.any():
+        return faces, solid_ids
+    triangles = triangles.copy()
+    triangles[flip] = triangles[flip][:, ::-1]
+    return triangles.tobytes(), solid_ids
+
+
 def _mesh(geometry) -> rhino3dm.Mesh | None:
     """The shape as a mesh, welded across smooth edges."""
-    if not geometry.verts or not geometry.faces:
+    return _mesh_from_buffers(geometry.verts_buffer, geometry.faces_buffer)
+
+
+def _mesh_from_buffers(verts: bytes, faces: bytes) -> rhino3dm.Mesh | None:
+    if not verts or not faces:
         return None
-    points = numpy.frombuffer(geometry.verts_buffer, dtype=numpy.float64).reshape(-1, 3)
-    triangles = numpy.frombuffer(geometry.faces_buffer, dtype=numpy.int32).reshape(-1, 3)
+    points = numpy.frombuffer(verts, dtype=numpy.float64).reshape(-1, 3)
+    triangles = numpy.frombuffer(faces, dtype=numpy.int32).reshape(-1, 3)
     normals = None
     if len(triangles) >= MIN_WELD_TRIANGLES:
         points, triangles, normals = _weld(points, triangles)
@@ -561,15 +955,18 @@ def _level_name(level: ifcopenshell.entity_instance) -> str:
     return _clean_name(level.Name, _clean_name(kind, level.is_a()))
 
 
-def _user_strings(element: ifcopenshell.entity_instance) -> dict[str, str]:
+def _user_strings(element: ifcopenshell.entity_instance, property_sets: _PropertySets | None = None) -> dict[str, str]:
     strings = {
         "IfcGlobalId": element.GlobalId,
         "IfcClass": element.is_a(),
         "IfcName": element.Name or "",
     }
     try:
-        psets = element_util.get_psets(element, psets_only=True)
-        quantities = element_util.get_psets(element, qtos_only=True)
+        if property_sets is None:
+            psets = element_util.get_psets(element, psets_only=True)
+            quantities = element_util.get_psets(element, qtos_only=True)
+        else:
+            psets, quantities = property_sets.of(element)
     except Exception:
         psets, quantities = {}, {}
     # Standard quantities (areas, volumes, lengths) are kept. Vendor quantity dumps such as
@@ -582,6 +979,82 @@ def _user_strings(element: ifcopenshell.entity_instance) -> dict[str, str]:
                 continue
             strings[f"{pset}.{prop}"] = str(value)[:MAX_STRING_LENGTH]
     return strings
+
+
+class _PropertySets:
+    """The property sets and quantity sets of elements, as ``get_psets`` gives them, in one pass.
+
+    ``get_psets`` walks an element's definitions once for its property sets and once more for its
+    quantities, and repeats its type's sets for every element of the type. Here both come from one
+    walk, each type's sets are read once, and so are definitions that several elements share, while
+    they are still needed. The result is the same, down to the order of sets and properties.
+    """
+
+    def __init__(self, model: ifcopenshell.file):
+        self._types: dict[int, tuple[dict, dict]] = {}
+        # Elements left that use each shared definition.
+        self._uses: dict[int, int] = {}
+        self._shared: dict[int, dict] = {}
+        for relationship in model.by_type("IfcRelDefinesByProperties"):
+            for definition in _definitions(relationship):
+                self._uses[definition.id()] = self._uses.get(definition.id(), 0) + len(relationship.RelatedObjects)
+
+    def of(self, element: ifcopenshell.entity_instance) -> tuple[dict, dict]:
+        """``get_psets(element, psets_only=True)`` and ``get_psets(element, qtos_only=True)``."""
+        psets: dict[str, dict] = {}
+        quantities: dict[str, dict] = {}
+        element_type = element_util.get_type(element)
+        if element_type:
+            type_psets, type_quantities = self._type_sets(element_type)
+            psets = {name: dict(values) for name, values in type_psets.items()}
+            quantities = {name: dict(values) for name, values in type_quantities.items()}
+        for relationship in element.IsDefinedBy or ():
+            if relationship.is_a("IfcRelDefinesByProperties"):
+                for definition in _definitions(relationship):
+                    sets = _kind(definition, psets, quantities)
+                    if sets is not None:
+                        sets.setdefault(definition.Name, {}).update(self._properties(definition))
+        return psets, quantities
+
+    def _type_sets(self, element_type: ifcopenshell.entity_instance) -> tuple[dict, dict]:
+        key = element_type.id()
+        if key not in self._types:
+            psets: dict[str, dict] = {}
+            quantities: dict[str, dict] = {}
+            if element_type.is_a("IfcTypeObject"):
+                for definition in element_type.HasPropertySets or []:
+                    sets = _kind(definition, psets, quantities)
+                    if sets is not None:
+                        sets.setdefault(definition.Name, {}).update(element_util.get_property_definition(definition))
+            else:
+                psets = element_util.get_psets(element_type, psets_only=True, should_inherit=False)
+                quantities = element_util.get_psets(element_type, qtos_only=True, should_inherit=False)
+            self._types[key] = psets, quantities
+        return self._types[key]
+
+    def _properties(self, definition: ifcopenshell.entity_instance) -> dict:
+        key = definition.id()
+        uses = self._uses.pop(key, 0)  # including this one
+        properties = self._shared.get(key) if uses > 1 else self._shared.pop(key, None)
+        if properties is None:
+            properties = element_util.get_property_definition(definition)
+        if uses > 1:
+            self._shared[key] = properties
+            self._uses[key] = uses - 1
+        return properties
+
+
+def _definitions(relationship: ifcopenshell.entity_instance) -> tuple:
+    definition = relationship.RelatingPropertyDefinition
+    # IfcPropertySetDefinitionSet is a defined type wrapping a list of property set definitions.
+    return definition.wrappedValue if definition.is_a("IfcPropertySetDefinitionSet") else (definition,)
+
+
+def _kind(definition: ifcopenshell.entity_instance, psets: dict, quantities: dict) -> dict | None:
+    """Where ``get_psets`` puts a definition: with the property sets, the quantities or neither."""
+    if definition.is_a("IfcPropertySet") or definition.is_a("IfcPreDefinedPropertySet"):
+        return psets
+    return quantities if definition.is_a("IfcElementQuantity") else None
 
 
 def _standard_quantities(name: str) -> bool:

@@ -3,19 +3,30 @@
 On Linux the OOM killer SIGKILLs the process using the most memory, which for a multi-GB IFC file is
 the one converting it. In a child process that is no longer the GUI, and a cancel can simply terminate
 the child, even while IfcOpenShell is still reading the file (which cannot be interrupted otherwise).
+
+The child runs at a lower priority, so the PC stays responsive while it uses all its cores, and what it
+writes to stderr (warnings, tracebacks, a native crash's Python stack) ends up in the log file.
 """
 
 from __future__ import annotations
 
+import faulthandler
+import logging
 import multiprocessing
 import os
 import signal
 import sys
+import tempfile
+import time
+import traceback
 from collections.abc import Callable
 from multiprocessing.connection import wait
 from pathlib import Path
 
-from ifc_converter.converter import DEFAULT_KERNEL, ConversionResult, ProgressCallback, convert
+from ifc_converter.converter import (
+    DEFAULT_KERNEL, MAX_DEFAULT_THREADS, SPARE_CORES, ConversionResult, ProgressCallback, convert,
+    default_threads,
+)
 
 # "spawn" starts a fresh interpreter on every platform: no forked copy of the GUI's threads and
 # memory, and the same behaviour on Linux as on Windows and macOS (where it is the only/default way).
@@ -25,12 +36,21 @@ _CONTEXT = multiprocessing.get_context("spawn")
 POLL_INTERVAL = 0.1
 
 MEMORY_MESSAGE = "Der Arbeitsspeicher hat nicht gereicht (Prozess wurde vom System beendet)"
-# Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE.
-RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch mit dem langsameren OpenCASCADE-Kern …"
+# Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
+RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE …"
 # Windows' STATUS_NO_MEMORY, the closest it has to being killed for lack of memory.
 _STATUS_NO_MEMORY = 0xC0000017
 # From <linux/prctl.h>.
 _PR_SET_PDEATHSIG = 1
+# Windows priority class of the child: below other programs, above idle (from <winbase.h>).
+BELOW_NORMAL_PRIORITY_CLASS = 0x4000
+# How much nicer than its parent the child runs on Linux and macOS (0 normal ... 19 lowest).
+NICE_INCREMENT = 10
+# At most this much of the child's stderr goes into the log (its end, where the errors are).
+STDERR_LOG_LIMIT = 32_000
+# Cores left free for other programs by default.
+
+log = logging.getLogger(__name__)
 
 
 class Cancelled(Exception):
@@ -38,11 +58,12 @@ class Cancelled(Exception):
 
 
 class ConversionFailed(Exception):
-    """A Python exception in the child process, as its type name and text."""
+    """A Python exception in the child process, as its type name, text and traceback."""
 
-    def __init__(self, type_name: str, text: str):
+    def __init__(self, type_name: str, text: str, details: str = ""):
         super().__init__(text or type_name)
         self.type_name = type_name
+        self.details = details
 
 
 class ConversionCrashed(Exception):
@@ -51,6 +72,17 @@ class ConversionCrashed(Exception):
     def __init__(self, exitcode: int | None):
         super().__init__(crash_message(exitcode))
         self.exitcode = exitcode
+
+
+def cpu_count() -> int:
+    """Logical CPUs this process may use."""
+    count = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
+    return count or 1
+
+
+def auto_threads() -> int:
+    """The default number of geometry threads (see converter.default_threads)."""
+    return default_threads()
 
 
 def crash_message(exitcode: int | None) -> str:
@@ -69,13 +101,13 @@ def _out_of_memory(exitcode: int | None) -> bool:
 
 
 def _retry_with_opencascade(exitcode: int | None, options: dict) -> bool:
-    """Whether a child that ended with ``exitcode`` and no result crashed in the hybrid kernel.
+    """Whether a child that ended with ``exitcode`` and no result may have crashed in the hybrid kernel.
 
-    The hybrid kernel segfaults on some models that OpenCASCADE converts fine. Running out of memory
-    is no such crash, and a kernel chosen explicitly (argument or IFC_CONVERTER_KERNEL) is kept.
+    The hybrid kernel segfaults on some models that OpenCASCADE converts fine; the strategies
+    "hybrid" and "accurate" (triangle meshes) use it. Running out of memory is no such crash.
     """
     kernel = options.get("kernel") or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL
-    return kernel.lower() == "hybrid" and exitcode not in (None, 0) and not _out_of_memory(exitcode)
+    return kernel.lower() in ("accurate", "hybrid") and exitcode not in (None, 0) and not _out_of_memory(exitcode)
 
 
 def _die_with_parent(parent_pid: int) -> None:
@@ -97,6 +129,28 @@ def _die_with_parent(parent_pid: int) -> None:
         os._exit(1)
 
 
+def _redirect_fd(fd: int, path: str, flags: int) -> bool:
+    """Point file descriptor ``fd`` (1 or 2) at ``path``, also for native code that uses the Win32 handle."""
+    try:
+        target = os.open(path, flags)
+        os.dup2(target, fd)
+        os.close(target)
+    except OSError:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import msvcrt
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.SetStdHandle.argtypes = (ctypes.c_ulong, ctypes.c_void_p)
+            std_handle = {1: -11, 2: -12}[fd] & 0xFFFFFFFF  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            kernel32.SetStdHandle(std_handle, msvcrt.get_osfhandle(fd))
+        except (OSError, AttributeError, ValueError):
+            pass
+    return True
+
+
 def _silence_stdout() -> None:
     """Send the child's stdout to the null device.
 
@@ -106,16 +160,60 @@ def _silence_stdout() -> None:
     """
     try:
         sys.stdout.flush()
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 1)
-        os.close(devnull)
     except (OSError, ValueError, AttributeError):  # no stdout at all, e.g. under pythonw
+        pass
+    _redirect_fd(1, os.devnull, os.O_WRONLY)
+
+
+def _redirect_stderr(path: str | None) -> None:
+    """Send the child's stderr to ``path``, a file the parent copies into the log afterwards.
+
+    A windowed app (pythonw) has no stderr at all, and a terminal would mix it into the progress line.
+    A native crash's Python stack goes there too (faulthandler).
+    """
+    if not path or not _redirect_fd(2, path, os.O_WRONLY | os.O_APPEND):
+        return
+    try:
+        sys.stderr = open(2, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False)  # noqa: SIM115
+        faulthandler.enable(file=sys.stderr)
+    except (OSError, ValueError, RuntimeError):
         pass
 
 
-def _child_main(conn, func: Callable[..., ConversionResult], args: tuple, kwargs: dict, parent_pid: int) -> None:
+def lower_priority() -> None:
+    """Run the calling process (and the processes it starts) below normal priority.
+
+    A conversion uses every core it gets; at a lower priority, Rhino, Revit or Outlook still get the
+    CPU first, so the PC stays responsive and the conversion uses the time they leave over.
+    """
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.SetPriorityClass.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            os.nice(NICE_INCREMENT)
+    except (OSError, AttributeError):
+        pass
+
+
+def _child_main(
+    conn,
+    func: Callable[..., ConversionResult],
+    args: tuple,
+    kwargs: dict,
+    parent_pid: int,
+    stderr_path: str | None = None,
+    low_priority: bool = True,
+) -> None:
     """Entry point of the child process: run ``func`` and send progress and the outcome to ``conn``."""
     _die_with_parent(parent_pid)
+    _redirect_stderr(stderr_path)
+    if low_priority:
+        lower_priority()
     # Ctrl+C in a terminal reaches the whole process group. The parent handles it and terminates the
     # child, which would otherwise print its own traceback.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -127,7 +225,7 @@ def _child_main(conn, func: Callable[..., ConversionResult], args: tuple, kwargs
     try:
         result = func(*args, progress=progress, **kwargs)
     except Exception as exc:  # exception objects may not unpickle in the parent, so send plain text
-        conn.send(("error", type(exc).__name__, str(exc)))
+        conn.send(("error", type(exc).__name__, str(exc), traceback.format_exc()))
     else:
         conn.send(("done", result))
     finally:
@@ -143,6 +241,7 @@ def convert_in_child(
     cancelled: Callable[[], bool] = lambda: False,
     func: Callable[..., ConversionResult] = convert,
     on_retry: Callable[[], None] | None = None,
+    low_priority: bool = True,
     **options,
 ) -> ConversionResult:
     """Like convert(), but in a child process; blocks until it is done.
@@ -152,18 +251,54 @@ def convert_in_child(
     A Python exception in the child raises ConversionFailed, a child that dies without a result
     ConversionCrashed. ``func`` stands in for convert() and must be picklable, i.e. a top-level function.
 
-    If the child crashes in the hybrid geometry kernel, the file is converted once more with
-    kernel="opencascade"; ``on_retry`` is called before that, and progress starts again from reading.
+    If the child crashes with a strategy that uses the hybrid geometry kernel, the file is converted
+    once more with kernel="opencascade"; ``on_retry`` is called before that, and progress starts again from reading.
+
+    ``threads`` defaults to auto_threads(); ``low_priority`` runs the child below normal priority.
+    Start, outcome and duration of the conversion are logged.
     """
+    threads = threads or auto_threads()
     args = (input_path, output_path, fmt, threads)
+    log.info(
+        "Umwandlung: %s (%s) -> %s, Format %s, %d Threads%s%s", input_path, _size_text(input_path),
+        output_path or "(neben der IFC-Datei)", fmt, threads, "".join(f", {k}={v}" for k, v in options.items()),
+        "" if low_priority else ", normale Priorität",
+    )
+    started = time.monotonic()
     try:
-        return _run_child(func, args, options, progress, cancelled)
-    except ConversionCrashed as crash:
-        if not _retry_with_opencascade(crash.exitcode, options):
-            raise
-    if on_retry:
-        on_retry()
-    return _run_child(func, args, {**options, "kernel": "opencascade"}, progress, cancelled)
+        try:
+            result = _run_child(func, args, options, progress, cancelled, low_priority)
+        except ConversionCrashed as crash:
+            if not _retry_with_opencascade(crash.exitcode, options):
+                raise
+            log.warning("%s (Exit-Code %s) – neuer Versuch mit OpenCASCADE", crash, crash.exitcode)
+            if on_retry:
+                on_retry()
+            result = _run_child(func, args, {**options, "kernel": "opencascade"}, progress, cancelled, low_priority)
+    except Cancelled:
+        log.info("Abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
+        raise
+    except ConversionFailed as exc:
+        log.error("Fehler nach %.1f s bei %s: %s: %s\n%s", time.monotonic() - started, input_path,
+                  exc.type_name, exc, exc.details.rstrip())
+        raise
+    except ConversionCrashed as exc:
+        log.error("Absturz nach %.1f s bei %s: %s (Exit-Code %s)", time.monotonic() - started, input_path,
+                  exc, exc.exitcode)
+        raise
+    except Exception:
+        log.exception("Umwandlung von %s fehlgeschlagen", input_path)
+        raise
+    log.info("Fertig nach %.1f s: %s -> %s, %d Bauteile, %d ohne Geometrie", time.monotonic() - started,
+             input_path, result.output, result.elements, result.skipped)
+    return result
+
+
+def _size_text(path: str | Path) -> str:
+    try:
+        return f"{os.path.getsize(path) / 1024 ** 2:.1f} MB"
+    except OSError:
+        return "Größe unbekannt"
 
 
 def _run_child(
@@ -172,12 +307,14 @@ def _run_child(
     options: dict,
     progress: ProgressCallback | None,
     cancelled: Callable[[], bool],
+    low_priority: bool = True,
 ) -> ConversionResult:
     """One attempt of convert_in_child()."""
+    stderr_path = _stderr_file()
     reader, writer = _CONTEXT.Pipe(duplex=False)
     process = _CONTEXT.Process(
         target=_child_main,
-        args=(writer, func, args, options, os.getpid()),
+        args=(writer, func, args, options, os.getpid(), stderr_path, low_priority),
         name="ifc-convert",
         daemon=True,  # never outlive a normally exiting parent
     )
@@ -214,12 +351,43 @@ def _run_child(
         # A child that delivered its result is just exiting; a cancelled or failed one is stopped now.
         exitcode = _stop(process, grace=5 if outcome else 0)
         reader.close()
+        _log_stderr(stderr_path, failed=outcome is None or outcome[0] == "error")
 
     if outcome is None:
         raise ConversionCrashed(exitcode)
     if outcome[0] == "error":
-        raise ConversionFailed(outcome[1], outcome[2])
+        raise ConversionFailed(*outcome[1:])
     return outcome[1]
+
+
+def _stderr_file() -> str | None:
+    """A new, empty temp file for the child's stderr, or None if the temp folder is not writable."""
+    try:
+        fd, path = tempfile.mkstemp(prefix="ifc-converter-", suffix=".stderr.txt")
+    except OSError:
+        return None
+    os.close(fd)
+    return path
+
+
+def _log_stderr(path: str | None, failed: bool) -> None:
+    """Copy the end of what the child wrote to stderr into the log, then delete the file."""
+    if not path:
+        return
+    try:
+        with open(path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(max(0, size - STDERR_LOG_LIMIT))
+            text = file.read().decode("utf-8", errors="replace").strip()
+    except OSError:
+        text, size = "", 0
+    if text:
+        cut = f" (letzte {STDERR_LOG_LIMIT // 1000} KB von {size // 1000} KB)" if size > STDERR_LOG_LIMIT else ""
+        log.log(logging.WARNING if failed else logging.INFO, "Ausgabe des Umwandlungsprozesses%s:\n%s", cut, text)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _stop(process, grace: float = 0) -> int | None:
