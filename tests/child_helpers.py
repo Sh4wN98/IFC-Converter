@@ -134,3 +134,21 @@ def isolate_user_dirs(monkeypatch, path):
 
     monkeypatch.setattr(app, "config_dir", lambda: Path(path) / "config")
     monkeypatch.setattr(app, "log_dir", lambda: Path(path) / "logs")
+
+
+def convert_counting_workers(input_path, output_path, fmt, threads, progress=None, **options):
+    """Convert, and write the most worker processes the Rhino export had running to <output>.workers."""
+    import concurrent.futures
+
+    running = []
+
+    class Pool(concurrent.futures.ProcessPoolExecutor):
+        def submit(self, *args, **kwargs):
+            future = super().submit(*args, **kwargs)
+            running.append(len(self._processes))
+            return future
+
+    concurrent.futures.ProcessPoolExecutor = Pool
+    result = convert(input_path, output_path, fmt, threads, progress, **options)
+    Path(f"{output_path}.workers").write_text(str(max(running, default=0)))
+    return result

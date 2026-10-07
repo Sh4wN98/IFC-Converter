@@ -126,12 +126,17 @@ def test_child_dies_with_killed_parent(wall_ifc, tmp_path):
     assert _process_gone(child)
 
 
-def test_die_with_parent_is_a_no_op_elsewhere(monkeypatch):
+def test_die_with_parent_watches_the_parent_elsewhere(monkeypatch):
+    # Windows/macOS have no prctl: a thread waits for the parent and then ends the child.
     import ctypes
 
+    watched = []
     monkeypatch.setattr(process.sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: pytest.fail("prctl called"))
-    process._die_with_parent(os.getppid() + 1)  # neither calls prctl nor exits
+    monkeypatch.setattr(process, "exit_with_parent", watched.append)
+    process._die_with_parent(4711)
+    _wait_for(lambda: watched)
+    assert watched == [4711]
 
 
 def _wait_for(condition, timeout=30):
@@ -342,3 +347,16 @@ def test_native_crash_stack_and_retry_are_logged(wall_ifc, tmp_path, monkeypatch
     assert "always_segfault" in caplog.text  # the Python stack of the crash
     assert "neuer Versuch mit OpenCASCADE" in caplog.text
     assert "Absturz nach" in caplog.text
+
+
+@pytest.mark.parametrize("geometry", ["brep", "mesh"])
+def test_large_rhino_export_runs_its_workers_inside_the_child(many_walls_ifc, tmp_path, geometry):
+    # The conversion child starts worker processes for models of MIN_PARALLEL_ELEMENTS and more. As a
+    # daemonic process it could not ("daemonic processes are not allowed to have children"): every
+    # large 3dm conversion in the app failed, while small test models never started workers.
+    output = tmp_path / f"walls-{geometry}.3dm"
+    result = convert_in_child(
+        many_walls_ifc, output, "3dm", threads=4, geometry=geometry, func=child_helpers.convert_counting_workers,
+    )
+    assert result.elements == 600
+    assert int(Path(f"{output}.workers").read_text()) > 0  # built by workers, not by the fallback

@@ -28,6 +28,9 @@ import rhino3dm
 EXPECTED = (0.2, 3.0, 5.0)  # wall dimensions in metres, sorted
 TOLERANCE = 1e-6
 TIMEOUT = 600
+# Elements of the large test model: above rhino.MIN_PARALLEL_ELEMENTS, so the conversion child starts
+# its worker processes (a daemonic child could not, and every large 3dm conversion failed in 0.2.0).
+WALLS = 600
 WINDOWS = sys.platform == "win32"
 
 
@@ -51,6 +54,46 @@ def make_wall(path: Path) -> None:
     api.run("geometry.assign_representation", model, product=wall, representation=representation)
     api.run("geometry.edit_object_placement", model, product=wall)
     model.write(str(path))
+
+
+def make_walls(path: Path, count: int = WALLS) -> None:
+    """``count`` 2 x 0.2 x 3 m walls sharing their type's geometry: enough for the worker processes."""
+    import numpy
+
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="Test")
+    api.run("unit.assign_unit", model)
+    context = api.run("context.add_context", model, context_type="Model")
+    body = api.run(
+        "context.add_context", model,
+        context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context,
+    )
+    site = api.run("root.create_entity", model, ifc_class="IfcSite", name="Site")
+    api.run("aggregate.assign_object", model, relating_object=project, products=[site])
+    wall_type = api.run("root.create_entity", model, ifc_class="IfcWallType", name="Wall type")
+    box = api.run("geometry.add_wall_representation", model, context=body, length=2, height=3, thickness=0.2)
+    api.run("geometry.assign_representation", model, product=wall_type, representation=box)
+    walls = []
+    for i in range(count):
+        wall = api.run("root.create_entity", model, ifc_class="IfcWall", name=f"Wall {i}")
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (2.5 * (i % 30), 1.0 * (i // 30), 0.0)
+        api.run("geometry.edit_object_placement", model, product=wall, matrix=matrix)
+        walls.append(wall)
+    api.run("type.assign_type", model, related_objects=walls, relating_type=wall_type)
+    api.run("spatial.assign_container", model, relating_structure=site, products=walls)
+    model.write(str(path))
+
+
+def check_large_model(path: Path, log: Path, log_offset: int) -> None:
+    """All walls are in the 3dm, and the worker processes ran (no fallback to the main process)."""
+    objects = rhino3dm.File3dm.Read(str(path)).Objects
+    if len(objects) != WALLS:
+        raise AssertionError(f"{path.name}: {len(objects)} objects instead of {WALLS}")
+    written = log.read_bytes()[log_offset:].decode("utf-8", "replace") if log.is_file() else ""
+    if "Worker processes failed" in written or "Traceback" in written:
+        raise AssertionError(f"the worker processes failed:\n{written[-3000:]}")
+    print(f"  {path.name}: {WALLS} objects, worker processes ran ✓")
 
 
 def check_extent(label: str, minimum, maximum) -> None:
@@ -243,6 +286,17 @@ def main() -> int:
         check_glb(out / "wall.glb")
         convert(cli, source, out / "wall.obj", "-f", "obj")
         check_obj(out / "wall.obj")
+
+        from ifc_converter.app import log_path
+
+        walls = folder / "Wände.ifc"
+        make_walls(walls)
+        log = log_path()
+        offset = log.stat().st_size if log.is_file() else 0
+        for geometry in ("brep", "mesh"):
+            target = out / f"walls-{geometry}.3dm"
+            convert(cli, walls, target, "-f", "3dm", "-g", geometry, "-j", "4")
+            check_large_model(target, log, offset)
 
         if hashlib.sha256(source.read_bytes()).hexdigest() != original:
             raise AssertionError("the input IFC was modified")
