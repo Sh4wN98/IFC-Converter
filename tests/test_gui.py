@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -548,8 +549,9 @@ def test_settings_dialog_offers_the_kernel_strategies(app):
 
 
 def test_settings_dialog_edits_preferences(app):
-    dialog = SettingsDialog(Preferences(threads=3, kernel="opencascade", low_priority=False, open_output=True))
-    assert dialog.preferences() == Preferences(threads=3, kernel="opencascade", low_priority=False, open_output=True)
+    threads = min(3, process.cpu_count())  # CI runners for private repositories have 2 cores
+    dialog = SettingsDialog(Preferences(threads=threads, kernel="opencascade", low_priority=False, open_output=True))
+    assert dialog.preferences() == Preferences(threads=threads, kernel="opencascade", low_priority=False, open_output=True)
     assert dialog.threads_spin.maximum() == process.cpu_count()
     assert dialog.threads_spin.specialValueText() == f"Automatisch ({process.auto_threads()})"
 
@@ -716,16 +718,20 @@ def test_second_start_hands_its_files_to_the_running_app(app, wall_ifc):
     assert server.listen()
     received = []
     server.paths_received.connect(received.append)
-    sent = {}
-    # The second start blocks while it sends, so it runs in a thread; this one runs the event loop.
-    sender = threading.Thread(target=lambda: sent.setdefault("ok", gui.send_to_running_instance([str(wall_ifc)], name)))
-    sender.start()
-    deadline = time.monotonic() + 10
-    while not received and time.monotonic() < deadline:
+    # The second start is a process of its own with its own QApplication, as when a file is dropped
+    # onto the exe (Windows' named pipes need its event dispatcher); this one runs the event loop.
+    code = (
+        "import sys; from PySide6.QtWidgets import QApplication; app = QApplication([]); "
+        "from ifc_converter import gui; sys.exit(0 if gui.send_to_running_instance(sys.argv[1:2], sys.argv[2]) else 3)"
+    )
+    sender = subprocess.Popen(
+        [sys.executable, "-c", code, str(wall_ifc), name], env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    deadline = time.monotonic() + 30
+    while (not received or sender.poll() is None) and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.01)
-    sender.join(5)
-    assert sent["ok"] is True
+    assert sender.wait(5) == 0
     assert received == [[str(wall_ifc)]]
     server.server.close()
 

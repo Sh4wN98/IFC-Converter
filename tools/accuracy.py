@@ -1012,7 +1012,7 @@ def convert_in_child(source: Path, fmt: str, geometry: str, output: Path, thread
     if deflection:
         command += ["--deflection", str(deflection)]
     started = time.time()
-    process = subprocess.run(command, capture_output=True, text=True)
+    process = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     seconds = round(time.time() - started, 1)
     lines = [line for line in process.stdout.splitlines() if line.startswith("{")]
     if process.returncode == 0 and lines:
@@ -1104,7 +1104,7 @@ def write_report(reports: list[dict], path: Path) -> None:
         if infos:
             lines += ["", "Output facts: " + "; ".join(f"{m}: {json.dumps(i)}" for m, i in infos.items())]
         lines.append("")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _pair(summary: dict, key: str, pct: bool = False) -> str:
@@ -1150,7 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.child:
         return _child(*args.child, args.threads, args.deflection)
     if args.from_jsonl:
-        reports = [json.loads(line) for path in args.from_jsonl for line in path.read_text().splitlines() if line.strip()]
+        reports = [json.loads(line) for path in args.from_jsonl for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         write_report(reports, args.report)
         print(f"Report: {args.report}")
         return 0
@@ -1174,7 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
 
             report = {"file": source.name, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-2000:]}
         reports.append(report)
-        with open(args.report.with_suffix(".jsonl"), "a") as log:
+        with open(args.report.with_suffix(".jsonl"), "a", encoding="utf-8") as log:
             log.write(json.dumps(report, default=str) + "\n")
         write_report(reports, args.report)
     print(f"Report: {args.report}")

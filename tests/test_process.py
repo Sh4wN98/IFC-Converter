@@ -278,7 +278,13 @@ def test_child_keeps_normal_priority_if_asked(wall_ifc, tmp_path):
     result = convert_in_child(wall_ifc, tmp_path / "normal.txt", func=child_helpers.report_priority, low_priority=False)
     value = int(result.output.read_text())
     if sys.platform == "win32":
-        assert value == 0x20  # NORMAL_PRIORITY_CLASS
+        import ctypes
+
+        # The parent's class (CI runners start their steps below normal; a child inherits that).
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetPriorityClass.argtypes = (ctypes.c_void_p,)
+        assert value == kernel32.GetPriorityClass(kernel32.GetCurrentProcess())
     else:
         assert value == os.getpriority(os.PRIO_PROCESS, 0)
 
