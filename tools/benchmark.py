@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"▶ {source.name} [{mode}] ({source.stat().st_size / 1e6:.0f} MB)", flush=True)
             result = run_one(source, mode, args)
             results.append(result)
-            with open(results_path, "a") as log:
+            with open(results_path, "a", encoding="utf-8") as log:
                 log.write(json.dumps(result) + "\n")
             print(f"  {_summary_line(result)}", flush=True)
             write_report(results, args.report)
@@ -81,7 +81,9 @@ def run_one(source: Path, mode: str, args) -> dict:
     if args.threads:
         command += ["--threads", str(args.threads)]
     started = time.time()
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+    )
     sampler = _PeakSampler(process.pid)
     sampler.start()
 
@@ -150,7 +152,7 @@ def _child(source: str, fmt: str, geometry: str, output: str, threads: int | Non
     """Convert one file and report progress as JSON lines on stdout."""
     start = time.time()
     # The geometry kernels print debug output to the C-level stdout; keep our events on a copy of it.
-    events = os.fdopen(os.dup(1), "w", buffering=1)
+    events = os.fdopen(os.dup(1), "w", buffering=1, encoding="utf-8")
     devnull = os.open(os.devnull, os.O_WRONLY)
     os.dup2(devnull, 1)
     os.close(devnull)
@@ -223,7 +225,7 @@ def _inspect_in_subprocess(output: Path) -> dict:
     try:
         completed = subprocess.run(
             [sys.executable, __file__, "--inspect", str(output)],
-            capture_output=True, text=True, timeout=3600,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3600,
         )
         lines = completed.stdout.strip().splitlines()
         if not lines:
@@ -358,7 +360,7 @@ def write_report(results: list[dict], path: Path) -> None:
             f"| {r['peak_mb']} | {r.get('elements', '')} | {r.get('output_mb', '')} | {geometry} "
             f"| {c.get('extent_m', '')} | {c.get('max_abs_coordinate', '')} | {notes.strip()} |"
         )
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
