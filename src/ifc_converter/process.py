@@ -17,6 +17,7 @@ import os
 import signal
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -111,13 +112,15 @@ def _retry_with_opencascade(exitcode: int | None, options: dict) -> bool:
 
 
 def _die_with_parent(parent_pid: int) -> None:
-    """Linux: have the kernel SIGKILL this process as soon as its parent dies; a no-op elsewhere.
+    """End this process as soon as its parent dies.
 
     Otherwise a child whose GUI or terminal was killed would convert on as an orphan, holding gigabytes
-    of memory. Strictly, the signal comes when the parent *thread* that started the child ends, but
-    convert_in_child() does not return before the child is gone, so that thread outlives it.
+    of memory. Linux: the kernel SIGKILLs it (strictly, when the parent *thread* that started the child
+    ends, but convert_in_child() does not return before the child is gone, so that thread outlives
+    it). Elsewhere a thread waits for the parent to end.
     """
     if not sys.platform.startswith("linux"):
+        threading.Thread(target=exit_with_parent, args=(parent_pid,), daemon=True, name="parent-watch").start()
         return
     try:
         import ctypes
@@ -127,6 +130,25 @@ def _die_with_parent(parent_pid: int) -> None:
         return
     if os.getppid() != parent_pid:  # the parent died before prctl() took effect
         os._exit(1)
+
+
+def exit_with_parent(parent_pid: int) -> None:
+    """Block until the process ``parent_pid`` has ended, then end this process (run it in a thread)."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        synchronize, infinite = 0x00100000, 0xFFFFFFFF
+        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+        if handle:  # else the parent is already gone
+            kernel32.WaitForSingleObject(handle, infinite)
+    else:
+        while os.getppid() == parent_pid:
+            time.sleep(0.5)
+    os._exit(1)
 
 
 def _redirect_fd(fd: int, path: str, flags: int) -> bool:
@@ -316,7 +338,9 @@ def _run_child(
         target=_child_main,
         args=(writer, func, args, options, os.getpid(), stderr_path, low_priority),
         name="ifc-convert",
-        daemon=True,  # never outlive a normally exiting parent
+        # Not a daemon: daemonic processes may not start processes, and the child starts the worker
+        # processes of a large Rhino export. _die_with_parent() ends it with its parent instead.
+        daemon=False,
     )
     outcome = None
     try:

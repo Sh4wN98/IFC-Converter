@@ -496,3 +496,33 @@ def mixed_ifc(tmp_path):
     path = tmp_path / "mixed.ifc"
     model.write(str(path))
     return path
+
+
+@pytest.fixture
+def many_walls_ifc(tmp_path):
+    """600 walls sharing their type's geometry: enough elements for the Rhino export's worker processes."""
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="Test")
+    api.run("unit.assign_unit", model)
+    context = api.run("context.add_context", model, context_type="Model")
+    body = api.run(
+        "context.add_context", model,
+        context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context,
+    )
+    site = api.run("root.create_entity", model, ifc_class="IfcSite", name="Site")
+    api.run("aggregate.assign_object", model, relating_object=project, products=[site])
+    wall_type = api.run("root.create_entity", model, ifc_class="IfcWallType", name="Wall type")
+    box = api.run("geometry.add_wall_representation", model, context=body, length=2, height=3, thickness=0.2)
+    api.run("geometry.assign_representation", model, product=wall_type, representation=box)
+    walls = []
+    for i in range(600):
+        wall = api.run("root.create_entity", model, ifc_class="IfcWall", name=f"Wall {i}")
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (2.5 * (i % 30), 1.0 * (i // 30), 0.0)
+        api.run("geometry.edit_object_placement", model, product=wall, matrix=matrix)
+        walls.append(wall)
+    api.run("type.assign_type", model, related_objects=walls, relating_type=wall_type)
+    api.run("spatial.assign_container", model, relating_structure=site, products=walls)
+    path = tmp_path / "walls.ifc"
+    model.write(str(path))
+    return path

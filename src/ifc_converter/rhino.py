@@ -8,9 +8,7 @@ import math
 import multiprocessing
 import os
 import re
-import sys
 import threading
-import time
 import weakref
 from collections import OrderedDict, deque
 from collections.abc import Iterator
@@ -28,6 +26,7 @@ from ifc_converter.converter import (
     shape_products,
 )
 from ifc_converter.polysurface import planar_polysurface
+from ifc_converter.process import exit_with_parent
 
 log = logging.getLogger(__name__)
 
@@ -440,14 +439,14 @@ class _Builder:
             future, triangles = self._pending.popleft()
             self._pending_triangles -= triangles
             concurrent.futures.wait([future])
-        if self._pool is None:
-            self._pool = concurrent.futures.ProcessPoolExecutor(
-                self._workers, multiprocessing.get_context("spawn"), _worker_init, (os.getpid(),)
-            )
         try:
+            if self._pool is None:
+                self._pool = concurrent.futures.ProcessPoolExecutor(
+                    self._workers, multiprocessing.get_context("spawn"), _worker_init, (os.getpid(),)
+                )
             batch.future = self._pool.submit(_build_batch, batch.jobs)
-        except concurrent.futures.BrokenExecutor:
-            self._broken()
+        except Exception as exc:  # a broken pool, or workers that cannot be started at all
+            self._broken(exc)
             batch.set_results(_build_batch(batch.jobs))
             return
         # The input is only kept to build it here should a worker fail.
@@ -469,9 +468,12 @@ class _Builder:
                     batch.set_results(_build_batch(batch.jobs))
         return batch.results
 
-    def _broken(self) -> None:
+    def _broken(self, error: BaseException | None = None) -> None:
         if self._workers:
-            log.warning("Worker process failed, building the remaining geometry in the main process")
+            log.warning(
+                "Worker processes failed (%s), building the remaining geometry in the main process",
+                f"{type(error).__name__}: {error}" if error else "a worker ended",
+            )
         self._workers = 0
 
 
@@ -495,25 +497,7 @@ def _worker_count(threads: int, elements: int) -> int:
 def _worker_init(parent_pid: int) -> None:
     # A worker blocks reading its next batch, also when the conversion was cancelled by killing its
     # process: without this it would wait forever (Windows) or until killed with it (Linux only).
-    threading.Thread(target=_exit_with_parent, args=(parent_pid,), daemon=True).start()
-
-
-def _exit_with_parent(parent_pid: int) -> None:
-    if sys.platform == "win32":
-        import ctypes
-
-        kernel32 = ctypes.WinDLL("kernel32")
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
-        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
-        synchronize, infinite = 0x00100000, 0xFFFFFFFF
-        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
-        if handle:  # else the parent is already gone
-            kernel32.WaitForSingleObject(handle, infinite)
-    else:
-        while os.getppid() == parent_pid:
-            time.sleep(0.5)
-    os._exit(1)
+    threading.Thread(target=exit_with_parent, args=(parent_pid,), daemon=True).start()
 
 
 def _build_batch(jobs: list[tuple]) -> list[tuple[str, dict] | None]:
