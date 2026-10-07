@@ -450,3 +450,49 @@ def mapped_with_opening_ifc(tmp_path):
     path = tmp_path / "cabinet.ifc"
     model.write(str(path))
     return path
+
+
+@pytest.fixture
+def mixed_ifc(tmp_path):
+    """Two storeys with boxes of several classes, round columns (tessellated: meshes), a furniture type
+    placed three times (one shared geometry), property sets on elements, a shared set and a type set."""
+    model, body, site = _metre_model("IFC4")
+    building = _spatial(model, "IfcBuilding", "Building", site)
+    storeys = [_spatial(model, "IfcBuildingStorey", name, building) for name in ("EG", "OG")]
+    elements = []
+    for i in range(12):
+        ifc_class = ("IfcWall", "IfcSlab", "IfcBeam")[i % 3]
+        element = _box(model, body, ifc_class, f"{ifc_class} {i}", (1 + i * 0.1, 0.2, 2.5), (i * 2.0, 0, 3.0 * (i % 2)))
+        api.run("spatial.assign_container", model, relating_structure=storeys[i % 2], products=[element])
+        pset = api.run("pset.add_pset", model, product=element, name="Pset_Test")
+        api.run("pset.edit_pset", model, pset=pset, properties={"Index": i, "Label": f"element {i}"})
+        elements.append(element)
+    # One property set defining several elements.
+    rel = model.by_type("IfcRelDefinesByProperties")[0]
+    rel.RelatedObjects = tuple(rel.RelatedObjects) + tuple(elements[1:4])
+    for i in range(3):
+        column = api.run("root.create_entity", model, ifc_class="IfcColumn", name=f"Column {i}")
+        profile = model.createIfcCircleProfileDef("AREA", None, None, 0.25)
+        representation = api.run("geometry.add_profile_representation", model, context=body, profile=profile, depth=3.0)
+        api.run("geometry.assign_representation", model, product=column, representation=representation)
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (i * 3.0, 5.0, 0.0)
+        api.run("geometry.edit_object_placement", model, product=column, matrix=matrix)
+        api.run("spatial.assign_container", model, relating_structure=storeys[0], products=[column])
+    furniture_type = api.run("root.create_entity", model, ifc_class="IfcFurnitureType", name="Cabinet")
+    representation = api.run("geometry.add_wall_representation", model, context=body, length=1, height=0.8, thickness=0.5)
+    api.run("geometry.assign_representation", model, product=furniture_type, representation=representation)
+    type_pset = api.run("pset.add_pset", model, product=furniture_type, name="Pset_Type")
+    api.run("pset.edit_pset", model, pset=type_pset, properties={"Maker": "ACME", "Label": "type"})
+    for i in range(3):
+        furniture = api.run("root.create_entity", model, ifc_class="IfcFurniture", name=f"Cabinet {i}")
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (i * 2.0, -3.0, 0.0)
+        api.run("geometry.edit_object_placement", model, product=furniture, matrix=matrix)
+        api.run("spatial.assign_container", model, relating_structure=storeys[1], products=[furniture])
+        api.run("type.assign_type", model, related_objects=[furniture], relating_type=furniture_type)
+        pset = api.run("pset.add_pset", model, product=furniture, name="Pset_Type")
+        api.run("pset.edit_pset", model, pset=pset, properties={"Label": f"cabinet {i}"})
+    path = tmp_path / "mixed.ifc"
+    model.write(str(path))
+    return path

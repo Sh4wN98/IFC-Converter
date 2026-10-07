@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import signal
@@ -198,6 +199,25 @@ def test_hybrid_kernel_crash_is_retried_with_opencascade(wall_ifc, tmp_path, mon
 
 
 @posix_only
+@pytest.mark.parametrize("kernel", ["accurate", "hybrid"])
+@pytest.mark.parametrize("how", ["argument", "environment"])
+def test_strategies_using_the_hybrid_kernel_are_retried(wall_ifc, tmp_path, monkeypatch, kernel, how):
+    target = tmp_path / "wall.glb"
+    options = {}
+    if how == "argument":
+        monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+        options["kernel"] = kernel
+    else:
+        monkeypatch.setenv("IFC_CONVERTER_KERNEL", kernel)
+    retries = []
+    result = convert_in_child(
+        wall_ifc, target, on_retry=lambda: retries.append(1), func=child_helpers.segfault_unless_opencascade, **options,
+    )
+    assert result.elements == 1 and retries == [1]
+    assert _attempts(target)[-1] == "opencascade"
+
+
+@posix_only
 def test_crash_of_the_retry_fails_with_crash_message(wall_ifc, tmp_path, monkeypatch):
     monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
     target = tmp_path / "wall.glb"
@@ -242,3 +262,77 @@ def test_native_stdout_of_the_child_is_silenced(wall_ifc, tmp_path, capfd):
     assert result.elements == 1
     out, _ = capfd.readouterr()
     assert "local z" not in out and "chatter" not in out
+
+
+def test_child_runs_below_normal_priority(wall_ifc, tmp_path):
+    result = convert_in_child(wall_ifc, tmp_path / "low.txt", func=child_helpers.report_priority)
+    value = int(result.output.read_text())
+    if sys.platform == "win32":
+        assert value == process.BELOW_NORMAL_PRIORITY_CLASS
+    else:
+        own = os.getpriority(os.PRIO_PROCESS, 0)
+        assert value == min(19, own + process.NICE_INCREMENT)
+
+
+def test_child_keeps_normal_priority_if_asked(wall_ifc, tmp_path):
+    result = convert_in_child(wall_ifc, tmp_path / "normal.txt", func=child_helpers.report_priority, low_priority=False)
+    value = int(result.output.read_text())
+    if sys.platform == "win32":
+        assert value == 0x20  # NORMAL_PRIORITY_CLASS
+    else:
+        assert value == os.getpriority(os.PRIO_PROCESS, 0)
+
+
+def test_auto_threads_are_the_converter_default(monkeypatch):
+    # One definition (converter.default_threads): cores but two, at most MAX_DEFAULT_THREADS.
+    from ifc_converter import converter
+
+    assert process.auto_threads() == converter.default_threads()
+    monkeypatch.setattr(process, "default_threads", lambda: 7)
+    assert process.auto_threads() == 7
+
+
+def test_child_gets_auto_threads_by_default(wall_ifc, tmp_path):
+    result = convert_in_child(wall_ifc, tmp_path / "threads.txt", func=child_helpers.report_threads)
+    assert int(result.output.read_text()) == process.auto_threads()
+    result = convert_in_child(wall_ifc, tmp_path / "threads.txt", threads=3, func=child_helpers.report_threads)
+    assert int(result.output.read_text()) == 3
+
+
+def test_child_stderr_goes_to_the_log_and_temp_file_is_removed(wall_ifc, tmp_path, monkeypatch, caplog):
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(process.tempfile, "tempdir", str(temp))
+    caplog.set_level(logging.INFO, logger="ifc_converter")
+    convert_in_child(wall_ifc, tmp_path / "out.txt", func=child_helpers.write_to_stderr)
+    assert "python warning on stderr" in caplog.text
+    assert "native message on fd 2" in caplog.text
+    assert list(temp.iterdir()) == []
+
+
+def test_python_traceback_of_the_child_is_kept_and_logged(wall_ifc, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="ifc_converter")
+    with pytest.raises(ConversionFailed) as info:
+        convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.raise_error)
+    assert "Traceback" in info.value.details and "def raise_error" not in info.value.details
+    assert "in raise_error" in info.value.details
+    assert "ValueError: wall.ifc ist kaputt" in caplog.text and "in raise_error" in caplog.text
+
+
+def test_conversion_start_and_result_are_logged(wall_ifc, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="ifc_converter")
+    convert_in_child(wall_ifc, tmp_path / "wall.glb", "glb", threads=2)
+    assert re.search(r"Umwandlung: .*wall\.ifc \(\d+,?\.?\d* MB\) -> .*wall\.glb, Format glb, 2 Threads", caplog.text)
+    assert re.search(r"Fertig nach \d+\.\d s: .*wall\.ifc -> .*wall\.glb, 1 Bauteile, 0 ohne Geometrie", caplog.text)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGSEGV via os.kill is POSIX only")
+def test_native_crash_stack_and_retry_are_logged(wall_ifc, tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    caplog.set_level(logging.INFO, logger="ifc_converter")
+    with pytest.raises(ConversionCrashed):
+        convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.always_segfault)
+    assert "Fatal Python error: Segmentation fault" in caplog.text
+    assert "always_segfault" in caplog.text  # the Python stack of the crash
+    assert "neuer Versuch mit OpenCASCADE" in caplog.text
+    assert "Absturz nach" in caplog.text

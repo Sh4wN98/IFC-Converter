@@ -2,6 +2,7 @@
 
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 
@@ -96,3 +97,40 @@ def chatty_native_code(input_path, output_path, fmt, threads, progress=None, **o
     os.write(1, b"local z: 0.00298264,0.0126555,0.999915\n")
     print("python-level chatter")
     return convert(input_path, output_path, fmt, threads, progress, **options)
+
+
+def report_priority(input_path, output_path, fmt, threads, progress=None, **options):
+    """Write the child's scheduling priority into the output file: the Windows priority class, or the nice value."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetPriorityClass.argtypes = (ctypes.c_void_p,)
+        value = kernel32.GetPriorityClass(kernel32.GetCurrentProcess())
+    else:
+        value = os.getpriority(os.PRIO_PROCESS, 0)
+    Path(output_path).write_text(str(value))
+    return ConversionResult(output=Path(output_path), elements=1)
+
+
+def report_threads(input_path, output_path, fmt, threads, progress=None, **options):
+    """Write the thread count the child was given into the output file."""
+    Path(output_path).write_text(str(threads))
+    return ConversionResult(output=Path(output_path), elements=1)
+
+
+def write_to_stderr(input_path, output_path, fmt, threads, progress=None, **options):
+    """Write to stderr from Python and from "native" code (the file descriptor), then succeed."""
+    print("python warning on stderr", file=sys.stderr)
+    os.write(2, b"native message on fd 2\n")
+    Path(output_path).write_text("ok")
+    return ConversionResult(output=Path(output_path), elements=1)
+
+
+def isolate_user_dirs(monkeypatch, path):
+    """Point the app's settings and log folders into ``path``, on every platform."""
+    from ifc_converter import app
+
+    monkeypatch.setattr(app, "config_dir", lambda: Path(path) / "config")
+    monkeypatch.setattr(app, "log_dir", lambda: Path(path) / "logs")

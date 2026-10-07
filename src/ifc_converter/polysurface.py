@@ -68,7 +68,8 @@ _opennurbs_version: int | None = None
 
 
 def planar_polysurface(
-    verts: Sequence[float], faces: Sequence[Sequence[Sequence[int]]], item_ids: Sequence[int] | None = None
+    verts: Sequence[float], faces: Sequence[Sequence[Sequence[int]]], item_ids: Sequence[int] | None = None,
+    solid_items: set[int] | None = None,
 ) -> rhino3dm.Brep | None:
     """A valid Brep from flat ``verts`` (xyz...) and polygon ``faces`` with holes, or None.
 
@@ -77,11 +78,17 @@ def planar_polysurface(
     ``_is_silhouette``.
 
     ``item_ids`` (one per face) keeps touching representation items, e.g. window frame and glass,
-    apart as separate closed shells instead of joining them along non-manifold edges.
+    apart as separate closed shells instead of joining them along non-manifold edges. The shells of
+    an item in ``solid_items`` are turned only together, so the voids of hollow solids keep pointing
+    inwards.
     """
     points, triangles, point_items = _weld(verts, faces, item_ids)
     welded = _split_t_junctions(points, triangles, point_items)
-    welded, outer_vectors, sources = _orient(points, welded)
+    solids = None
+    if solid_items:
+        solids = [point_items[face[0][0]] for face in welded]
+        solids = [item if item in solid_items else None for item in solids]
+    welded, outer_vectors, sources = _orient(points, welded, solids)
     if not welded:
         return None
     merged, groups = _merge_coplanar(points, welded, outer_vectors)
@@ -250,12 +257,16 @@ def _near_edges(
             yield edges[e], vertices
 
 
-def _orient(points: list[Point], faces: list[Face]) -> tuple[list[Face], list[Point], list[int]]:
+def _orient(
+    points: list[Point], faces: list[Face], solids: list[int | None] | None = None
+) -> tuple[list[Face], list[Point], list[int]]:
     """Outer loop first, holes against it, neighbours consistent, closed shells pointing outwards.
 
     IfcOpenShell's polygon output guarantees neither which loop is the outer one nor a consistent
     loop direction across faces. Also returns the area vector of each outer loop and the index of
-    each face in ``faces`` (faces without area are dropped).
+    each face in ``faces`` (faces without area are dropped). ``solids`` gives per face the solid it
+    belongs to (or None): the shells of one solid are turned together, so that the solid as a whole
+    points outwards and its voids inwards.
     """
     oriented: list[Face] = []
     outer_vectors: list[Point] = []
@@ -316,18 +327,26 @@ def _orient(points: list[Point], faces: list[Face]) -> tuple[list[Face], list[Po
             oriented[fi] = [loop[::-1] for loop in face]
             outer_vectors[fi] = _area_vector(points, oriented[fi][0])
 
-    # A shell with negative signed volume points inwards.
-    for shell in shells:
+    # A shell with negative signed volume points inwards. The shells of a solid count together.
+    groups: dict[object, list[list[int]]] = {}
+    for k, shell in enumerate(shells):
+        solid = solids[sources[shell[0]]] if solids else None
+        groups.setdefault(("shell", k) if solid is None else solid, []).append(shell)
+    for group in groups.values():
         volume = 0.0
-        for fi in shell:
-            area = _add((0.0, 0.0, 0.0), outer_vectors[fi])
-            for loop in oriented[fi][1:]:
-                area = _add(area, _area_vector(points, loop))
-            volume += _dot(points[oriented[fi][0][0]], area)
-        if volume < 0:
+        ox, oy, oz = points[oriented[group[0][0]][0][0]]  # precision far from the world origin
+        for shell in group:
             for fi in shell:
-                oriented[fi] = [loop[::-1] for loop in oriented[fi]]
-                outer_vectors[fi] = _area_vector(points, oriented[fi][0])
+                area = _add((0.0, 0.0, 0.0), outer_vectors[fi])
+                for loop in oriented[fi][1:]:
+                    area = _add(area, _area_vector(points, loop))
+                px, py, pz = points[oriented[fi][0][0]]
+                volume += _dot((px - ox, py - oy, pz - oz), area)
+        if volume < 0:
+            for shell in group:
+                for fi in shell:
+                    oriented[fi] = [loop[::-1] for loop in oriented[fi]]
+                    outer_vectors[fi] = _area_vector(points, oriented[fi][0])
     return oriented, outer_vectors, sources
 
 

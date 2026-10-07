@@ -12,6 +12,8 @@ from typing import TextIO
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
+from ifc_converter import __version__
+from ifc_converter.app import APP_NAME
 from ifc_converter.converter import FORMATS, ConversionResult, memory_warning
 from ifc_converter.process import RETRY_MESSAGE, convert_in_child
 
@@ -53,7 +55,10 @@ def parse_dropped(line: str, windows: bool | None = None) -> list[Path]:
 
 
 def desktop_dir() -> Path:
-    """The user's desktop folder, honouring OneDrive redirection and localised names."""
+    """The user's desktop folder, honouring OneDrive redirection and localised names.
+
+    The folder is not created here: only a conversion that writes into it does that.
+    """
     if os.name == "nt":
         desktop = _windows_desktop()
     else:
@@ -67,9 +72,7 @@ def desktop_dir() -> Path:
                 desktop = Path(out)
         except (OSError, subprocess.SubprocessError):
             pass
-    desktop = desktop or Path.home() / "Desktop"
-    desktop.mkdir(parents=True, exist_ok=True)
-    return desktop
+    return desktop or Path.home() / "Desktop"
 
 
 def _windows_desktop() -> Path | None:
@@ -190,6 +193,7 @@ def convert_in_terminal(
     geometry: str = "brep",
     label: str = "",
     on_retry: Callable[[], None] | None = None,
+    low_priority: bool = True,
 ) -> ConversionResult:
     """convert() in a child process with a progress line on stdout.
 
@@ -212,7 +216,8 @@ def convert_in_terminal(
 
     try:
         return convert_in_child(
-            source, target, fmt, threads, line.percent, geometry=geometry, on_retry=retrying
+            source, target, fmt, threads, line.percent, geometry=geometry, on_retry=retrying,
+            low_priority=low_priority,
         )
     except BaseException:
         for path in created:
@@ -239,10 +244,10 @@ def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
     return files, rejected
 
 
-def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep") -> int:
+def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep", low_priority: bool = True) -> int:
     output_dir = output_dir or desktop_dir()
     print("=" * 60)
-    print("  IFC File Converter")
+    print(f"  {APP_NAME} {__version__}")
     print("=" * 60)
     print("  IFC-Datei(en) oder Ordner hier ins Fenster ziehen, dann Enter.")
     print(f"  Fertige Dateien landen in: {output_dir}")
@@ -270,6 +275,12 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
         for path in rejected:
             print(f"  ✗ Keine IFC-Datei gefunden: {path}")
 
+        if files:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"  ✗ Ausgabeordner kann nicht angelegt werden: {exc}")
+                continue
         for source in files:
             target = unique_path(output_dir / f"{source.stem}.{fmt}")
             warning = check_memory(source)
@@ -279,7 +290,7 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
             try:
                 result = convert_in_terminal(
                     source, target, fmt, geometry=geometry, label="    ",
-                    on_retry=lambda: print(f"  ⚠ {RETRY_MESSAGE}"),
+                    on_retry=lambda: print(f"  ⚠ {RETRY_MESSAGE}"), low_priority=low_priority,
                 )
             except Exception as exc:
                 print(f"  ✗ Fehler bei {source.name}: {exc}")

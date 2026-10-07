@@ -72,7 +72,7 @@ def test_chunked_iteration_matches_single_pass(storey_ifc, monkeypatch, tmp_path
         return sorted((o.Attributes.GetUserString("IfcGlobalId"), len(o.Geometry.Vertices)) for o in objects)
 
     whole = convert(storey_ifc, tmp_path / "whole.3dm", fmt="3dm")
-    monkeypatch.setattr(converter, "CHUNK_SIZE", 1)
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 1)
     steps = []
     chunked = convert(storey_ifc, tmp_path / "chunked.3dm", fmt="3dm", progress=steps.append)
     assert summary(chunked.output) == summary(whole.output)
@@ -101,8 +101,8 @@ def test_memory_warning(wall_ifc, monkeypatch):
     assert "wall.ifc" in message and "0,0 GB" in message
 
 
-@pytest.mark.parametrize("kernel", ["hybrid", "opencascade"])
-def test_both_kernels_produce_the_wall(wall_ifc, tmp_path, kernel):
+@pytest.mark.parametrize("kernel", ["accurate", "hybrid", "opencascade"])
+def test_every_kernel_produces_the_wall(wall_ifc, tmp_path, kernel):
     result = convert(wall_ifc, tmp_path / f"{kernel}.obj", fmt="obj", kernel=kernel)
     assert result.elements == 1
     assert "v 5 0.2 3" in result.output.read_text()
@@ -122,11 +122,11 @@ def test_kernel_is_validated_and_can_come_from_the_environment(wall_ifc, monkeyp
         return real_iterator(*args, geometry_library=geometry_library, **kwargs)
 
     monkeypatch.setattr(converter.geom, "iterator", recording_iterator)
+    convert(wall_ifc, fmt="glb")  # "accurate": a wall goes to OpenCASCADE
+    monkeypatch.setenv("IFC_CONVERTER_KERNEL", "hybrid")
     convert(wall_ifc, fmt="glb")
-    monkeypatch.setenv("IFC_CONVERTER_KERNEL", "opencascade")
-    convert(wall_ifc, fmt="glb")
-    convert(wall_ifc, fmt="glb", kernel="hybrid")
-    assert used == ["hybrid-cgal-simple-opencascade", "opencascade", "hybrid-cgal-simple-opencascade"]
+    convert(wall_ifc, fmt="glb", kernel="opencascade")
+    assert used == ["opencascade", "hybrid-cgal-simple-opencascade", "opencascade"]
 
 
 def test_cli_kernel_flag(wall_ifc, tmp_path, monkeypatch):
@@ -190,7 +190,7 @@ def test_shapes_the_hybrid_kernel_skips_are_built_with_opencascade(storey_ifc, m
         return real_iterator(settings, model, threads, include=include, geometry_library=geometry_library)
 
     monkeypatch.setattr(converter.geom, "iterator", hybrid_without_walls)
-    result = convert(storey_ifc, fmt="glb")
+    result = convert(storey_ifc, fmt="glb", kernel="hybrid")
     assert (result.elements, result.skipped) == (2, 0)
     assert libraries == [
         ("hybrid-cgal-simple-opencascade", ["IfcSlab", "IfcWall"]),
@@ -300,3 +300,132 @@ def test_type_geometry_with_opening_is_not_lost(mapped_with_opening_ifc, fmt, ge
     assert (result.elements, result.skipped) == (1, 0)
     if fmt == "obj":
         assert result.output.read_text().count("\nf ") > 12  # more than a plain box: the cut-out is there
+
+
+def test_default_threads_leave_cores_for_the_user(monkeypatch):
+    from ifc_converter import converter
+
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 64, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    assert converter.default_threads() == converter.MAX_DEFAULT_THREADS
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 12, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 12)
+    assert converter.default_threads() == 12 - converter.SPARE_CORES
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 2, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    assert converter.default_threads() == 1
+
+
+def test_chunks_grow_with_the_thread_count():
+    from ifc_converter import converter
+
+    assert converter.chunk_size(1) == converter.chunk_size(4) == converter.CHUNK_SIZE
+    assert converter.chunk_size(16) == 16 * converter.CHUNK_PER_THREAD
+    assert converter.chunk_size(1000) == converter.MAX_CHUNK_SIZE
+
+
+def test_chunk_ends_follow_their_shapes_in_model_order(storey_ifc, monkeypatch):
+    from ifc_converter import converter, rhino
+
+    model = ifcopenshell.open(str(storey_ifc))
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 1)
+    products = converter.shape_products(model, rhino.EXCLUDED_CLASSES)
+    items = list(converter.iter_shapes(model, rhino._settings(), 2, rhino.EXCLUDED_CLASSES, chunk_ends=True))
+    ends = [item for item in items if isinstance(item, converter.ChunkEnd)]
+    assert [end.ids for end in ends] == [[product.id()] for product in products]
+    for shape, end in zip(items[::2], items[1::2]):  # each one-element chunk: its shape, then its end
+        assert end.ids == [shape.id]
+
+
+def test_kernel_never_runs_single_threaded(monkeypatch):
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "available_memory", lambda: 1024 ** 3 // 2)
+    assert converter._kernel_threads(1) == converter._kernel_threads(8) == converter.MIN_THREADS
+    monkeypatch.setattr(converter, "available_memory", lambda: None)
+    assert converter._kernel_threads(8) == 8
+
+
+def _terrain(model, body, name, triangles, position=(0.0, 0.0, 0.0)):
+    """An IfcGeographicElement whose body is a triangle mesh (IFC4X3: IfcTriangulatedIrregularNetwork)."""
+    import ifcopenshell.api as api
+
+    side = int((triangles / 2) ** 0.5) + 1
+    points = [(float(x), float(y), 0.1 * ((x * y) % 7)) for y in range(side + 1) for x in range(side + 1)]
+    faces = []
+    for y in range(side):
+        for x in range(side):
+            a = y * (side + 1) + x + 1
+            faces += [(a, a + 1, a + side + 2), (a, a + side + 2, a + side + 1)]
+    faces = faces[:triangles]
+    coordinates = model.createIfcCartesianPointList3D(points)
+    mesh = model.createIfcTriangulatedIrregularNetwork(coordinates, None, False, faces, None, [0] * len(faces))
+    shape = model.createIfcShapeRepresentation(body, "Body", "Tessellation", [mesh])
+    element = api.run("root.create_entity", model, ifc_class="IfcGeographicElement", name=name)
+    element.Representation = model.createIfcProductDefinitionShape(None, None, [shape])
+    matrix = numpy.eye(4)
+    matrix[:3, 3] = position
+    api.run("geometry.edit_object_placement", model, product=element, matrix=matrix)
+    return element
+
+
+def _faceted_box(model, size):
+    """An IfcFacetedBrep box from the origin to ``size``."""
+    x, y, z = size
+    corners = [(0, 0, 0), (x, 0, 0), (x, y, 0), (0, y, 0), (0, 0, z), (x, 0, z), (x, y, z), (0, y, z)]
+    points = [model.createIfcCartesianPoint([float(c) for c in corner]) for corner in corners]
+    quads = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
+    faces = [
+        model.createIfcFace([model.createIfcFaceOuterBound(model.createIfcPolyLoop([points[i] for i in quad]), True)])
+        for quad in quads
+    ]
+    return model.createIfcFacetedBrep(model.createIfcClosedShell(faces))
+
+
+@pytest.fixture
+def routing_ifc(tmp_path):
+    """IFC4X3: a large terrain, a small one, one with an opening, and a faceted brep wall."""
+    import ifcopenshell.api as api
+
+    from conftest import _box, _metre_model
+
+    model, body, site = _metre_model("IFC4X3")
+    _terrain(model, body, "Terrain", 5000)
+    _terrain(model, body, "Small terrain", 50, (200.0, 0.0, 0.0))
+    cut = _terrain(model, body, "Cut terrain", 5000, (400.0, 0.0, 0.0))
+    opening = _box(model, body, "IfcOpeningElement", "Pit", (5, 5, 5), (410, 10, -2))
+    api.run("feature.add_feature", model, feature=opening, element=cut)
+    wall = _box(model, body, "IfcWall", "Brep wall", (5, 0.2, 3), (0, -10, 0))
+    wall.Representation.Representations[0].Items = [_faceted_box(model, (5.0, 0.2, 3.0))]
+    path = tmp_path / "routing.ifc"
+    model.write(str(path))
+    return path
+
+
+def test_accurate_routes_only_large_triangle_meshes_to_the_hybrid_kernel(routing_ifc, monkeypatch):
+    from ifc_converter import converter
+
+    real_iterator = converter.geom.iterator
+    calls = []
+
+    def recording_iterator(settings, model, threads, include, geometry_library):
+        calls.append((geometry_library, sorted(p.Name for p in include)))
+        return real_iterator(settings, model, threads, include=include, geometry_library=geometry_library)
+
+    monkeypatch.setattr(converter.geom, "iterator", recording_iterator)
+    result = convert(routing_ifc, fmt="glb")
+    assert result.elements == 4 and result.skipped == 0
+    assert calls == [
+        ("hybrid-cgal-simple-opencascade", ["Terrain"]),
+        ("opencascade", ["Brep wall", "Cut terrain", "Small terrain"]),
+    ]
+
+
+def test_triangle_mesh_only(routing_ifc):
+    import ifcopenshell
+
+    from ifc_converter import converter
+
+    model = ifcopenshell.open(str(routing_ifc))
+    routed = {p.Name: converter._triangle_mesh_only(p) for p in converter.shape_products(model, converter.EXCLUDED_CLASSES)}
+    assert routed == {"Terrain": True, "Small terrain": False, "Cut terrain": False, "Brep wall": False}

@@ -1,0 +1,23 @@
+IFC Converter – Hinweise zu enthaltener Fremdsoftware / Third-party software notices
+====================================================================================
+
+Dieses Programm enthält die folgenden Open-Source-Komponenten in unveränderter Form.
+Sie liegen als einzelne Bibliotheken im Ordner _internal und können dort ersetzt werden.
+This program bundles the following open-source components, unmodified. They are separate
+libraries in the _internal folder and can be replaced there.
+
+Komponente / Component      Lizenz / License                         Quelle / Source
+--------------------------  ---------------------------------------  ------------------------------------------
+IfcOpenShell                LGPL-3.0 (licenses/LGPL-3.0.txt)         https://github.com/IfcOpenShell/IfcOpenShell
+  enthält / includes        Open CASCADE Technology (LGPL-2.1 with exception), CGAL, Boost,
+                            Eigen, GMP/MPFR (LGPL), libxml2 and others; see the IfcOpenShell project
+Qt 6 / PySide6 / Shiboken6  LGPL-3.0 (licenses/LGPL-3.0.txt)         https://www.qt.io, https://pypi.org/project/PySide6/
+rhino3dm / openNURBS        MIT                                      https://github.com/mcneel/rhino3dm
+NumPy                       BSD-3-Clause and others                  https://numpy.org
+Shapely / GEOS              BSD-3-Clause / LGPL-2.1                  https://github.com/shapely/shapely
+Python                      PSF License                              https://www.python.org
+PyInstaller bootloader      GPL-2.0 with bootloader exception        https://pyinstaller.org
+
+Die vollständigen Lizenztexte stehen im Ordner licenses sowie in den *.dist-info-Ordnern
+unter _internal. The full license texts are in the licenses folder and in the *.dist-info
+folders under _internal.

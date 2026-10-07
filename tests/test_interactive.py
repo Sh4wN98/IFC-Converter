@@ -317,3 +317,95 @@ def test_cli_removes_glb_temp_files_after_crash(wall_ifc, tmp_path, monkeypatch,
     use_child_func(monkeypatch, child_helpers.leave_glb_temp_files_and_segfault)
     assert main([str(wall_ifc), "-f", "glb", "-d", str(tmp_path / "out")]) == 1
     assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_cli_version(capsys):
+    from ifc_converter import __version__
+    from ifc_converter.cli import main
+
+    with pytest.raises(SystemExit) as info:
+        main(["--version"])
+    assert info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"ifc-convert {__version__}"
+
+
+def _record_child_calls(monkeypatch):
+    calls = []
+
+    def fake(source, target, fmt, threads=None, progress=None, low_priority=True, **options):
+        calls.append({"threads": threads, "low_priority": low_priority})
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_text("fake")
+        return process.ConversionResult(output=Path(target), elements=1)
+
+    monkeypatch.setattr(interactive, "convert_in_child", fake)
+    return calls
+
+
+def test_cli_converts_at_low_priority_unless_told_otherwise(wall_ifc, tmp_path, monkeypatch):
+    from ifc_converter.cli import main
+
+    calls = _record_child_calls(monkeypatch)
+    assert main([str(wall_ifc), "-d", str(tmp_path)]) == 0
+    assert main([str(wall_ifc), "-d", str(tmp_path), "--normal-priority", "-j", "3"]) == 0
+    assert calls == [{"threads": None, "low_priority": True}, {"threads": 3, "low_priority": False}]
+
+
+def test_cli_logs_only_when_run_from_the_command_line(wall_ifc, tmp_path, monkeypatch):
+    from ifc_converter import app
+    from ifc_converter.cli import main
+
+    child_helpers.isolate_user_dirs(monkeypatch, tmp_path)
+    _record_child_calls(monkeypatch)
+    log = tmp_path / "logs" / "ifc-converter.log"
+    assert main([str(wall_ifc), "-d", str(tmp_path / "a")]) == 0  # called from Python code
+    assert not log.exists()
+
+    monkeypatch.setattr(sys, "argv", ["ifc-convert", str(wall_ifc), "-d", str(tmp_path / "b")])
+    try:
+        assert main() == 0
+    finally:
+        app.stop_logging()
+    assert "gestartet (CLI)" in log.read_text(encoding="utf-8")
+
+
+def test_frozen_child_start_does_not_parse_its_arguments(monkeypatch):
+    """A frozen app starts itself for the conversion child; freeze_support() must run first."""
+    from ifc_converter import cli
+
+    calls = []
+    monkeypatch.setattr(cli.multiprocessing, "freeze_support", lambda: calls.append("freeze_support") or sys.exit(0))
+    with pytest.raises(SystemExit):
+        cli.main(["--multiprocessing-fork", "parent_pid=1", "pipe_handle=2"])
+    assert calls == ["freeze_support"]
+
+
+def test_desktop_dir_is_not_created(monkeypatch, tmp_path):
+    monkeypatch.setattr(interactive.os, "name", "posix")
+    monkeypatch.setattr(interactive.Path, "home", lambda: tmp_path)
+
+    def no_xdg(*args, **kwargs):
+        raise OSError("no xdg-user-dir")
+
+    monkeypatch.setattr(interactive.subprocess, "run", no_xdg)
+    assert interactive.desktop_dir() == tmp_path / "Desktop"
+    assert not (tmp_path / "Desktop").exists()
+
+
+def test_session_creates_the_output_folder_only_for_a_conversion(wall_ifc, tmp_path, monkeypatch, capsys):
+    out = tmp_path / "Desktop"
+    _record_child_calls(monkeypatch)
+    lines = iter(["foo.txt", str(wall_ifc)])
+
+    def fake_input(prompt):
+        try:
+            line = next(lines)
+        except StopIteration:
+            raise EOFError from None
+        if line == str(wall_ifc):
+            assert not out.exists()
+        return line
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    assert interactive.run("glb", out) == 0
+    assert (out / "wall.glb").exists()
