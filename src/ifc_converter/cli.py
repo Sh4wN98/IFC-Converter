@@ -9,7 +9,7 @@ from pathlib import Path
 from ifc_converter import __version__
 from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
 from ifc_converter.interactive import check_memory, convert_in_terminal, crashed_warning, skipped_warning
-from ifc_converter.process import SPARE_CORES
+from ifc_converter.process import auto_threads
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
     parser.add_argument(
-        "-j", "--threads", type=int, help=f"geometry threads (default: all CPU cores but {SPARE_CORES})",
+        "-j", "--threads", type=int, help=f"geometry threads (default here: {auto_threads()}, with the 3dm worker processes about half the CPU cores)",
     )
     parser.add_argument(
         "--normal-priority", action="store_true",

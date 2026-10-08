@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
 import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -100,17 +102,31 @@ STAGING_ROOM = 8
 COPY_BLOCK = 16 * 1024 ** 2
 
 # The geometry iterator keeps every shape it has produced until it is destroyed, so its memory
-# grows with the model. Running a fresh iterator per chunk of elements keeps that bounded. Each
-# chunk starts the threads anew and ends with them waiting for its slowest element, so chunks grow
-# with the thread count: CHUNK_PER_THREAD elements per thread (on 2 threads, 400 instead of 200
+# grows with the model. Running a fresh iterator per chunk of elements keeps that bounded. Chunks
+# grow with the thread count: CHUNK_PER_THREAD elements per thread (on 2 threads, 400 instead of 200
 # took the kernel 11-16 s instead of 19-33 s for Clinic_Architectural), at least CHUNK_SIZE and at
 # most MAX_CHUNK_SIZE elements (the shapes of 1600 elements took ~10 MB more there).
 CHUNK_SIZE = 200
 CHUNK_PER_THREAD = 50
 MAX_CHUNK_SIZE = 2000
+# Chunks overlap: once at most 1/OVERLAP_SHARE of the threads still compute (the slowest elements of
+# a chunk), the next chunk's iterator starts, instead of the other threads waiting idle for them (on
+# a 611 MB model one element kept 15 of 16 threads idle for 3 minutes). Its shapes wait in memory
+# until the chunk before is done, as the Rhino export adds elements in model order. While an element
+# keeps a chunk waiting, up to LOOKAHEAD_CHUNKS further chunks are computed, but only while
+# LOOKAHEAD_MEMORY stays free.
+OVERLAP_SHARE = 4
+LOOKAHEAD_CHUNKS = 16
+LOOKAHEAD_MEMORY = 4 * 1024 ** 3
+# Seconds between checks for idle threads while waiting for a slow element.
+OVERLAP_POLL = 0.5
 
-# Cores left free by default for the user's other programs: it is a work PC.
-SPARE_CORES = 2
+# Share of the logical CPUs a conversion keeps busy by default, kernel threads and the Rhino export's
+# worker processes together: it is a work PC, where other demanding programs run at the same time.
+CPU_SHARE = 0.5
+# Of that budget, the kernel gets this share; the Rhino export starts one worker per two threads
+# (rhino.THREADS_PER_WORKER), which then use the rest. 32 logical CPUs: 11 threads and 5 workers.
+KERNEL_SHARE = 2 / 3
 # By default at most this many threads: beyond it the kernel only waits for the Python stage (measured),
 # while each thread can hold up to MEMORY_PER_THREAD for a heavy element.
 MAX_DEFAULT_THREADS = 16
@@ -363,10 +379,20 @@ def _free_name(path: Path) -> Path:
     return candidate
 
 
-def default_threads() -> int:
-    """All logical CPUs this process may use but SPARE_CORES, at least one, at most MAX_DEFAULT_THREADS."""
+def cpu_budget() -> int:
+    """The logical CPUs a conversion keeps busy by default: CPU_SHARE of those this process may use."""
     count = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
-    return max(1, min((count or 1) - SPARE_CORES, MAX_DEFAULT_THREADS))
+    return max(1, round((count or 1) * CPU_SHARE))
+
+
+def default_threads() -> int:
+    """The kernel's share of cpu_budget() (KERNEL_SHARE), at least one, at most MAX_DEFAULT_THREADS."""
+    return max(1, min(round(cpu_budget() * KERNEL_SHARE), MAX_DEFAULT_THREADS))
+
+
+def worker_budget(threads: int) -> int:
+    """How many worker processes may run beside ``threads`` kernel threads within cpu_budget()."""
+    return max(0, cpu_budget() - threads)
 
 
 def chunk_size(threads: int) -> int:
@@ -505,71 +531,250 @@ def iter_shapes(
         if status:
             status("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
 
-    def delivered(shape):
-        # Products whose shape is done are no suspects if the kernel crashes or hangs in this chunk.
-        if position:
-            position("delivered", [shape.id], "")
-        return _produced(shape, produced)
-
-    for start in range(0, len(products), size):
-        chunk = products[start:start + size]
-        if position:
-            position("chunk", [product.id() for product in chunk], "")
-        if strategy == "accurate":
-            hybrid = [product for product in chunk if _triangle_mesh_only(product)]
-            fast = {product.id() for product in hybrid}
-            rest = [product for product in chunk if product.id() not in fast]
-            parts = [(hybrid, LIBRARIES["hybrid"]), (rest, LIBRARIES["opencascade"])]
-        else:
-            hybrid = chunk if strategy == "hybrid" else []
-            parts = [(chunk, library)]
-        done = set()
-        # In local coordinates the kernel returns empty geometry for type geometry (mapped items)
-        # with openings cut into it, e.g. Revit cabinets with a sink cut-out: those are redone in
-        # world coordinates, which the serializers and the Rhino export accept as well.
-        empty = []
-        for part, part_library in parts:
-            if not part:
-                continue
-            for shape in _iterate(model, settings, threads, part, part_library):
-                done.add(shape.id)
-                if local and not shape.geometry.verts:
-                    empty.append(model.by_id(shape.id))
-                else:
-                    yield delivered(shape)
-        if hybrid:
-            # The hybrid kernel gives up on some shapes that OpenCASCADE can still build, and leaves
-            # type geometry with openings empty in local coordinates, where OpenCASCADE builds it:
-            # in world coordinates GLB would store it in single precision (0.2 m off 5,000 km out).
-            hybrid_ids = {product.id() for product in hybrid}
-            missing = [product for product in hybrid if product.id() not in done]
-            missing += [product for product in empty if product.id() in hybrid_ids]
-            empty = [product for product in empty if product.id() not in hybrid_ids]
-            if missing:
-                for shape in _iterate(model, settings, threads, missing, LIBRARIES["opencascade"]):
+    chunks = [products[start:start + size] for start in range(0, len(products), size)]
+    pipeline = _Pipeline(model, settings, threads, position, chunks, strategy, library)
+    finished = len(deep)
+    try:
+        for index, chunk in enumerate(chunks):
+            hybrid: list = []
+            done = set()
+            # In local coordinates the kernel returns empty geometry for type geometry (mapped items)
+            # with openings cut into it, e.g. Revit cabinets with a sink cut-out: those are redone in
+            # world coordinates, which the serializers and the Rhino export accept as well.
+            empty = []
+            while (run := pipeline.next_run(index)) is not None:
+                if run.library == LIBRARIES["hybrid"]:
+                    hybrid += run.products
+                for shape in pipeline.shapes(run, index):
+                    done.add(shape.id)
                     if local and not shape.geometry.verts:
                         empty.append(model.by_id(shape.id))
                     else:
-                        yield delivered(shape)
-        if empty:
-            settings.set("use-world-coords", True)  # iterators copy their settings
-            try:
-                world = list(_iterate(model, settings, threads, empty, library))
-            finally:
-                settings.set("use-world-coords", False)
-            for shape in world:
-                yield delivered(shape)
-        if chunk_ends:
-            yield ChunkEnd([product.id() for product in chunk])
-        _release_memory()
-        if progress:
-            progress((len(deep) + start + len(chunk)) * progress_share // total)
+                        yield _produced(shape, produced)
+            if hybrid:
+                # The hybrid kernel gives up on some shapes that OpenCASCADE can still build, and leaves
+                # type geometry with openings empty in local coordinates, where OpenCASCADE builds it:
+                # in world coordinates GLB would store it in single precision (0.2 m off 5,000 km out).
+                hybrid_ids = {product.id() for product in hybrid}
+                missing = [product for product in hybrid if product.id() not in done]
+                missing += [product for product in empty if product.id() in hybrid_ids]
+                empty = [product for product in empty if product.id() not in hybrid_ids]
+                if missing:
+                    for shape in pipeline.shapes(pipeline.start(index, missing, LIBRARIES["opencascade"]), index):
+                        if local and not shape.geometry.verts:
+                            empty.append(model.by_id(shape.id))
+                        else:
+                            yield _produced(shape, produced)
+            if empty:
+                for shape in pipeline.shapes(pipeline.start(index, empty, library, world=True), index):
+                    yield _produced(shape, produced)
+            if chunk_ends:
+                yield ChunkEnd([product.id() for product in chunk])
+            _release_memory()
+            finished += len(chunk)
+            if progress:
+                progress(finished * progress_share // total)
+    finally:
+        pipeline.close()
 
     missing = _missing.get()
     if missing is not None:
         missing.extend(product_label(product) for product in candidates if product.id() not in produced)
     if position:  # a crash or hang from here on is not in the kernel
         position("done", [], "")
+
+
+def curve_phase(elements: list) -> list:
+    """Of ``elements`` (alignments and grids), those the Rhino export computes as curves after
+    iter_shapes, and tell the caller that it does: if the kernel crashes or hangs there, the next
+    attempt leaves them out (they are then skipped)."""
+    position, _, skip = _recovery.get() or (None, set(), set())
+    elements = [element for element in elements if element.id() not in skip]
+    if position and elements:
+        position("curves", [element.id() for element in elements], "\n".join(map(product_label, elements)))
+    return elements
+
+
+class _Run:
+    """The shapes of ``products`` from one geometry iterator.
+
+    The iterator's threads compute from the start on, whether the shapes are taken or not; a thread
+    of its own takes them from the kernel as they are done and queues them for iter_shapes.
+    """
+
+    def __init__(self, index: int, products: list, library: str, width: int):
+        self.index = index  # of the chunk
+        self.products = products
+        self.ids = [product.id() for product in products]
+        self.library = library
+        self.width = width
+        self.computed: set[int] = set()  # products whose shape the kernel has delivered
+        self.finished = False
+        self.stopped = False
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+
+    def busy(self) -> int:
+        """The kernel threads still at work on this run (at most one per product not computed)."""
+        return 0 if self.finished else max(0, min(self.width, len(self.ids) - len(self.computed)))
+
+    def drain(self, shapes, computed: Callable[[_Run, object], None]) -> None:
+        """Runs in the run's thread: queue each shape once the kernel has computed it."""
+        # The iterator stays until the run is finished with, like the shapes it produced.
+        self._source = shapes
+        try:
+            for shape in shapes:
+                if self.stopped:
+                    break
+                computed(self, shape)
+                self._queue.put(shape)
+        except BaseException as exc:  # handed to iter_shapes
+            self._queue.put(_Failed(exc))
+        finally:
+            self.finished = True
+            self._queue.put(_END)
+
+    def shapes(self, waiting: Callable[[], None]) -> Iterator:
+        """The queued shapes as they come; ``waiting`` is called while there are none."""
+        while True:
+            try:
+                item = self._queue.get(timeout=OVERLAP_POLL)
+            except queue.Empty:
+                waiting()
+                continue
+            if item is _END:
+                return
+            if isinstance(item, _Failed):
+                raise item.error
+            yield item
+
+
+@dataclass
+class _Failed:
+    error: BaseException
+
+
+_END = object()
+
+
+class _Pipeline:
+    """Runs the geometry iterators of iter_shapes for ``chunks``, overlapping them (see OVERLAP_SHARE).
+
+    The iterators are created in the thread of iter_shapes, in the order their shapes are needed.
+    ``position`` hears of every start: all products of the runs not finished with as a "chunk", then
+    those of them already computed as "delivered". After a crash or a hang only the products the
+    kernel was still at, or had not started, are suspects.
+    """
+
+    def __init__(
+        self, model, settings, threads: int, position: PositionCallback | None, chunks: list[list],
+        strategy: str, library: str,
+    ):
+        self.model, self.settings, self.threads = model, settings, threads
+        self.strategy, self.library = strategy, library
+        self.slack = max(1, threads // OVERLAP_SHARE)
+        self._position = position
+        self._lock = threading.Lock()  # orders the positions sent here and by the runs' threads
+        self._chunks = iter(enumerate(chunks))
+        self._planned: deque[tuple[int, list, str]] = deque()  # parts of chunks, not started yet
+        self._started: deque[_Run] = deque()  # planned runs started, in the order they are needed
+        self._alive: list[_Run] = []  # every run started and not finished with
+
+    def next_run(self, index: int) -> _Run | None:
+        """The next planned run of chunk ``index``, started now if it was not yet; None after its last."""
+        if not self._started:
+            step = self._next_planned()
+            if step is None or step[0] != index:
+                return None
+            self._start_planned()
+        if self._started[0].index != index:
+            return None
+        return self._started.popleft()
+
+    def start(self, index: int, products: list, library: str, world: bool = False) -> _Run:
+        """Start a run for ``products`` of chunk ``index`` right away (in world coordinates if ``world``)."""
+        run = _Run(index, products, library, _kernel_threads(self.threads))
+        self._alive.append(run)
+        if self._position:
+            with self._lock:
+                self._position("chunk", [id_ for alive in self._alive for id_ in alive.ids], "")
+                computed = [id_ for alive in self._alive for id_ in alive.computed]
+                if computed:
+                    self._position("delivered", computed, "")
+        if world:
+            self.settings.set("use-world-coords", True)  # iterators copy their settings
+        try:
+            shapes = _iterate(self.model, self.settings, self.threads, products, library)
+        except BaseException:
+            self._alive.remove(run)
+            raise
+        finally:
+            if world:
+                self.settings.set("use-world-coords", False)
+        threading.Thread(target=run.drain, args=(shapes, self._computed), name="geometry-run", daemon=True).start()
+        return run
+
+    def shapes(self, run: _Run, index: int) -> Iterator:
+        """The shapes of ``run`` as the kernel delivers them; meanwhile idle threads get more work."""
+        self.top_up(index)
+        for shape in run.shapes(lambda: self.top_up(index)):
+            yield shape
+            self.top_up(index)
+        self._alive.remove(run)
+
+    def top_up(self, current: int) -> None:
+        """Start the next planned runs while at most ``slack`` threads are busy (chunk ``current`` is
+        the one whose shapes are being taken)."""
+        while (step := self._next_planned()) is not None:
+            if sum(run.busy() for run in self._alive) > self.slack:
+                return
+            if step[0] > current + 1 and not self._look_ahead(current, step[0]):
+                return
+            self._start_planned()
+
+    def close(self) -> None:
+        """Let the runs' threads stop (when iter_shapes ends early)."""
+        for run in self._alive:
+            run.stopped = True
+
+    def _look_ahead(self, current: int, index: int) -> bool:
+        """Whether chunk ``index`` may start: only while an element keeps chunk ``current`` waiting."""
+        if index > current + LOOKAHEAD_CHUNKS:
+            return False
+        if not any(run.index <= current and run.busy() for run in self._alive):
+            return False
+        available = available_memory()
+        return available is None or available >= LOOKAHEAD_MEMORY
+
+    def _next_planned(self) -> tuple[int, list, str] | None:
+        while not self._planned:
+            index, chunk = next(self._chunks, (None, None))
+            if chunk is None:
+                return None
+            self._planned.extend((index, part, library) for part, library in self._parts(chunk))
+        return self._planned[0]
+
+    def _start_planned(self) -> None:
+        index, products, library = self._planned.popleft()
+        self._started.append(self.start(index, products, library))
+
+    def _parts(self, chunk: list) -> list[tuple[list, str]]:
+        """The runs of a chunk: under "accurate" its large triangle meshes with the hybrid kernel
+        (see _triangle_mesh_only) and the rest with OpenCASCADE."""
+        if self.strategy == "accurate":
+            meshes = [product for product in chunk if _triangle_mesh_only(product)]
+            fast = {product.id() for product in meshes}
+            rest = [product for product in chunk if product.id() not in fast]
+            parts = [(meshes, LIBRARIES["hybrid"]), (rest, LIBRARIES["opencascade"])]
+        else:
+            parts = [(chunk, self.library)]
+        return [(part, library) for part, library in parts if part]
+
+    def _computed(self, run: _Run, shape) -> None:
+        """Called by the threads of the runs for each shape the kernel delivers."""
+        with self._lock:
+            run.computed.add(shape.id)
+            if self._position:
+                self._position("delivered", [shape.id], "")
 
 
 def _produced(shape, produced: set[int]):
@@ -768,7 +973,10 @@ def _has_3d_shape(product: ifcopenshell.entity_instance) -> bool:
 
 
 def _iterate(model, settings, threads: int, products: list, library: str) -> Iterator:
-    """Yield the shapes of ``products`` from one geometry iterator, which is freed afterwards."""
+    """Start one geometry iterator for ``products`` and return its shapes; it is freed after the last.
+
+    Its threads compute in the background from now on, while the shapes are only taken later.
+    """
     iterator = geom.iterator(
         settings, model, _kernel_threads(threads), include=products, geometry_library=library,
     )
@@ -782,12 +990,22 @@ def _iterate(model, settings, threads: int, products: list, library: str) -> Ite
                 settings, model, _kernel_threads(threads), include=valid, geometry_library=library,
             )
             initialized = iterator.initialize()
-    if initialized:
+    return _Shapes(iterator if initialized else None)
+
+
+class _Shapes:
+    """The shapes of an initialized geometry iterator (None: no shapes), which it keeps alive."""
+
+    def __init__(self, iterator):
+        self.iterator = iterator
+
+    def __iter__(self) -> Iterator:
+        if self.iterator is None:
+            return
         while True:
-            yield iterator.get()
-            if not iterator.next():
+            yield self.iterator.get()
+            if not self.iterator.next():
                 break
-    del iterator
 
 
 def kernel_strategy() -> str:

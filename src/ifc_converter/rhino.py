@@ -24,7 +24,7 @@ import rhino3dm
 
 from ifc_converter.converter import (
     LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, StatusCallback, available_memory, geometry_library,
-    iter_shapes, shape_products,
+    curve_phase, iter_shapes, shape_products,
 )
 from ifc_converter.polysurface import planar_polysurface
 from ifc_converter.process import exit_with_parent, no_crash_dialogs
@@ -245,7 +245,7 @@ def _curve_elements(model: ifcopenshell.file) -> list[ifcopenshell.entity_instan
 
 def _curve_shapes(model: ifcopenshell.file, elements) -> Iterator:
     """One curve shape per element, preferring its 3D "Axis" over a plan "FootPrint"."""
-    elements = list(elements)
+    elements = curve_phase(list(elements))
     if not elements:
         return
     settings = _settings()
