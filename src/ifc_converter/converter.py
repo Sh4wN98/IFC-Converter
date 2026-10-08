@@ -81,7 +81,7 @@ PositionCallback = Callable[[str, list, str], None]
 # a model with thousands of levels overflowed the stack: a crash (0xC00000FD), or with a larger main
 # thread stack a conversion that hung at 0 % CPU for good.
 DEEP_NESTING = 100
-DEEP_STACK = 256 * 1024 ** 2
+DEEP_STACK = 240 * 1024 ** 2  # Python on Windows accepts less than 256 MB
 
 # Output for a network folder is written to the local temp folder first and copied in one go:
 # openNURBS writes in small pieces, each a round trip over the network. Only if the temp folder has
