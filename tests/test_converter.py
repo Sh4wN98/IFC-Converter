@@ -664,7 +664,10 @@ def test_later_chunks_are_computed_while_a_slow_element_holds_one_up(
             assert len(started) == started_early
             assert all(len(names) == 100 for names in started)
             assert _wait_until(lambda: watch.suspects() == ("chunk", [products[7].id()], ""))
-            assert len(items) == 99  # the first chunk waits for its slow element, the others for it
+            # the first chunk waits for its slow element, the others for it
+            assert _wait_until(lambda: len(items) == 99)
+            time.sleep(0.2)
+            assert len(items) == 99
         finally:
             release.set()
             consumer.join(60)
