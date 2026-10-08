@@ -50,7 +50,7 @@ def test_uninstaller_removes_only_the_settings_key_of_the_old_name():
 def test_installer_test_knows_the_open_with_entry():
     script = installer_script()
     assert f'Subkey: "{installer_test.PROG_ID_KEY}"' in script
-    assert f'Subkey: "{installer_test.OPEN_WITH_KEY}"; ValueType: none; ValueName: "{installer_test.PROG_ID}"' in script
+    assert f'Subkey: "{installer_test.OPEN_WITH_KEY}"; ValueType: string; ValueData: ""; ValueName: "{installer_test.PROG_ID}"' in script
 
 
 def test_setup_version_from_the_file_name():
