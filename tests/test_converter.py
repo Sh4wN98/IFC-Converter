@@ -699,20 +699,84 @@ def test_overlapping_chunks_keep_the_threads_within_the_budget(many_walls_ifc, m
     assert max(busy) <= 8 // converter.OVERLAP_SHARE
 
 
-def test_an_abandoned_iteration_stops_its_runs(many_walls_ifc, monkeypatch):
+@pytest.fixture(scope="module")
+def holey_walls_ifc(tmp_path_factory):
+    """400 walls of their own, each with 6 openings: seconds of OpenCASCADE booleans on 2 threads."""
+    import ifcopenshell.api as api
+
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="Test")
+    api.run("unit.assign_unit", model)
+    context = api.run("context.add_context", model, context_type="Model")
+    body = api.run(
+        "context.add_context", model,
+        context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context,
+    )
+    site = api.run("root.create_entity", model, ifc_class="IfcSite", name="Site")
+    api.run("aggregate.assign_object", model, relating_object=project, products=[site])
+    walls = []
+    for i in range(400):
+        wall = api.run("root.create_entity", model, ifc_class="IfcWall", name=f"Wall {i}")
+        representation = api.run("geometry.add_wall_representation", model, context=body, length=14, height=3, thickness=0.3)
+        api.run("geometry.assign_representation", model, product=wall, representation=representation)
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (15.0 * (i % 20), 1.0 * (i // 20), 0.0)
+        api.run("geometry.edit_object_placement", model, product=wall, matrix=matrix)
+        for k in range(6):
+            opening = api.run("root.create_entity", model, ifc_class="IfcOpeningElement")
+            hole = api.run("geometry.add_wall_representation", model, context=body, length=1, height=1, thickness=0.3)
+            api.run("geometry.assign_representation", model, product=opening, representation=hole)
+            matrix = numpy.eye(4)
+            matrix[:3, 3] = (15.0 * (i % 20) + 1 + 2.2 * k, 1.0 * (i // 20), 1.0)
+            api.run("geometry.edit_object_placement", model, product=opening, matrix=matrix)
+            api.run("feature.add_feature", model, feature=opening, element=wall)
+        walls.append(wall)
+    api.run("spatial.assign_container", model, relating_structure=site, products=walls)
+    path = tmp_path_factory.mktemp("holey") / "holey.ifc"
+    model.write(str(path))
+    return path
+
+
+@pytest.mark.parametrize("how", ["close", "error", "gc"])
+def test_leaving_the_iteration_early_waits_for_the_kernel(holey_walls_ifc, how):
+    # The kernel's threads read the model until their iterator is done, also when the consumer stops
+    # early (an error in the Rhino export, a cancel): iter_shapes waits for them, or else freeing the
+    # model crashed the process. Run in a process of its own, so a crash fails only this test.
+    import subprocess
+
+    tests_dir = str(Path(__file__).parent)
+    code = "import sys; sys.path.insert(0, sys.argv[1]); import child_helpers; child_helpers.abandon_iteration(*sys.argv[2:])"
+    if sys.platform != "win32":
+        code = "import resource; resource.setrlimit(resource.RLIMIT_CORE, (0, 0)); " + code
+    done = subprocess.run(
+        [sys.executable, "-c", code, tests_dir, str(holey_walls_ifc), how], capture_output=True, text=True, timeout=300,
+    )
+    assert done.returncode == 0, done.stderr[-3000:]
+    # Right after leaving: no geometry-run thread left, and (Linux) no kernel thread either.
+    assert done.stdout.split() == ["0", "0"]
+
+
+def test_leaving_early_waits_only_so_long_for_a_slow_element(many_walls_ifc, monkeypatch, caplog):
+    # Beyond CLOSE_WAIT the run goes on in the background, holding the model until it is done.
+    import logging
+
     from ifc_converter import converter, rhino
 
     monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
-    runs = []
-    start = converter._Pipeline.start
-
-    def recording_start(self, *args, **kwargs):
-        runs.append(start(self, *args, **kwargs))
-        return runs[-1]
-
-    monkeypatch.setattr(converter._Pipeline, "start", recording_start)
+    monkeypatch.setattr(converter, "CLOSE_WAIT", 0.5)
+    release = threading.Event()
+    _slow_kernel(monkeypatch, "Wall 7", release)
     model = ifcopenshell.open(str(many_walls_ifc))
     shapes = converter.iter_shapes(model, rhino._settings(), 2, rhino.EXCLUDED_CLASSES)
     next(shapes)
-    shapes.close()
-    assert runs and all(run.stopped for run in runs if not run.finished)
+    runs = [thread for thread in threading.enumerate() if thread.name == "geometry-run"]
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="ifc_converter.converter"):
+        shapes.close()
+    assert time.monotonic() - started < 10
+    assert "laufen nach 0 s noch und werden im Hintergrund beendet" in caplog.text
+    assert any(thread.is_alive() for thread in runs)
+    release.set()
+    for thread in runs:
+        thread.join(30)
+    assert not any(thread.is_alive() for thread in runs)
