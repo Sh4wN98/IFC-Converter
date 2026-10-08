@@ -124,6 +124,39 @@ def skipped_warning(skipped: int) -> str:
     return f"{skipped_count(skipped)}. {SKIPPED_HINT}" if skipped > 0 else ""
 
 
+# How many skipped elements a message names; the log file lists all of them.
+NAMED_ELEMENTS = 10
+
+
+def crashed_warning(crashed: list[str]) -> str:
+    """The warning for elements left out because the kernel crashed or hung on them, or ""."""
+    if not crashed:
+        return ""
+    count = len(crashed)
+    names = "; ".join(crashed[:NAMED_ELEMENTS])
+    more = f" … und {count - NAMED_ELEMENTS} weitere (alle in der Logdatei)" if count > NAMED_ELEMENTS else ""
+    return (
+        f"{count} {'Bauteil' if count == 1 else 'Bauteile'} übersprungen, weil der Geometriekern daran "
+        f"abstürzte oder hängen blieb: {names}{more}. Im CAD-Programm lassen sie sich über die GlobalId finden."
+    )
+
+
+def duration_text(seconds: float) -> str:
+    """A duration in German, e.g. "12,3 s", "52 min 2 s" or "1 h 5 min"."""
+    if seconds < 60:
+        return f"{seconds:.1f} s".replace(".", ",")
+    minutes, seconds = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes} min {seconds} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} min"
+
+
+def number_text(number: int) -> str:
+    """A count with German thousands separators, e.g. "117.137"."""
+    return f"{number:,}".replace(",", ".")
+
+
 def check_memory(path: Path) -> str | None:
     """The RAM warning for `path`, or None (also if the file cannot be read; convert() reports that)."""
     try:
@@ -306,7 +339,9 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
                 print(f"  ✗ Fehler bei {source.name}: {exc}")
                 continue
             skipped = f", {result.skipped} ohne Geometrie" if result.skipped > 0 else ""
-            print(f"  ✓ Fertig: {result.output}  ({result.elements} Bauteile{skipped})")
+            print(f"  ✓ Fertig: {result.output}  ({number_text(result.elements)} Bauteile{skipped})")
+            if result.crashed:
+                print(f"  ⚠ {crashed_warning(result.crashed)}")
             if result.skipped > 0:
                 print(f"  ⚠ {skipped_warning(result.skipped)}")
         print()

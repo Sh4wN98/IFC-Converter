@@ -63,13 +63,16 @@ from ifc_converter.interactive import (
     SKIPPED_HINT,
     check_memory,
     collect_ifc_files,
+    crashed_warning,
     desktop_dir,
+    duration_text,
+    number_text,
     output_files,
     skipped_count,
     skipped_warning,
     unique_path,
 )
-from ifc_converter.process import RETRY_MESSAGE, Cancelled, convert_in_child
+from ifc_converter.process import RETRY_MESSAGE, Cancelled, convert_in_child, remove_stale_temp_files
 
 # The app's name before it was renamed; its settings are taken over once (see open_settings()).
 LEGACY_NAME = "IFC File Converter"
@@ -248,7 +251,7 @@ class ConversionWorker(QObject):
     file_progress = Signal(int, int)  # row, percent
     file_retrying = Signal(int, str)  # row, message; converting again after a crash or hang
     file_status = Signal(int, str, str)  # row, phase, description (see process.convert_in_child)
-    file_done = Signal(int, object, int, int)  # row, output path, elements, skipped elements
+    file_done = Signal(int, object, int, int, list)  # row, output path, elements, without geometry, crashed
     file_failed = Signal(int, str)  # row, message
     file_cancelled = Signal(int)
     finished = Signal(bool)  # True if cancelled
@@ -339,7 +342,7 @@ class ConversionWorker(QObject):
                 _discard(path)
             self.file_failed.emit(row, str(exc) or type(exc).__name__)
         else:
-            self.file_done.emit(row, result.output, result.elements, result.skipped)
+            self.file_done.emit(row, result.output, result.elements, result.skipped, list(result.crashed))
 
 
 # ------------------------------------------------------------------------- widgets
@@ -1039,7 +1042,7 @@ class MainWindow(QMainWindow):
         self._refresh_row(row)
         self._update_overall(percent)
 
-    def _on_file_done(self, row: int, output: Path, elements: int, skipped: int) -> None:
+    def _on_file_done(self, row: int, output: Path, elements: int, skipped: int, crashed: list | None = None) -> None:
         item = self.queue[row]
         item.status, item.progress, item.output, item.elements = Status.DONE, 100, output, elements
         item.skipped = skipped
@@ -1047,7 +1050,9 @@ class MainWindow(QMainWindow):
         self._run_done += 1
         self._last_output_dir = output.parent
         self._update_overall(0)
-        self.log(f"✓ {item.path.name} → {output}  ({elements} Bauteile)")
+        self.log(f"✓ {item.path.name} → {output}  ({number_text(elements)} Bauteile)")
+        if crashed:
+            self.log(f"⚠ {item.path.name}: {crashed_warning(crashed)}")
         if skipped > 0:
             self.log(f"⚠ {item.path.name}: {skipped_warning(skipped)}")
 
@@ -1077,7 +1082,7 @@ class MainWindow(QMainWindow):
             summary += f", {self._run_failed} mit Fehler"
         if cancelled:
             summary += " – abgebrochen"
-        summary += f" ({seconds:.1f} s)".replace(".", ",")
+        summary += f" ({duration_text(seconds)})"
         self.overall_progress.setRange(0, 100)
         self.overall_progress.setFormat(summary.split(" (")[0])
         if not cancelled:
@@ -1091,7 +1096,7 @@ class MainWindow(QMainWindow):
 
     def _notify_finished(self, cancelled: bool, seconds: float) -> None:
         """Say that the batch is over: in the window, its title and, if it is in the background, the taskbar."""
-        duration = f"{seconds:.1f} s".replace(".", ",")
+        duration = duration_text(seconds)
         if cancelled:
             text, state, title = f"Abgebrochen nach {duration}", "", "Abgebrochen"
         elif self._run_failed:
@@ -1209,10 +1214,22 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- closing
 
+    def _running_text(self) -> str:
+        """E.g. "„Modell.ifc“ wird seit 42 min 3 s umgewandelt (89 %)."."""
+        running = next((item for item in self.queue if item.status is Status.RUNNING), None)
+        if running is None:
+            return "Die Umwandlung läuft noch."
+        since = duration_text(time.monotonic() - self._started_at)
+        return f"„{running.path.name}“ wird umgewandelt, die Umwandlung läuft seit {since} ({max(running.progress, 0)} %)."
+
     def closeEvent(self, event):
         if self.is_running:
             answer = QMessageBox.question(
-                self, APP_NAME, "Die Konvertierung läuft noch. Abbrechen und beenden?",
+                self, APP_NAME,
+                f"{self._running_text()}\n\nBeim Beenden wird die Umwandlung abgebrochen, ihr Fortschritt geht "
+                "verloren. Trotzdem beenden?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,  # Enter keeps it running
             )
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
@@ -1377,6 +1394,9 @@ def main(argv: list[str] | None = None) -> int:
     reporter = ErrorReporter(app)
     install_exception_hooks(reporter.report)
 
+    removed = remove_stale_temp_files()
+    if removed:
+        log.info("%d alte Zwischendateien im Temp-Ordner gelöscht", removed)
     window = MainWindow()
     server = InstanceServer(parent=window)
     server.paths_received.connect(window.receive_paths)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ifc_converter import __version__
 from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
-from ifc_converter.interactive import check_memory, convert_in_terminal, skipped_warning
+from ifc_converter.interactive import check_memory, convert_in_terminal, crashed_warning, skipped_warning
 from ifc_converter.process import SPARE_CORES
 
 
@@ -97,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         skipped = f", {result.skipped} without geometry" if result.skipped > 0 else ""
         print(f"✓ {source} → {result.output} ({result.elements} elements{skipped})")
+        if result.crashed:
+            print(f"⚠ {source.name}: {crashed_warning(result.crashed)}", file=sys.stderr)
         if result.skipped > 0:
             print(f"⚠ {source.name}: {skipped_warning(result.skipped)}", file=sys.stderr)
 

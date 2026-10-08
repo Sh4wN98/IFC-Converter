@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 from pathlib import Path
 
@@ -66,8 +67,8 @@ def test_hard_exit_is_reported_as_crash_with_code(wall_ifc, tmp_path):
 def test_crash_messages():
     assert crash_message(-9) == MEMORY_MESSAGE
     assert crash_message(0xC0000017) == MEMORY_MESSAGE  # Windows STATUS_NO_MEMORY
-    assert crash_message(-11) == "Umwandlung abgestürzt (Code -11)"
-    assert crash_message(0xC0000005) == "Umwandlung abgestürzt (Code 0xC0000005)"
+    assert crash_message(-11) == "Umwandlung abgestürzt: Speicherzugriffsfehler (Code -11)"
+    assert crash_message(0xC0000005) == "Umwandlung abgestürzt: Speicherzugriffsfehler (Code 0xC0000005)"
     assert crash_message(0) == "Umwandlung wurde ohne Ergebnis beendet"
 
 
@@ -227,7 +228,7 @@ def test_crash_of_the_retry_fails_with_crash_message(wall_ifc, tmp_path, monkeyp
     monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
     target = tmp_path / "wall.glb"
     retries = []
-    with pytest.raises(ConversionCrashed, match=r"^Umwandlung abgestürzt \(Code -11\)$"):
+    with pytest.raises(ConversionCrashed, match=r"^Umwandlung abgestürzt: Speicherzugriffsfehler \(Code -11\)$"):
         convert_in_child(wall_ifc, target, on_retry=retries.append, func=child_helpers.always_segfault)
     assert retries == [process.RETRY_MESSAGE]
     assert _attempts(target) == ["None", "opencascade"]
@@ -345,7 +346,7 @@ def test_native_crash_stack_and_retry_are_logged(wall_ifc, tmp_path, monkeypatch
         convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.always_segfault)
     assert "Fatal Python error: Segmentation fault" in caplog.text
     assert "always_segfault" in caplog.text  # the Python stack of the crash
-    assert "(Exit-Code -11) – Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE" in caplog.text
+    assert "(Exit-Code -11). Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE" in caplog.text
     assert "Absturz nach" in caplog.text
 
 
@@ -438,13 +439,16 @@ def test_an_element_that_hangs_or_crashes_the_kernel_is_skipped(
     func = child_helpers.hang_on_wall_7 if failure == "hang" else child_helpers.crash_on_wall_7
     with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
         result = convert_in_child(many_walls_ifc, target, fmt, threads=2, on_retry=messages.append, func=func)
-    # First the chunk with the wall is computed element by element, then the wall is left out.
+    # The kernel hangs or crashes before the wall is delivered, so it is the only suspect left of its
+    # chunk: computed on its own first, then left out.
     assert len(messages) == 2
-    assert "einzeln berechnet" in messages[0]
-    assert "IfcWall" in messages[1] and "übersprungen" in messages[1]
-    assert (result.elements, result.skipped) == (599, 1)
+    assert "bei einem Bauteil. Neuer Versuch (2. von höchstens 7), es wird zuerst und einzeln berechnet" in messages[0]
+    assert "bei IfcWall " in messages[1] and "Neuer Versuch (3. von höchstens 7), dieses Bauteil wird übersprungen" in messages[1]
+    assert (result.elements, result.skipped) == (599, 0)
+    assert len(result.crashed) == 1 and result.crashed[0].startswith("IfcWall ")
+    assert result.crashed[0].endswith(" „Wall 7“")
     assert target.stat().st_size > 0
-    assert "Übersprungen, weil der Geometriekern" in caplog.text
+    assert "Übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb (1):\n  IfcWall" in caplog.text
 
 
 def test_the_watchdog_leaves_copying_alone(tmp_path, monkeypatch):
@@ -459,3 +463,57 @@ def test_the_watchdog_leaves_copying_alone(tmp_path, monkeypatch):
     watch._check_stall(time.monotonic() + 2)  # first sample
     with pytest.raises(process.ConversionStalled):
         watch._check_stall(time.monotonic() + 3)
+
+
+def test_a_hang_after_a_fatal_error_is_stopped_within_a_minute(wall_ifc, tmp_path, monkeypatch, caplog):
+    # On Windows a stack overflow in a kernel thread leaves the process alive at 0 % CPU; its report
+    # in stderr shortens the wait from STALL_TIMEOUT to FATAL_STALL_TIMEOUT.
+    monkeypatch.setattr(process, "FATAL_STALL_TIMEOUT", 1)
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    started = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        with pytest.raises(process.ConversionStalled, match="Stapelüberlauf") as failure:
+            convert_in_child(wall_ifc, tmp_path / "x.3dm", "3dm", func=child_helpers.overflow_then_wait)
+    assert time.monotonic() - started < 60 < process.STALL_TIMEOUT
+    assert failure.value.fatal == "Stapelüberlauf"
+    assert "meldet einen schweren Fehler: Windows fatal exception: stack overflow" in caplog.text
+
+
+def test_the_watchdog_ignores_time_the_computer_was_asleep(tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 600)
+    monkeypatch.setattr(process, "tree_cpu_seconds", lambda pid: 5.0)
+    watch = process._Phases(tmp_path / "x.3dm", None, None, None)
+    watch.pid = 1
+    watch.enter("geometry", "Geometrie …")
+    now = time.monotonic()
+    watch._sampled = now - process.CPU_SAMPLE
+    watch.tick()  # first sample: 5 s CPU
+    watch._sampled -= 3600  # an hour of standby without CPU use
+    watch._active -= 3600
+    watch.tick()  # not stopped
+    assert watch._active >= now
+
+
+def test_keep_awake_is_a_context_manager():
+    with process.keep_awake():
+        pass
+
+
+def test_stale_temp_files_are_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    old_dir = tmp_path / "ifc-converter-abc"
+    old_dir.mkdir()
+    (old_dir / "model.3dm").write_bytes(b"x" * 100)
+    old_file = tmp_path / "ifc-converter-1.stderr.txt"
+    old_file.write_text("x")
+    fresh = tmp_path / "ifc-converter-new"
+    fresh.mkdir()
+    (fresh / "model.3dm").write_bytes(b"x")
+    other = tmp_path / "someone-else"
+    other.mkdir()
+    day_ago = time.time() - 2 * 24 * 3600
+    for path in (old_dir, old_dir / "model.3dm", old_file, other):
+        os.utime(path, (day_ago, day_ago))
+    assert process.remove_stale_temp_files() == 2
+    assert not old_dir.exists() and not old_file.exists()
+    assert fresh.exists() and other.exists()

@@ -68,6 +68,11 @@ def log_dir() -> Path:
     return _home_env("XDG_STATE_HOME", Path.home() / ".local" / "state") / APP_SLUG / "logs"
 
 
+def rescue_dir() -> Path:
+    """Where finished output goes that could not be copied to its network folder (local, kept)."""
+    return log_dir().parent / "Ausgabe" if sys.platform == "win32" else log_dir().parent / "rescued"
+
+
 def settings_path() -> Path:
     return config_dir() / "settings.ini"
 
