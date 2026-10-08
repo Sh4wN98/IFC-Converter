@@ -163,6 +163,23 @@ def check_stacks(app_dir: Path, cli: Path, source: Path, out: Path) -> None:
                 time.sleep(0.5)
 
 
+def check_network_folder(cli: Path, source: Path, out: Path, log: Path) -> None:
+    """Output to a UNC path is written locally first and then copied (the admin share of this PC)."""
+    drive, rest = os.path.splitdrive(str(out.resolve()))
+    share = Path(f"\\\\localhost\\{drive[0]}${rest}")
+    if not share.is_dir():
+        print(f"  network folder check skipped: {share} is not reachable")
+        return
+    offset = log.stat().st_size if log.is_file() else 0
+    target = share / "wall-unc.3dm"
+    convert(cli, source, target, "-f", "3dm")
+    check_3dm(target, rhino3dm.Brep)
+    written = log.read_bytes()[offset:].decode("utf-8", "replace") if log.is_file() else ""
+    if "Wird ins Zielverzeichnis kopiert" not in written:
+        raise AssertionError(f"output for {share} was not staged locally:\n{written[-2000:]}")
+    print("  UNC folder: written locally, then copied ✓")
+
+
 def check_large_model(path: Path, log: Path, log_offset: int) -> None:
     """All walls are in the 3dm, and the worker processes ran (no fallback to the main process)."""
     objects = rhino3dm.File3dm.Read(str(path)).Objects
