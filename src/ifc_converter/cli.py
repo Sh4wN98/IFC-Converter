@@ -3,12 +3,22 @@ from __future__ import annotations
 import argparse
 import multiprocessing
 import os
+import signal
 import sys
 from pathlib import Path
 
 from ifc_converter import __version__
+from ifc_converter.app import log_path
 from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
-from ifc_converter.interactive import check_memory, convert_in_terminal, crashed_warning, skipped_warning
+from ifc_converter.interactive import (
+    check_memory,
+    convert_in_terminal,
+    crashed_warning,
+    error_message,
+    failure_hint,
+    is_internal_error,
+    skipped_warning,
+)
 from ifc_converter.process import auto_threads
 
 
@@ -35,7 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
     parser.add_argument(
-        "-j", "--threads", type=int, help=f"geometry threads (default here: {auto_threads()}, with the 3dm worker processes about half the CPU cores)",
+        "-j", "--threads", type=int,
+        help=f"geometry threads (default: automatic, {auto_threads()} on this PC; with the 3dm worker processes "
+        "about half the CPU cores)",
     )
     parser.add_argument(
         "--normal-priority", action="store_true",
@@ -49,6 +61,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt
+
+
+def cancel_on_signals() -> None:
+    """Let Ctrl+Break (Windows) and SIGTERM cancel like Ctrl+C: the running conversion is stopped and its
+    temp files and partial output are removed, instead of the process ending on the spot."""
+    for name in ("SIGBREAK", "SIGTERM"):
+        if hasattr(signal, name):
+            try:
+                signal.signal(getattr(signal, name), _interrupt)
+            except (OSError, ValueError):  # not the main thread
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     # Conversions run in "spawn" child processes. A frozen build (e.g. PyInstaller) starts its own
     # executable for them; this makes it do the child's work instead of parsing the child's arguments
@@ -57,9 +84,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if argv is None:  # a real command line, not a call from Python code (tests, scripts)
-        from ifc_converter.app import setup_logging
+        from ifc_converter.app import hold_app_mutex, setup_logging
+        from ifc_converter.process import remove_stale_temp_files
 
         setup_logging("CLI")
+        hold_app_mutex()
+        remove_stale_temp_files()
+        cancel_on_signals()
     if args.kernel:
         # Inherited by the child processes that do the conversions.
         os.environ["IFC_CONVERTER_KERNEL"] = args.kernel
@@ -91,8 +122,12 @@ def main(argv: list[str] | None = None) -> int:
                 on_retry=lambda message: print(f"⚠ {source.name}: {message}", file=sys.stderr),
                 low_priority=not args.normal_priority,
             )
+        except KeyboardInterrupt:
+            print(f"■ {source}: abgebrochen", file=sys.stderr)
+            return 130
         except Exception as exc:
-            print(f"✗ {source}: {exc}", file=sys.stderr)
+            print(f"✗ {source}: {error_message(exc)}", file=sys.stderr)
+            print(f"  {failure_hint(is_internal_error(exc), str(log_path()))}", file=sys.stderr)
             failed += 1
             continue
         skipped = f", {result.skipped} without geometry" if result.skipped > 0 else ""
