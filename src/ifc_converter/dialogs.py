@@ -127,6 +127,7 @@ class Preferences:
     kernel: str = DEFAULT_KERNEL
     low_priority: bool = True
     open_output: bool = False  # open the output folder after a batch
+    blocks: bool = False  # Rhino: type geometry placed several times as blocks (convert(blocks=...))
 
     @classmethod
     def load(cls, settings: QSettings) -> Preferences:
@@ -146,6 +147,7 @@ class Preferences:
             kernel=kernel if kernel in KERNELS else defaults.kernel,
             low_priority=settings.value("low_priority", defaults.low_priority, type=bool),
             open_output=settings.value("open_output_dir", defaults.open_output, type=bool),
+            blocks=settings.value("rhino_blocks", defaults.blocks, type=bool),
         )
 
     def save(self, settings: QSettings) -> None:
@@ -153,6 +155,7 @@ class Preferences:
         settings.setValue("kernel_strategy", self.kernel)
         settings.setValue("low_priority", self.low_priority)
         settings.setValue("open_output_dir", self.open_output)
+        settings.setValue("rhino_blocks", self.blocks)
         settings.sync()
 
     @property
@@ -218,6 +221,17 @@ class SettingsDialog(_Dialog):
             "Vorhandene Dateien werden nie überschrieben – gibt es den Namen schon, wird (2), (3) … "
             "angehängt. Die IFC-Dateien selbst werden nie verändert."
         ))
+        self.blocks_check = QCheckBox("Gleiche Bauteile als Blöcke (kleinere Datei)")
+        self.blocks_check.setToolTip(
+            "Bauteile mit derselben Typ-Geometrie (Fenster, Türen, Möbel …) werden Instanzen eines Rhino-Blocks.\n"
+            "Die Datei wird kleiner, aber Blockinstanzen verhalten sich anders als normale Objekte:\n"
+            "Zum Bearbeiten der Geometrie muss eine Instanz erst aufgelöst werden (_Explode).\n"
+            "Benutzertexte, Layer und Farbe stehen an der Instanz."
+        )
+        output_layout.addWidget(self.blocks_check)
+        output_layout.addWidget(_hint(
+            "Nur für Rhino (.3dm). Zum Bearbeiten in Rhino muss eine Blockinstanz erst aufgelöst werden (_Explode)."
+        ))
         layout.addWidget(output_box)
 
         storage = QGroupBox("Speicherorte")
@@ -258,6 +272,7 @@ class SettingsDialog(_Dialog):
         self.priority_check.setChecked(preferences.low_priority)
         self.kernel_buttons.get(preferences.kernel, self.kernel_buttons[DEFAULT_KERNEL]).setChecked(True)
         self.open_output_check.setChecked(preferences.open_output)
+        self.blocks_check.setChecked(preferences.blocks)
 
     def preferences(self) -> Preferences:
         kernel = next(k for k, button in self.kernel_buttons.items() if button.isChecked())
@@ -266,6 +281,7 @@ class SettingsDialog(_Dialog):
             kernel=kernel,
             low_priority=self.priority_check.isChecked(),
             open_output=self.open_output_check.isChecked(),
+            blocks=self.blocks_check.isChecked(),
         )
 
 

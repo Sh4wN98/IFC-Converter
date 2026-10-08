@@ -139,9 +139,9 @@ def models(tmp_path_factory):
     result = {}
     for name, (path, expected) in built.items():
         outputs, infos = {}, {}
-        for mode, (fmt, geometry) in accuracy.MODES.items():
+        for mode, (fmt, geometry, blocks) in accuracy.MODES.items():
             output = directory / f"{name}.{mode}.{fmt}"
-            convert(path, output, fmt=fmt, geometry=geometry, threads=1)
+            convert(path, output, fmt=fmt, geometry=geometry, threads=1, blocks=blocks)
             outputs[mode], infos[mode] = accuracy.read_output(output, fmt, set(expected))
         result[name] = (expected, outputs, infos)
     return result
@@ -331,6 +331,15 @@ def test_rhino_file_is_metres_with_millimetre_tolerance(models):
         assert info["absolute_tolerance"] == pytest.approx(0.001)
         assert info["angle_tolerance_degrees"] == pytest.approx(1.0)
         assert info["single_precision_meshes"] == 0
+
+
+def test_block_modes_place_type_geometry_as_instances(models):
+    # The checks above measure the block modes as Rhino draws them: these are block instances
+    # (plain, mirrored, scaled and non-uniformly scaled), not copies.
+    _, _, infos = models["mapped"]
+    for mode in ("3dm-brep-blocks", "3dm-mesh-blocks"):
+        assert infos[mode]["block_instances"] == 4
+    assert infos["3dm-brep"]["block_instances"] == 0
 
 
 # IfcOpenShell applies a mirroring type placement to the vertices without reversing the triangles,
