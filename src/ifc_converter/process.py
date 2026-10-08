@@ -135,6 +135,23 @@ def _die_with_parent(parent_pid: int) -> None:
         os._exit(1)
 
 
+def no_crash_dialogs() -> None:
+    """Windows: let a crash end this process (and the processes it starts) at once.
+
+    Otherwise Windows Error Reporting may keep the crashed process alive behind an "… has stopped
+    working" dialog, and the conversion would hang instead of being reported as a crash.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX; inherited by children.
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+    except (OSError, AttributeError):
+        pass
+
+
 def exit_with_parent(parent_pid: int) -> None:
     """Block until the process ``parent_pid`` has ended, then end this process (run it in a thread)."""
     if sys.platform == "win32":
@@ -236,6 +253,7 @@ def _child_main(
 ) -> None:
     """Entry point of the child process: run ``func`` and send progress and the outcome to ``conn``."""
     _die_with_parent(parent_pid)
+    no_crash_dialogs()
     _redirect_stderr(stderr_path)
     if low_priority:
         lower_priority()

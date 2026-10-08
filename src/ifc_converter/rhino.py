@@ -26,7 +26,7 @@ from ifc_converter.converter import (
     iter_shapes, shape_products,
 )
 from ifc_converter.polysurface import planar_polysurface
-from ifc_converter.process import exit_with_parent
+from ifc_converter.process import exit_with_parent, no_crash_dialogs
 
 log = logging.getLogger(__name__)
 
@@ -500,6 +500,7 @@ def _worker_count(threads: int, elements: int) -> int:
 
 
 def _worker_init(parent_pid: int) -> None:
+    no_crash_dialogs()
     # A worker blocks reading its next batch, also when the conversion was cancelled by killing its
     # process: without this it would wait forever (Windows) or until killed with it (Linux only).
     threading.Thread(target=exit_with_parent, args=(parent_pid,), daemon=True).start()
