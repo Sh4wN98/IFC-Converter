@@ -332,3 +332,39 @@ def report_worker_priority(input_path, output_path, fmt, threads, progress=None,
         lines.append(priority.value)
     Path(output_path).write_text("\n".join(map(str, lines)))
     return ConversionResult(output=Path(output_path), elements=1)
+
+
+def abandon_iteration(path, how, chunk=600, threads=2):
+    """Run in a process of its own: start iter_shapes, take a few shapes and leave it ("close" the
+    generator, an "error" in the consumer, or just drop it for "gc"), free the model and print, right
+    away, how many geometry-run threads and (Linux) how many more native threads than before are
+    alive. Kernel threads still computing on the freed model would crash the process."""
+    import gc
+    import threading
+
+    import ifcopenshell
+
+    from ifc_converter import converter, rhino
+
+    def native_threads():
+        return len(os.listdir("/proc/self/task")) if sys.platform.startswith("linux") else 0
+
+    converter.chunk_size = lambda threads: int(chunk)
+    model = ifcopenshell.open(path)
+    before = native_threads()
+    shapes = converter.iter_shapes(model, rhino._settings(), int(threads), rhino.EXCLUDED_CLASSES)
+    try:
+        for number, _ in enumerate(shapes):
+            if number == 3:
+                if how == "error":
+                    raise RuntimeError("the consumer failed")
+                break
+    except RuntimeError:
+        pass
+    if how == "close":
+        shapes.close()
+    del shapes, model, _
+    gc.collect()
+    runs = sum(thread.name == "geometry-run" for thread in threading.enumerate())
+    print(runs, max(0, native_threads() - before), flush=True)
+    time.sleep(2)  # a kernel thread left behind would crash meanwhile
