@@ -22,8 +22,8 @@ import numpy
 import rhino3dm
 
 from ifc_converter.converter import (
-    LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, available_memory, geometry_library, iter_shapes,
-    shape_products,
+    LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, StatusCallback, available_memory, geometry_library,
+    iter_shapes, shape_products,
 )
 from ifc_converter.polysurface import planar_polysurface
 from ifc_converter.process import exit_with_parent
@@ -107,6 +107,7 @@ def write_3dm(
     threads: int,
     progress: ProgressCallback | None = None,
     geometry: str = "brep",
+    status: StatusCallback | None = None,
 ) -> int:
     """Write every element with geometry, layered by its place in the spatial structure and IFC class.
 
@@ -155,6 +156,10 @@ def write_3dm(
         ordered.close(None)
         ordered.commit(wait=True)
 
+    if status:
+        # rhino3dm holds the GIL while it writes, so the progress of this phase (the file growing)
+        # can only be watched from another process; process.py does that.
+        status("write", f"Rhino-Datei wird geschrieben ({writer.elements} Objekte) …")
     if not writer.rhino.Write(str(output_path), FILE_VERSION):
         raise OSError(f"Could not write Rhino file: {output_path}")
     return writer.elements

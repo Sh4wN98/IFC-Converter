@@ -75,7 +75,9 @@ python tools/accuracy.py modell.ifc --out-dir out --report genauigkeit.md
   - **Nur OpenCASCADE** (`opencascade`): alles mit OpenCASCADE, auch Geländemodelle.
   - Stürzt der Hybrid-Kern ab („Genau“ und „Schnell“), wird die ganze Datei automatisch nur mit OpenCASCADE wiederholt.
 - **Eigener Prozess:** Jede Umwandlung läuft in einem eigenen Prozess (im Fenster wie im Terminal). Reicht der Arbeitsspeicher nicht und das System beendet die Umwandlung (oder sie stürzt ab), wird nur diese Datei als Fehler markiert, und die nächste wird umgewandelt. „Abbrechen“ im Fenster wirkt sofort, auch während die IFC-Datei noch gelesen wird. Im Terminal zeigt eine Zeile den Fortschritt in Prozent.
-- **Fortschritt:** Das Einlesen großer Dateien dauert einige Minuten. Das Fenster zeigt solange „IFC wird gelesen …“.
+- **Fortschritt:** Das Einlesen großer Dateien dauert einige Minuten. Das Fenster zeigt solange „IFC wird gelesen …“. Auch beim Schreiben der Ausgabe (bei großen Modellen ebenfalls Minuten) steht dort, was gerade passiert, mit der schon geschriebenen Größe; die Logdatei hält jede Phase mit ihrer Dauer fest und schreibt jede Minute ein Lebenszeichen.
+- **Netzlaufwerke:** Liegt der Ausgabeordner auf einem Netzlaufwerk (`\\server\…` oder ein verbundenes Laufwerk), wird die Datei erst lokal im Temp-Ordner geschrieben und dann in einem Zug kopiert – openNURBS schreibt in vielen kleinen Stücken, was über das Netz sehr langsam ist.
+- **Tief verschachtelte Geometrie:** Die Windows-Programme reservieren 256 MB Stack pro Thread (Windows-Standard: 1 MB). Modelle mit Tausenden verschachtelten Ausschnitten oder Typ-Geometrien liefen sonst in einen Stapelüberlauf (Fehlercode `0xC00000FD`).
 - **GLB:** Das Format ist auf 4 GB Ausgabe begrenzt. Für riesige Modelle `.3dm` oder `.obj` nehmen.
 
 **Richtwerte** aus dem Stresstest mit 64 frei verfügbaren Modellen (Laptop, 8 Kerne / 8 GB RAM):

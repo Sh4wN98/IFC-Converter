@@ -21,10 +21,15 @@ import sys
 import tomllib
 from pathlib import Path
 
+from pe import set_stack_reserve, stack_reserve
+
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGING = ROOT / "packaging"
 DIST = ROOT / "dist"
 APP_NAME = "IFC Converter"
+# Default thread stack of the exes (Windows' default for the bootloader is 1 MB, see pe.py): the
+# geometry kernels need about 1 MB per few thousand levels of nested geometry.
+STACK_RESERVE = 256 * 1024 ** 2
 # Where the Inno Setup installer (or "choco install innosetup") puts its compiler.
 ISCC_CANDIDATES = [
     Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Inno Setup 6" / "ISCC.exe",
@@ -57,6 +62,13 @@ def pyinstaller() -> Path:
         PACKAGING / "ifc_converter.spec",
     ])
     return DIST / APP_NAME
+
+
+def enlarge_stacks(app_dir: Path) -> None:
+    """Give every thread of the exes STACK_RESERVE of stack (see pe.py)."""
+    for exe in sorted(app_dir.glob("*.exe")):
+        set_stack_reserve(exe, STACK_RESERVE)
+        print(f"{exe.name}: default thread stack {stack_reserve(exe) // 1024 ** 2} MB", flush=True)
 
 
 def portable_zip(app_dir: Path, version: str) -> Path:
@@ -108,6 +120,8 @@ def main() -> int:
     print(f"Building {APP_NAME} {version} with Python {sys.version.split()[0]}", flush=True)
 
     app_dir = pyinstaller()
+    if sys.platform == "win32":
+        enlarge_stacks(app_dir)
     outputs = []
     if not args.no_zip:
         outputs.append(portable_zip(app_dir, version))

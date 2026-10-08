@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import ifcopenshell.api as api
 import rhino3dm
+from pe import set_stack_reserve, stack_reserve
 
 EXPECTED = (0.2, 3.0, 5.0)  # wall dimensions in metres, sorted
 TOLERANCE = 1e-6
@@ -31,6 +33,10 @@ TIMEOUT = 600
 # Elements of the large test model: above rhino.MIN_PARALLEL_ELEMENTS, so the conversion child starts
 # its worker processes (a daemonic child could not, and every large 3dm conversion failed in 0.2.0).
 WALLS = 600
+# Levels of nested type geometry in the deep test model: a 1 MB thread stack (Windows' default)
+# overflows at a few thousand levels, which crashed the conversion of a real model in 0.2.1.
+NESTING = 5000
+STACK_RESERVE = 256 * 1024 ** 2
 WINDOWS = sys.platform == "win32"
 
 
@@ -83,6 +89,81 @@ def make_walls(path: Path, count: int = WALLS) -> None:
     api.run("type.assign_type", model, related_objects=walls, relating_type=wall_type)
     api.run("spatial.assign_container", model, relating_structure=site, products=walls)
     model.write(str(path))
+
+
+def make_nested(path: Path, depth: int = NESTING) -> None:
+    """One 10 x 0.3 x 3 m wall whose geometry is nested ``depth`` levels deep in IfcMappedItems."""
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="Test")
+    api.run("unit.assign_unit", model)
+    context = api.run("context.add_context", model, context_type="Model")
+    body = api.run(
+        "context.add_context", model,
+        context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context,
+    )
+    site = api.run("root.create_entity", model, ifc_class="IfcSite", name="Site")
+    api.run("aggregate.assign_object", model, relating_object=project, products=[site])
+    origin = model.createIfcCartesianPoint((0.0, 0.0, 0.0))
+    placement = model.createIfcAxis2Placement3D(origin, None, None)
+    profile = model.createIfcRectangleProfileDef(
+        "AREA", None, model.createIfcAxis2Placement2D(model.createIfcCartesianPoint((0.0, 0.0)), None), 10.0, 0.3
+    )
+    solid = model.createIfcExtrudedAreaSolid(profile, placement, model.createIfcDirection((0.0, 0.0, 1.0)), 3.0)
+    representation = model.createIfcShapeRepresentation(body, "Body", "SweptSolid", [solid])
+    operator = model.createIfcCartesianTransformationOperator3D(None, None, origin, 1.0, None)
+    for _ in range(depth):
+        source = model.createIfcRepresentationMap(placement, representation)
+        item = model.createIfcMappedItem(source, operator)
+        representation = model.createIfcShapeRepresentation(body, "Body", "MappedRepresentation", [item])
+    wall = api.run("root.create_entity", model, ifc_class="IfcWall", name="Deep wall")
+    wall.Representation = model.createIfcProductDefinitionShape(None, None, [representation])
+    api.run("geometry.edit_object_placement", model, product=wall)
+    api.run("spatial.assign_container", model, relating_structure=site, products=[wall])
+    model.write(str(path))
+
+
+def check_stacks(app_dir: Path, cli: Path, source: Path, out: Path) -> None:
+    """The exes have a large default thread stack, and that is what deeply nested models need."""
+    for exe in sorted(app_dir.glob("*.exe")):
+        if stack_reserve(exe) != STACK_RESERVE:
+            raise AssertionError(f"{exe.name}: default thread stack {stack_reserve(exe)} instead of {STACK_RESERVE}")
+    print(f"  default thread stack of the exes: {STACK_RESERVE // 1024 ** 2} MB ✓")
+    convert(cli, source, out / "nested.3dm", "-f", "3dm")
+    objects = rhino3dm.File3dm.Read(str(out / "nested.3dm")).Objects
+    if len(objects) != 1:
+        raise AssertionError(f"nested.3dm: {len(objects)} objects instead of 1")
+    print(f"  {NESTING} nested levels converted ✓")
+    # Control: the same exe with Windows' default 1 MB stack must crash on this model, otherwise the
+    # check above proves nothing.
+    small = cli.with_name("ifc-convert-1mb.exe")
+    shutil.copy2(cli, small)
+    try:
+        set_stack_reserve(small, 1024 ** 2)
+        command = [str(small), str(source), "-o", str(out / "nested-1mb.3dm"), "-f", "3dm"]
+        result = subprocess.run(command, capture_output=True, timeout=TIMEOUT, encoding="utf-8", errors="replace")
+        output = result.stdout + result.stderr
+        if result.returncode == 0 or "0xC00000FD" not in output:
+            raise AssertionError(f"with a 1 MB stack the nested model did not overflow:\n{output[-2000:]}")
+        print("  control: with a 1 MB stack it overflows (0xC00000FD) ✓")
+    finally:
+        small.unlink(missing_ok=True)
+
+
+def check_network_folder(cli: Path, source: Path, out: Path, log: Path) -> None:
+    """Output to a UNC path is written locally first and then copied (the admin share of this PC)."""
+    drive, rest = os.path.splitdrive(str(out.resolve()))
+    share = Path(f"\\\\localhost\\{drive[0]}${rest}")
+    if not share.is_dir():
+        print(f"  network folder check skipped: {share} is not reachable")
+        return
+    offset = log.stat().st_size if log.is_file() else 0
+    target = share / "wall-unc.3dm"
+    convert(cli, source, target, "-f", "3dm")
+    check_3dm(target, rhino3dm.Brep)
+    written = log.read_bytes()[offset:].decode("utf-8", "replace") if log.is_file() else ""
+    if "Wird ins Zielverzeichnis kopiert" not in written:
+        raise AssertionError(f"output for {share} was not staged locally:\n{written[-2000:]}")
+    print("  UNC folder: written locally, then copied ✓")
 
 
 def check_large_model(path: Path, log: Path, log_offset: int) -> None:
@@ -297,6 +378,12 @@ def main() -> int:
             target = out / f"walls-{geometry}.3dm"
             convert(cli, walls, target, "-f", "3dm", "-g", geometry, "-j", "4")
             check_large_model(target, log, offset)
+
+        if WINDOWS:
+            check_network_folder(cli, source, out, log)
+            nested = folder / "Verschachtelt.ifc"
+            make_nested(nested)
+            check_stacks(args.app_dir, cli, nested, out)
 
         if hashlib.sha256(source.read_bytes()).hexdigest() != original:
             raise AssertionError("the input IFC was modified")

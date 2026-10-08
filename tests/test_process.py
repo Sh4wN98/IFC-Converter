@@ -360,3 +360,30 @@ def test_large_rhino_export_runs_its_workers_inside_the_child(many_walls_ifc, tm
     )
     assert result.elements == 600
     assert int(Path(f"{output}.workers").read_text()) > 0  # built by workers, not by the fallback
+
+
+def test_the_size_written_so_far_is_reported_while_writing(wall_ifc, tmp_path):
+    texts = []
+    convert_in_child(wall_ifc, tmp_path / "slow.3dm", "3dm", func=child_helpers.write_slowly,
+                     status=lambda phase, text: texts.append((phase, text)))
+    assert texts[0] == ("write", "Rhino-Datei wird geschrieben (1 Objekte) …")
+    sizes = [text for phase, text in texts[1:] if phase == "write"]
+    assert sizes and all(text.endswith(" MB geschrieben …") for text in sizes)  # e.g. "…: 2 MB geschrieben …"
+
+
+def test_long_conversions_leave_a_heartbeat_in_the_log(wall_ifc, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(process, "HEARTBEAT", 0.5)
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        convert_in_child(wall_ifc, tmp_path / "slow.3dm", "3dm", func=child_helpers.write_slowly)
+    assert "Rhino-Datei wird geschrieben (1 Objekte) … (nach" in caplog.text  # the phase, with its time
+    assert "Läuft seit" in caplog.text
+
+
+def test_the_staging_folder_is_removed_after_a_cancel(wall_ifc, tmp_path):
+    output = tmp_path / "staged.3dm"
+    side = Path(f"{output}.staging")
+    with pytest.raises(Cancelled):
+        convert_in_child(wall_ifc, output, "3dm", func=child_helpers.stage_and_wait,
+                         cancelled=lambda: side.exists() and side.read_text() != "")
+    staging = Path(side.read_text())
+    assert staging.name.startswith("ifc-converter-") and not staging.exists()

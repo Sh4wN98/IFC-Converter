@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
+import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +64,16 @@ LINEAR_DEFLECTION = 0.0005
 # Called with the conversion progress in percent (0-100). It may raise to abort the conversion.
 # The first call (0) comes once the IFC file has been read, which can take minutes for large models.
 ProgressCallback = Callable[[int], None]
+# Called with the phase ("read", "geometry", "write", "copy") and a short German description when the
+# conversion enters a phase or makes progress within one. Reading the IFC, writing the output and
+# copying it to a network folder can each take minutes without any percentage moving.
+StatusCallback = Callable[[str, str], None]
+
+# Output for a network folder is written to the local temp folder first and copied in one go:
+# openNURBS writes in small pieces, each a round trip over the network. Only if the temp folder has
+# this many times the IFC's size free (a 3dm with polysurfaces was up to 4.6 times the IFC).
+STAGING_ROOM = 8
+COPY_BLOCK = 16 * 1024 ** 2
 
 # The geometry iterator keeps every shape it has produced until it is destroyed, so its memory
 # grows with the model. Running a fresh iterator per chunk of elements keeps that bounded. Each
@@ -109,11 +123,15 @@ def convert(
     progress: ProgressCallback | None = None,
     geometry: str = "brep",
     kernel: str | None = None,
+    status: StatusCallback | None = None,
+    staging_dir: str | Path | None = None,
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl) or Rhino 3DM and return what was written.
 
     ``geometry`` ("brep" or "mesh") only affects the Rhino export. ``kernel`` picks the geometry
-    kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL.
+    kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL. ``status`` gets the
+    phases (see StatusCallback). Output for a network folder is written in ``staging_dir`` (or a
+    temp folder) first and then copied.
     """
     fmt = fmt.lower()
     if fmt not in FORMATS:
@@ -132,6 +150,11 @@ def convert(
     output_path = Path(output_path) if output_path else input_path.with_suffix(f".{fmt}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def report(phase: str, text: str) -> None:
+        if status:
+            status(phase, text)
+
+    report("read", f"IFC-Datei wird gelesen ({size_text(input_path.stat().st_size)}) …")
     try:
         model = ifcopenshell.open(str(input_path))
     except ifcopenshell.SchemaError as exc:
@@ -143,35 +166,102 @@ def convert(
     token = _kernel.set(kernel)
     candidates = [0]
     candidates_token = _candidates.set(candidates)
+    report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
     if progress:
         progress(0)
 
-    try:
-        if fmt == "3dm":
-            from ifc_converter.rhino import write_3dm
+    with _staging(output_path, input_path.stat().st_size, staging_dir) as target:
+        try:
+            if fmt == "3dm":
+                from ifc_converter.rhino import write_3dm
 
-            elements = write_3dm(model, output_path, threads, progress, geometry)
-        else:
-            elements = _serialize(model, output_path, fmt, threads, progress)
-    finally:
-        _kernel.reset(token)
-        _candidates.reset(candidates_token)
+                elements = write_3dm(model, target, threads, progress, geometry, report)
+            else:
+                elements = _serialize(model, target, fmt, threads, progress, report)
+        finally:
+            _kernel.reset(token)
+            _candidates.reset(candidates_token)
 
-    if elements == 0:
-        # An empty file reported as success would look like a finished conversion.
-        for path in (output_path, output_path.with_suffix(".mtl") if fmt == "obj" else None):
-            if path:
+        if elements == 0:
+            # An empty file reported as success would look like a finished conversion.
+            for path in _output_files(target, fmt):
                 path.unlink(missing_ok=True)
-        if candidates[0]:
-            raise ValueError(
-                f"Keine Geometrie erzeugt: keines der {candidates[0]} Bauteile mit Geometrie ließ sich "
-                "umwandeln (vermutlich nicht unterstützte Geometrietypen)."
-            )
-        raise ValueError("Die Datei enthält keine Bauteile mit Geometrie.")
+            if candidates[0]:
+                raise ValueError(
+                    f"Keine Geometrie erzeugt: keines der {candidates[0]} Bauteile mit Geometrie ließ sich "
+                    "umwandeln (vermutlich nicht unterstützte Geometrietypen)."
+                )
+            raise ValueError("Die Datei enthält keine Bauteile mit Geometrie.")
+        if target != output_path:
+            _deliver(target, output_path, fmt, report)
 
     if progress:
         progress(100)
     return ConversionResult(output=output_path, elements=elements, skipped=max(0, candidates[0] - elements))
+
+
+def size_text(size: int) -> str:
+    """A file size in German notation, e.g. "1,2 GB" or "345 MB"."""
+    if size >= 1024 ** 3:
+        return f"{size / 1024 ** 3:.1f} GB".replace(".", ",")
+    return f"{size / 1024 ** 2:.0f} MB"
+
+
+def _output_files(path: Path, fmt: str) -> list[Path]:
+    """The files a conversion to ``path`` writes (OBJ: the .mtl next to it)."""
+    return [path, path.with_suffix(".mtl")] if fmt == "obj" else [path]
+
+
+@contextmanager
+def _staging(output_path: Path, ifc_size: int, folder: str | Path | None) -> Iterator[Path]:
+    """The path to write to: in ``folder`` (or a new temp folder) for output to a network folder."""
+    if not is_network_path(output_path):
+        yield output_path
+        return
+    base = Path(folder) if folder else Path(tempfile.gettempdir())
+    if shutil.disk_usage(base).free < STAGING_ROOM * ifc_size + 1024 ** 3:
+        yield output_path  # too little room for it locally: write over the network after all
+        return
+    own = Path(tempfile.mkdtemp(prefix="ifc-converter-", dir=folder))
+    try:
+        yield own / output_path.name
+    finally:
+        shutil.rmtree(own, ignore_errors=True)
+
+
+def is_network_path(path: Path) -> bool:
+    """Whether ``path`` is on a network share (Windows: a UNC path or a mapped network drive)."""
+    if sys.platform != "win32":
+        return False
+    text = str(path)
+    if text.startswith(("\\\\", "//")):
+        return True
+    drive = Path(text).drive
+    if not drive:
+        return False
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4  # DRIVE_REMOTE
+    except (OSError, AttributeError):
+        return False
+
+
+def _deliver(staged: Path, output_path: Path, fmt: str, report: Callable[[str, str], None]) -> None:
+    """Copy the staged output to the network folder in large blocks, reporting the progress."""
+    files = [(source, output_path.with_suffix(source.suffix)) for source in _output_files(staged, fmt)]
+    files = [(source, target) for source, target in files if source.exists()]
+    total = sum(source.stat().st_size for source, _ in files)
+    copied, last = 0, 0.0
+    report("copy", f"Wird ins Zielverzeichnis kopiert ({size_text(total)}) …")
+    for source, target in files:
+        with open(source, "rb") as reader, open(target, "wb") as writer:
+            while block := reader.read(COPY_BLOCK):
+                writer.write(block)
+                copied += len(block)
+                if time.monotonic() - last >= 1:
+                    last = time.monotonic()
+                    report("copy", f"Wird ins Zielverzeichnis kopiert … {size_text(copied)} von {size_text(total)}")
 
 
 def default_threads() -> int:
@@ -448,7 +538,10 @@ def _load_malloc_trim():
 _malloc_trim = _load_malloc_trim()
 
 
-def _serialize(model, output_path: Path, fmt: str, threads: int, progress: ProgressCallback | None) -> int:
+def _serialize(
+    model, output_path: Path, fmt: str, threads: int, progress: ProgressCallback | None,
+    report: Callable[[str, str], None] = lambda phase, text: None,
+) -> int:
     """Write GLB/OBJ with IfcOpenShell's built-in serializers."""
     settings = geom.settings()
     settings.set("mesher-linear-deflection", LINEAR_DEFLECTION)
@@ -465,6 +558,7 @@ def _serialize(model, output_path: Path, fmt: str, threads: int, progress: Progr
             continue
         serializer.write(shape)
         elements += 1
+    report("write", f"{fmt.upper()}-Datei wird geschrieben …")
     serializer.finalize()
     return elements
 

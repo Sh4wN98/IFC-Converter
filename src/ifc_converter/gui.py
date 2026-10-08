@@ -126,12 +126,16 @@ class QueueItem:
     output: Path | None = None
     error: str = ""
     warning: str = ""  # RAM warning for large files, shown as tooltip
+    detail: str = ""  # what the conversion is doing in a long final phase (writing, copying)
+    phase: str = ""  # the conversion's current phase (see process.convert_in_child)
 
     @property
     def status_text(self) -> str:
         if self.status is Status.RUNNING:
             if self.progress == READING:
                 return "IFC wird gelesen …"
+            if self.detail:
+                return f"Läuft … {self.progress} % – {self.detail}"
             return f"Läuft … {self.progress} %"
         if self.status is Status.DONE:
             skipped = f" ({self.skipped} ohne Geometrie)" if self.skipped > 0 else ""
@@ -243,6 +247,7 @@ class ConversionWorker(QObject):
     file_warning = Signal(int, str)  # row, RAM warning
     file_progress = Signal(int, int)  # row, percent
     file_retrying = Signal(int)  # row; converting again with the OpenCASCADE kernel after a crash
+    file_status = Signal(int, str, str)  # row, phase, description (see process.convert_in_child)
     file_done = Signal(int, object, int, int)  # row, output path, elements, skipped elements
     file_failed = Signal(int, str)  # row, message
     file_cancelled = Signal(int)
@@ -318,7 +323,8 @@ class ConversionWorker(QObject):
 
                 result = convert_in_child(
                     source, target, self.fmt, self.threads, progress, self._cancel.is_set,
-                    on_retry=retrying, low_priority=self.low_priority, **options,
+                    on_retry=retrying, low_priority=self.low_priority,
+                    status=lambda phase, text: self.file_status.emit(row, phase, text), **options,
                 )
             else:
                 result = convert(source, target, self.fmt, self.threads, progress, **options)
@@ -952,6 +958,7 @@ class MainWindow(QMainWindow):
         self._worker.file_warning.connect(self._on_file_warning)
         self._worker.file_progress.connect(self._on_file_progress)
         self._worker.file_retrying.connect(self._on_file_retrying)
+        self._worker.file_status.connect(self._on_file_status)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.file_failed.connect(self._on_file_failed)
         self._worker.file_cancelled.connect(self._on_file_cancelled)
@@ -975,7 +982,7 @@ class MainWindow(QMainWindow):
 
     def _on_file_started(self, row: int, target: Path) -> None:
         item = self.queue[row]
-        item.status, item.progress = Status.RUNNING, READING
+        item.status, item.progress, item.detail, item.phase = Status.RUNNING, READING, "", ""
         self._refresh_row(row)
         self.table.scrollToItem(self.table.item(row, 0))
         self._update_overall(0)
@@ -989,12 +996,27 @@ class MainWindow(QMainWindow):
         if item.status is not Status.RUNNING:
             return
         # The file is read again from the start, so back to the reading state and the busy bar.
-        item.progress = READING
+        item.progress, item.detail, item.phase = READING, "", ""
         self._refresh_row(row)
         self._update_overall(0)
         self.overall_progress.setRange(0, 0)
         self._set_activity(f"{item.path.name}: neuer Versuch mit dem OpenCASCADE-Kern – IFC wird gelesen …")
         self.log(f"⚠ {RETRY_MESSAGE}")
+
+    def _on_file_status(self, row: int, phase: str, text: str) -> None:
+        item = self.queue[row]
+        if item.status is not Status.RUNNING:
+            return
+        # The row only shows the long final phases, in which the percentage stands still.
+        detail = text if phase in ("write", "copy") else ""
+        if detail != item.detail:
+            if detail and phase != item.phase:
+                self.log(f"… {item.path.name}: {text}")
+            item.detail = detail
+            self._refresh_row(row)
+        item.phase = phase
+        if phase != "read":
+            self._set_activity(f"{item.path.name}: {text}")
 
     def _on_file_warning(self, row: int, message: str) -> None:
         item = self.queue[row]
