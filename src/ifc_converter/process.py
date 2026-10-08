@@ -11,6 +11,7 @@ writes to stderr (warnings, tracebacks, a native crash's Python stack) ends up i
 from __future__ import annotations
 
 import faulthandler
+import json
 import logging
 import multiprocessing
 import os
@@ -27,8 +28,7 @@ from multiprocessing.connection import wait
 from pathlib import Path
 
 from ifc_converter.converter import (
-    DEFAULT_KERNEL, MAX_DEFAULT_THREADS, SPARE_CORES, ConversionResult, ProgressCallback, convert,
-    default_threads, size_text,
+    DEFAULT_KERNEL, MAX_DEFAULT_THREADS, ConversionResult, ProgressCallback, convert, default_threads, size_text,
 )
 
 # "spawn" starts a fresh interpreter on every platform: no forked copy of the GUI's threads and
@@ -62,6 +62,14 @@ SUSPEND_GAP = 5 * 60
 STALE_TEMP_AGE = 24 * 3600
 
 MEMORY_MESSAGE = "Der Arbeitsspeicher hat nicht gereicht (Prozess wurde vom System beendet)"
+# Windows: the conversion child and its worker processes run in a job object. They end with the app
+# even if it is killed (KILL_ON_JOB_CLOSE), and together they may commit at most JOB_MEMORY_SHARE of
+# the physical memory, so that a runaway conversion cannot push the PC's other programs into paging.
+JOB_MEMORY_SHARE = 0.85
+MEMORY_LIMIT_MESSAGE = (
+    "Der Arbeitsspeicher hat nicht gereicht: Die Umwandlung darf höchstens {limit} GB belegen ({share} % des "
+    "Arbeitsspeichers), damit andere Programme weiterlaufen. Für diese Datei braucht der PC mehr Arbeitsspeicher."
+)
 # Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
 RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE …"
 # How many of the elements without geometry the log lists by name.
@@ -79,7 +87,18 @@ BELOW_NORMAL_PRIORITY_CLASS = 0x4000
 NICE_INCREMENT = 10
 # At most this much of the child's stderr goes into the log (its end, where the errors are).
 STDERR_LOG_LIMIT = 32_000
-# Cores left free for other programs by default.
+# Windows memory priority of the child (from <winbase.h>; normal is 5): when memory gets short, the
+# pages of other programs are kept in RAM before those of the conversion.
+MEMORY_PRIORITY_BELOW_NORMAL = 4
+# Seconds to wait for a killed child to be gone before giving up on it.
+KILL_WAIT = 10
+# Elements the kernel crashed or hung on are remembered per file (name, size, modification time,
+# kernel strategy, converter version) in QUARANTINE_NAME, so that converting the unchanged file again
+# skips them at once instead of finding them anew, which takes a new attempt each. At most
+# QUARANTINE_ELEMENTS per file, for the QUARANTINE_FILES files converted last.
+QUARANTINE_NAME = "quarantine.json"
+QUARANTINE_FILES = 50
+QUARANTINE_ELEMENTS = 100
 
 log = logging.getLogger(__name__)
 
@@ -98,11 +117,15 @@ class ConversionFailed(Exception):
 
 
 class ConversionCrashed(Exception):
-    """The child process died without a result (killed, or a native crash)."""
+    """The child process died without a result (killed, or a native crash).
 
-    def __init__(self, exitcode: int | None):
-        super().__init__(crash_message(exitcode))
+    ``memory_limit`` is set when the processes ran into the memory limit of their job object (Windows).
+    """
+
+    def __init__(self, exitcode: int | None, message: str = "", memory_limit: bool = False):
+        super().__init__(message or crash_message(exitcode))
         self.exitcode = exitcode
+        self.memory_limit = memory_limit
 
 
 class ConversionStalled(Exception):
@@ -175,9 +198,12 @@ def _recover(
     """Plan attempt number ``attempt`` after a crash or hang; returns the message for it, or None to give up.
 
     ``failure.position`` is where the child was: ("chunk", ids, "") with the products not finished
-    yet, or ("element", [id], label).
+    yet, ("element", [id], label), or ("curves", ids, labels one per line) for the Rhino export's
+    alignment and grid axes, which are left out then. A crash with a strategy using the hybrid kernel
+    is retried with OpenCASCADE alone only if it happened while the kernel computed products and
+    nothing narrower is left to try; a crash while reading or writing would only come again.
     """
-    if isinstance(failure, ConversionCrashed) and _out_of_memory(failure.exitcode):
+    if isinstance(failure, ConversionCrashed) and (failure.memory_limit or _out_of_memory(failure.exitcode)):
         return None
     if isinstance(failure, ConversionStalled):
         what = f"Absturz im Geometriekern ({failure.fatal})" if failure.fatal else "Hänger im Geometriekern"
@@ -185,6 +211,11 @@ def _recover(
         what = "Absturz im Geometriekern"
     again = f"Neuer Versuch ({attempt}. von höchstens {MAX_RECOVERIES + 1})"
     kind, ids, label = getattr(failure, "position", None) or (None, [], "")
+    if kind == "curves" and ids and not set(ids) <= skipped.keys():
+        labels = label.split("\n") if label else []
+        for number, id_ in enumerate(ids):
+            skipped[id_] = labels[number] if number < len(labels) else f"#{id_}"
+        return f"{what} bei den Achsen (IfcAlignment, IfcGrid). {again} ohne die Achsen …"
     if kind == "element" and ids and ids[0] not in skipped:
         skipped[ids[0]] = label or f"#{ids[0]}"
         return f"{what} bei {skipped[ids[0]]}. {again}, dieses Bauteil wird übersprungen …"
@@ -194,8 +225,8 @@ def _recover(
             return f"{what} bei einem Bauteil. {again}, es wird zuerst und einzeln berechnet …"
         return (f"{what} bei einem von {len(ids)} Bauteilen. {again}, diese werden zuerst und einzeln "
                 "berechnet, um das betroffene zu finden …")
-    if isinstance(failure, ConversionCrashed) and _retry_with_opencascade(failure.exitcode, options) \
-            and options.get("kernel") != "opencascade":
+    if kind in ("chunk", "element") and isinstance(failure, ConversionCrashed) \
+            and _retry_with_opencascade(failure.exitcode, options) and options.get("kernel") != "opencascade":
         options["kernel"] = "opencascade"
         return RETRY_MESSAGE
     return None
@@ -332,8 +363,9 @@ def keep_awake() -> Iterator[None]:
 def lower_priority() -> None:
     """Run the calling process (and the processes it starts) below normal priority.
 
-    A conversion uses every core it gets; at a lower priority, Rhino, Revit or Outlook still get the
-    CPU first, so the PC stays responsive and the conversion uses the time they leave over.
+    At a lower priority, Rhino, Revit or Outlook still get the CPU first, so the PC stays responsive
+    and the conversion uses the time they leave over. On Windows its memory priority is lowered too
+    (see MEMORY_PRIORITY_BELOW_NORMAL).
     """
     try:
         if sys.platform == "win32":
@@ -343,9 +375,29 @@ def lower_priority() -> None:
             kernel32.GetCurrentProcess.restype = ctypes.c_void_p
             kernel32.SetPriorityClass.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
             kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
+            lower_memory_priority()
         else:
             os.nice(NICE_INCREMENT)
     except (OSError, AttributeError):
+        pass
+
+
+def lower_memory_priority() -> None:
+    """Windows 8 and later: give the calling process's memory pages below-normal priority."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.SetProcessInformation.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong)
+        priority = ctypes.c_ulong(MEMORY_PRIORITY_BELOW_NORMAL)
+        process_memory_priority = 0  # PROCESS_INFORMATION_CLASS
+        kernel32.SetProcessInformation(
+            kernel32.GetCurrentProcess(), process_memory_priority, ctypes.byref(priority), ctypes.sizeof(priority),
+        )
+    except (OSError, AttributeError):  # before Windows 8
         pass
 
 
@@ -368,24 +420,30 @@ def _child_main(
     # child, which would otherwise print its own traceback.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _silence_stdout()
+    lock = threading.Lock()  # the geometry runs report from threads of their own
+
+    def send(message: tuple) -> None:
+        with lock:
+            conn.send(message)
 
     def progress(percent: int) -> None:
-        conn.send(("progress", percent))
+        send(("progress", percent))
 
     def status(phase: str, text: str) -> None:
-        conn.send(("status", phase, text))
+        send(("status", phase, text))
 
     def position(kind: str, ids: list, label: str) -> None:
-        conn.send(("position", kind, ids, label))
+        send(("position", kind, ids, label))
 
     try:
         result = func(*args, progress=progress, status=status, position=position, **kwargs)
     except Exception as exc:  # exception objects may not unpickle in the parent, so send plain text
-        conn.send(("error", type(exc).__name__, str(exc), traceback.format_exc()))
+        send(("error", type(exc).__name__, str(exc), traceback.format_exc()))
     else:
-        conn.send(("done", result))
+        send(("done", result))
     finally:
-        conn.close()
+        with lock:
+            conn.close()
 
 
 def convert_in_child(
@@ -428,7 +486,12 @@ def convert_in_child(
     )
     started = time.monotonic()
     isolate: set[int] = set()
-    skipped: dict[int, str] = {}
+    kernel = (options.get("kernel") or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL).lower()
+    quarantine = _quarantine_key(input_path, kernel)
+    skipped = load_quarantine(quarantine)
+    if skipped:
+        log.warning("Bekannt aus früheren Umwandlungen dieser Datei, wird übersprungen (der Geometriekern "
+                    "stürzte daran ab oder blieb hängen) (%d):\n  %s", len(skipped), "\n  ".join(skipped.values()))
     try:
         with keep_awake():
             for attempt in range(MAX_RECOVERIES + 1):
@@ -441,7 +504,10 @@ def convert_in_child(
                     result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started)
                     break
                 except (ConversionCrashed, ConversionStalled) as failure:
+                    known = len(skipped)
                     message = _recover(failure, options, isolate, skipped, attempt + 2)
+                    if len(skipped) > known:
+                        save_quarantine(quarantine, skipped)
                     if message is None or attempt == MAX_RECOVERIES:
                         raise
                     code = f" (Exit-Code {failure.exitcode})" if isinstance(failure, ConversionCrashed) else ""
@@ -449,6 +515,8 @@ def convert_in_child(
                     if on_retry:
                         on_retry(message)
             result.crashed = list(skipped.values())
+            if skipped:  # remembered as used recently
+                save_quarantine(quarantine, skipped)
     except Cancelled:
         log.info("Abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
         raise
@@ -498,6 +566,7 @@ def _run_child(
     started: float | None = None,
 ) -> ConversionResult:
     """One attempt of convert_in_child()."""
+    job = _Job.create(low_priority)
     stderr_path = _stderr_file()
     staging = _staging_dir()
     watch = _Phases(args[1] or Path(args[0]).with_suffix(f".{args[2]}"), staging, status, started)
@@ -512,8 +581,12 @@ def _run_child(
         daemon=False,
     )
     outcome = None
+    memory_limit = False
     try:
         process.start()
+        if job:
+            # The child starts its worker processes later, which then belong to the job as well.
+            job.assign(process.sentinel)  # on Windows the process handle
         watch.pid = process.pid
         writer.close()  # the child has its own copy; ours would only hide the child's end of the pipe
         while outcome is None:
@@ -524,7 +597,7 @@ def _run_child(
             if reader in ready:
                 try:
                     message = reader.recv()
-                except EOFError:  # the child is ending without a result
+                except (EOFError, OSError):  # the child is ending without a result (Windows: a broken pipe)
                     process.join(5)
                     break
                 if message[0] == "progress":
@@ -539,15 +612,15 @@ def _run_child(
                     outcome = message
             elif process.sentinel in ready:
                 # Anything the child sent before it ended is still in the pipe.
-                while outcome is None and reader.poll():
-                    try:
+                try:
+                    while outcome is None and reader.poll():
                         message = reader.recv()
-                    except EOFError:
-                        break
-                    if message[0] == "position":
-                        watch.locate(*message[1:])
-                    elif message[0] not in ("progress", "status"):
-                        outcome = message
+                        if message[0] == "position":
+                            watch.locate(*message[1:])
+                        elif message[0] not in ("progress", "status"):
+                            outcome = message
+                except (EOFError, OSError):  # the end of the pipe (Windows: a broken pipe)
+                    pass
                 break
     finally:
         # A child that delivered its result is just exiting; a cancelled or failed one is stopped now.
@@ -556,7 +629,17 @@ def _run_child(
         _log_stderr(stderr_path, failed=outcome is None or outcome[0] == "error")
         if staging:
             shutil.rmtree(staging, ignore_errors=True)
+        if job:
+            memory_limit = job.memory_limit_hit()
+            job.close()  # ends worker processes that outlived the child
 
+    if memory_limit and (outcome is None or outcome[0] == "error"):
+        # Allocations failed: as a crash in native code, or as a MemoryError in Python.
+        log.error("Speichergrenze des Umwandlungsprozesses (%s GB) erreicht", _gb(job.limit))
+        raise ConversionCrashed(exitcode, _memory_limit_message(job.limit), memory_limit=True)
+    if memory_limit:
+        log.warning("Speichergrenze des Umwandlungsprozesses (%s GB) erreicht, die Umwandlung lief trotzdem "
+                    "zu Ende (z. B. ohne Hilfsprozesse)", _gb(job.limit))
     if outcome is None:
         crash = ConversionCrashed(exitcode)
         crash.position = watch.suspects()
@@ -564,6 +647,256 @@ def _run_child(
     if outcome[0] == "error":
         raise ConversionFailed(*outcome[1:])
     return outcome[1]
+
+
+def _gb(size: int) -> str:
+    return f"{size / 1024 ** 3:.1f}".replace(".", ",")
+
+
+def _memory_limit_message(limit: int) -> str:
+    return MEMORY_LIMIT_MESSAGE.format(limit=_gb(limit), share=round(JOB_MEMORY_SHARE * 100))
+
+
+def job_memory_limit() -> int | None:
+    """The memory the conversion processes may commit together: JOB_MEMORY_SHARE of the physical memory."""
+    total = total_memory()
+    return int(total * JOB_MEMORY_SHARE) if total else None
+
+
+def total_memory() -> int | None:
+    """Physical memory in bytes (Windows only, else None)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatus(dwLength=ctypes.sizeof(MemoryStatus))
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return status.ullTotalPhys
+    except (OSError, AttributeError):
+        return None
+
+
+class _Job:
+    """A Windows job object for the conversion child and the worker processes it starts.
+
+    Closing it (or the app ending) kills them all; their memory together is capped at ``limit``,
+    and a process that tries to go beyond it is reported through a completion port.
+    """
+
+    # From <winnt.h>.
+    LIMIT_PRIORITY_CLASS = 0x20
+    LIMIT_JOB_MEMORY = 0x200
+    LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    EXTENDED_LIMIT_INFORMATION = 9
+    ASSOCIATE_COMPLETION_PORT_INFORMATION = 7
+    MSG_JOB_MEMORY_LIMIT = 10
+
+    def __init__(self, kernel32, handle, port, limit: int):
+        self._kernel32, self._handle, self._port = kernel32, handle, port
+        self.limit = limit
+        self._hit = False
+
+    @classmethod
+    def create(cls, low_priority: bool = True) -> _Job | None:
+        """A new job with the limits, or None (not Windows, or the job could not be set up: logged)."""
+        if sys.platform != "win32":
+            return None
+        limit = job_memory_limit()
+        if not limit:
+            return None
+        try:
+            return cls._create(limit, low_priority)
+        except (OSError, AttributeError) as exc:
+            log.warning("Job-Objekt für die Umwandlung nicht verfügbar (%s), weiter ohne Speichergrenze", exc)
+            return None
+
+    @classmethod
+    def _create(cls, limit: int, low_priority: bool) -> _Job:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        kernel32.CreateIoCompletionPort.restype = wintypes.HANDLE
+        kernel32.CreateIoCompletionPort.argtypes = (wintypes.HANDLE, wintypes.HANDLE, ctypes.c_size_t, wintypes.DWORD)
+        kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.GetQueuedCompletionStatus.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD,
+        )
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        job = cls(kernel32, handle, None, limit)
+        try:
+            info = _ExtendedLimitInformation()
+            info.BasicLimitInformation.LimitFlags = cls.LIMIT_KILL_ON_JOB_CLOSE | cls.LIMIT_JOB_MEMORY
+            if low_priority:  # also for processes started by the child, whatever they ask for
+                info.BasicLimitInformation.LimitFlags |= cls.LIMIT_PRIORITY_CLASS
+                info.BasicLimitInformation.PriorityClass = BELOW_NORMAL_PRIORITY_CLASS
+            info.JobMemoryLimit = limit
+            if not kernel32.SetInformationJobObject(
+                handle, cls.EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            invalid_handle = wintypes.HANDLE(-1).value
+            job._port = kernel32.CreateIoCompletionPort(invalid_handle, None, 0, 1)
+            if job._port:
+                port = _CompletionPort(CompletionKey=None, CompletionPort=job._port)
+                kernel32.SetInformationJobObject(
+                    handle, cls.ASSOCIATE_COMPLETION_PORT_INFORMATION, ctypes.byref(port), ctypes.sizeof(port),
+                )
+        except BaseException:
+            job.close()
+            raise
+        return job
+
+    def assign(self, process_handle: int) -> bool:
+        """Put the process into the job; if that fails (logged), it runs without the job's limits."""
+        import ctypes
+
+        if self._kernel32.AssignProcessToJobObject(self._handle, process_handle):
+            return True
+        log.warning("Umwandlungsprozess nicht im Job-Objekt (%s), weiter ohne Speichergrenze",
+                    ctypes.WinError(ctypes.get_last_error()))
+        return False
+
+    def memory_limit_hit(self) -> bool:
+        """Whether a process of the job tried to commit more than ``limit`` (so far)."""
+        import ctypes
+        from ctypes import wintypes
+
+        while self._port and not self._hit:
+            message, key, overlapped = wintypes.DWORD(), ctypes.c_size_t(), ctypes.c_void_p()
+            if not self._kernel32.GetQueuedCompletionStatus(
+                self._port, ctypes.byref(message), ctypes.byref(key), ctypes.byref(overlapped), 0,
+            ):
+                break  # no more messages
+            self._hit = message.value == self.MSG_JOB_MEMORY_LIMIT
+        return self._hit
+
+    def close(self) -> None:
+        """Close the job: processes still in it are killed."""
+        for handle in (self._handle, self._port):
+            if handle:
+                self._kernel32.CloseHandle(handle)
+        self._handle = self._port = None
+
+
+def _job_structures():
+    import ctypes
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32), ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation), ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    class CompletionPort(ctypes.Structure):
+        _fields_ = [("CompletionKey", ctypes.c_void_p), ("CompletionPort", ctypes.c_void_p)]
+
+    return ExtendedLimitInformation, CompletionPort
+
+
+_ExtendedLimitInformation, _CompletionPort = _job_structures()
+
+
+def quarantine_path() -> Path:
+    """The file remembering the elements that crashed or hung the kernel (see QUARANTINE_NAME)."""
+    from ifc_converter.app import log_dir
+
+    return log_dir().parent / QUARANTINE_NAME
+
+
+def _quarantine_key(input_path: str | Path, kernel: str) -> str | None:
+    """What identifies an unchanged file and the way it is converted, or None if it cannot be read."""
+    from ifc_converter import __version__
+
+    try:
+        stat = os.stat(input_path)
+    except OSError:
+        return None
+    return f"{Path(input_path).name}|{stat.st_size}|{stat.st_mtime_ns}|{kernel}|{__version__}"
+
+
+def _read_quarantine() -> dict:
+    try:
+        with open(quarantine_path(), encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, ValueError):  # missing, unreadable or corrupt: start afresh
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_quarantine(key: str | None) -> dict[int, str]:
+    """The remembered elements of the file with ``key``, as {step id: label}."""
+    if not key:
+        return {}
+    entry = _read_quarantine().get(key)
+    elements = entry.get("elements") if isinstance(entry, dict) else None
+    if not isinstance(elements, dict):
+        return {}
+    known = {}
+    for id_, label in list(elements.items())[:QUARANTINE_ELEMENTS]:
+        if isinstance(id_, str) and id_.isdigit() and isinstance(label, str):
+            known[int(id_)] = label
+    return known
+
+
+def save_quarantine(key: str | None, elements: dict[int, str]) -> None:
+    """Remember ``elements`` ({step id: label}) for the file with ``key``; errors are only logged."""
+    if not key:
+        return
+    data = {name: entry for name, entry in _read_quarantine().items() if isinstance(entry, dict)}
+    data.pop(key, None)
+    data[key] = {
+        "elements": {str(id_): label for id_, label in list(elements.items())[:QUARANTINE_ELEMENTS]},
+        "used": time.time(),
+    }
+    def used(name: str) -> float:
+        value = data[name].get("used")
+        return value if isinstance(value, (int, float)) else 0.0
+
+    for name in sorted(data, key=used)[:-QUARANTINE_FILES]:
+        del data[name]
+    path = quarantine_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_name(path.name + ".part")
+        part.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(part, path)
+    except OSError as exc:
+        log.warning("Übersprungene Bauteile konnten nicht gespeichert werden (%s): %s", path, exc)
 
 
 def _staging_dir() -> str | None:
@@ -602,6 +935,8 @@ class _Phases:
         if phase == "note":  # something for the log only
             log.warning("%s", text)
             return
+        if phase in ("write", "copy"):  # a crash from here on is not in the kernel
+            self.locate("done", [], "")
         if phase != self.phase:
             log.info("%s (nach %.0f s)", text, time.monotonic() - self.started)
         self.phase, self.text = phase, text
@@ -835,7 +1170,8 @@ def _log_stderr(path: str | None, failed: bool) -> None:
 def _stop(process, grace: float = 0) -> int | None:
     """Wait ``grace`` seconds for the child to end, then terminate it; returns its exit code.
 
-    Returns only once the child is gone, so its output files are closed and can be deleted.
+    Returns once the child is gone, so its output files are closed and can be deleted; but after
+    KILL_WAIT seconds even if killing it had no effect (logged), rather than hang the app.
     """
     if process.pid is None:  # never started
         return None
@@ -845,7 +1181,10 @@ def _stop(process, grace: float = 0) -> int | None:
         process.join(5)
         if process.is_alive():
             process.kill()
-    process.join()
+            process.join(KILL_WAIT)
+    if process.is_alive():
+        log.error("Der Umwandlungsprozess %s ließ sich nicht beenden", process.pid)
+        return None
     exitcode = process.exitcode
     process.close()
     return exitcode

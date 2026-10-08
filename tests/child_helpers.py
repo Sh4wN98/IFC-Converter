@@ -78,19 +78,55 @@ def _record_attempt(output_path, kernel):
         attempts.write(f"{kernel}\n")
 
 
+def _segfault_in_kernel(options):
+    """Crash natively while the kernel computes products, where no narrower recovery is left to try."""
+    options["position"]("chunk", [], "")
+    _segfault()
+
+
 def segfault_unless_opencascade(input_path, output_path, fmt, threads, progress=None, kernel=None, **options):
     """Crash natively (SIGSEGV) like the hybrid kernel on some models; convert with OpenCASCADE."""
     _record_attempt(output_path, kernel)
     if kernel != "opencascade":
         progress(0)
         progress(40)
-        _segfault()
+        _segfault_in_kernel(options)
     return convert(input_path, output_path, fmt, threads, progress, kernel=kernel, **options)
 
 
 def always_segfault(input_path, output_path, fmt, threads, progress=None, kernel=None, **options):
     _record_attempt(output_path, kernel)
+    _segfault_in_kernel(options)
+
+
+def segfault_while_reading(input_path, output_path, fmt, threads, progress=None, kernel=None, status=None, **options):
+    """Crash natively while reading the IFC file, before the kernel computed anything."""
+    _record_attempt(output_path, kernel)
+    status("read", "IFC-Datei wird gelesen …")
     _segfault()
+
+
+def segfault_while_writing(input_path, output_path, fmt, threads, progress=None, kernel=None, status=None, **options):
+    """Crash natively while writing the output, after the kernel computed every product."""
+    _record_attempt(output_path, kernel)
+    options["position"]("chunk", [1, 2], "")
+    status("write", "Rhino-Datei wird geschrieben (2 Objekte) …")
+    _segfault()
+
+
+def crash_in_curve_pass(input_path, output_path, fmt, threads, progress=None, **options):
+    """Crash natively when the Rhino export computes the curves of alignments and grids."""
+    from ifc_converter import rhino
+
+    curve_shapes = rhino._curve_shapes
+
+    def crashing(model, elements):
+        for shape in curve_shapes(model, elements):
+            _segfault()
+            yield shape
+
+    rhino._curve_shapes = crashing
+    return convert(input_path, output_path, fmt, threads, progress, **options)
 
 
 def leave_glb_temp_files_and_segfault(input_path, output_path, fmt, threads, progress=None, **options):
@@ -215,10 +251,14 @@ def _fail_on_named(name, how):
     def failing_iterate(model, settings, threads, products, library):
         # Like the real kernel: the other threads finish their products, then it is stuck.
         others = [product for product in products if product.Name != name]
-        if others:
-            yield from iterate(model, settings, threads, others, library)
-        if len(others) < len(products):
-            fail()
+        shapes = iterate(model, settings, threads, others, library) if others else ()
+
+        def run():
+            yield from shapes
+            if len(others) < len(products):
+                fail()
+
+        return run()
 
     def failing_deep_shape(settings, product, strategy):
         if product.Name == name:
@@ -243,3 +283,52 @@ def overflow_then_wait(input_path, output_path, fmt, threads, progress=None, **o
     progress(0)
     os.write(2, b"Windows fatal exception: stack overflow\n\nThread 0x1 (most recent call first):\n")
     time.sleep(600)
+
+
+def exit_in_kernel(input_path, output_path, fmt, threads, progress=None, **options):
+    """End without a result while the kernel computes a product, like a crash there."""
+    options["position"]("chunk", [1], "")
+    os._exit(3)
+
+
+def raise_memory_error(input_path, output_path, fmt, threads, progress=None, **options):
+    raise MemoryError
+
+
+def allocate_too_much(input_path, output_path, fmt, threads, progress=None, **options):
+    """Try to allocate 4 GB, more than the memory limit the test gives the conversion's job object."""
+    blocks = [bytearray(1024 ** 3) for _ in range(4)]
+    return ConversionResult(output=Path(output_path), elements=len(blocks))
+
+
+def _worker_priority():
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetPriorityClass.argtypes = (ctypes.c_void_p,)
+        return kernel32.GetPriorityClass(kernel32.GetCurrentProcess())
+    return os.getpriority(os.PRIO_PROCESS, 0)
+
+
+def report_worker_priority(input_path, output_path, fmt, threads, progress=None, **options):
+    """Write the priority of a worker process the child starts (as the Rhino export does), its own
+    priority and on Windows its memory priority, one per line."""
+    import concurrent.futures
+    import multiprocessing
+
+    with concurrent.futures.ProcessPoolExecutor(1, multiprocessing.get_context("spawn")) as pool:
+        worker = pool.submit(_worker_priority).result()
+    lines = [worker, _worker_priority()]
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.GetProcessInformation.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong)
+        priority = ctypes.c_ulong()
+        kernel32.GetProcessInformation(kernel32.GetCurrentProcess(), 0, ctypes.byref(priority), 4)
+        lines.append(priority.value)
+    Path(output_path).write_text("\n".join(map(str, lines)))
+    return ConversionResult(output=Path(output_path), elements=1)

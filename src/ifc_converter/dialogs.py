@@ -30,7 +30,7 @@ from ifc_converter import __version__
 from ifc_converter import app as app_info
 from ifc_converter.app import APP_NAME, LICENSES, REPOSITORY, component_versions
 from ifc_converter.converter import DEFAULT_KERNEL, KERNELS
-from ifc_converter.process import MAX_DEFAULT_THREADS, SPARE_CORES, auto_threads, cpu_count
+from ifc_converter.process import MAX_DEFAULT_THREADS, auto_threads, cpu_count
 
 RESOURCES = Path(__file__).resolve().parent / "resources"
 
@@ -185,8 +185,9 @@ class SettingsDialog(_Dialog):
         row.addStretch()
         form.addLayout(row)
         form.addWidget(_hint(
-            f"Dieser PC hat {cpu_count()} logische Kerne. „Automatisch“ lässt {SPARE_CORES} davon für andere "
-            f"Programme frei und nutzt höchstens {MAX_DEFAULT_THREADS}: Mehr bringt kaum Tempo. Jeder Thread kann "
+            f"Dieser PC hat {cpu_count()} logische Kerne. „Automatisch“ nutzt zusammen mit den Hilfsprozessen "
+            f"der Rhino-Ausgabe etwa die Hälfte davon (höchstens {MAX_DEFAULT_THREADS} Threads), der Rest bleibt für "
+            "andere Programme frei. Jeder Thread kann "
             "bei großen Bauteilen bis ca. 1 GB RAM brauchen; bei wenig freiem Speicher werden automatisch "
             "weniger genutzt."
         ))

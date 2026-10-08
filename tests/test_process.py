@@ -23,6 +23,15 @@ from ifc_converter.process import (
 )
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is POSIX only")
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="job objects are Windows only")
+
+
+@pytest.fixture(autouse=True)
+def own_quarantine(tmp_path, monkeypatch):
+    """Keep the elements remembered by a test out of the developer's own quarantine file."""
+    path = tmp_path / "state" / process.QUARANTINE_NAME
+    monkeypatch.setattr(process, "quarantine_path", lambda: path)
+    return path
 
 
 def test_converts_wall_in_child_with_progress(wall_ifc, tmp_path):
@@ -296,7 +305,7 @@ def test_child_keeps_normal_priority_if_asked(wall_ifc, tmp_path):
 
 
 def test_auto_threads_are_the_converter_default(monkeypatch):
-    # One definition (converter.default_threads): cores but two, at most MAX_DEFAULT_THREADS.
+    # One definition (converter.default_threads): the kernel's share of half the logical CPUs.
     from ifc_converter import converter
 
     assert process.auto_threads() == converter.default_threads()
@@ -440,9 +449,12 @@ def test_an_element_that_hangs_or_crashes_the_kernel_is_skipped(
     with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
         result = convert_in_child(many_walls_ifc, target, fmt, threads=2, on_retry=messages.append, func=func)
     # The kernel hangs or crashes before the wall is delivered, so it is the only suspect left of its
-    # chunk: computed on its own first, then left out.
+    # chunk: computed on its own first, then left out. (A crash may come while the next chunk has
+    # just started, whose products are then suspects too; by the time a hang is noticed, they are done.)
     assert len(messages) == 2
-    assert "bei einem Bauteil. Neuer Versuch (2. von höchstens 7), es wird zuerst und einzeln berechnet" in messages[0]
+    one = "bei einem Bauteil" if failure == "hang" else r"bei einem (Bauteil|von \d+ Bauteilen)"
+    assert re.search(f"{one}. Neuer Versuch \\(2. von höchstens 7\\), (es wird|diese werden) zuerst und einzeln",
+                     messages[0])
     assert "bei IfcWall " in messages[1] and "Neuer Versuch (3. von höchstens 7), dieses Bauteil wird übersprungen" in messages[1]
     assert (result.elements, result.skipped) == (599, 0)
     assert len(result.crashed) == 1 and result.crashed[0].startswith("IfcWall ")
@@ -517,3 +529,261 @@ def test_stale_temp_files_are_removed(tmp_path, monkeypatch):
     assert process.remove_stale_temp_files() == 2
     assert not old_dir.exists() and not old_file.exists()
     assert fresh.exists() and other.exists()
+
+
+@posix_only
+@pytest.mark.parametrize("func", [child_helpers.segfault_while_reading, child_helpers.segfault_while_writing])
+def test_a_crash_outside_the_kernel_is_not_retried_with_opencascade(wall_ifc, tmp_path, monkeypatch, func):
+    # Reading the IFC file or writing the output with OpenCASCADE alone would only crash again.
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    target = tmp_path / "wall.3dm"
+    with pytest.raises(ConversionCrashed):
+        convert_in_child(wall_ifc, target, "3dm", on_retry=lambda message: pytest.fail(message), func=func)
+    assert _attempts(target) == ["None"]
+
+
+@posix_only
+def test_a_crash_in_the_axes_of_the_rhino_export_is_retried_without_them(alignment_ifc, tmp_path):
+    messages = []
+    result = convert_in_child(
+        alignment_ifc, tmp_path / "axes.3dm", "3dm", on_retry=messages.append, func=child_helpers.crash_in_curve_pass,
+    )
+    assert len(messages) == 1
+    assert "bei den Achsen (IfcAlignment, IfcGrid). Neuer Versuch (2. von höchstens 7) ohne die Achsen" in messages[0]
+    assert result.crashed == ["IfcAlignment " + result.crashed[0].split()[1] + " „Ramp“"]
+    assert result.elements == 1  # the axis with a vertical layout comes from the first pass
+
+
+def test_elements_that_hung_the_kernel_are_skipped_at_once_next_time(many_walls_ifc, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 3)
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    first = convert_in_child(many_walls_ifc, tmp_path / "1.glb", "glb", threads=2, func=child_helpers.hang_on_wall_7)
+    assert len(first.crashed) == 1 and first.elements == 599
+
+    retries = []
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        again = convert_in_child(
+            many_walls_ifc, tmp_path / "2.glb", "glb", threads=2, on_retry=retries.append,
+            func=child_helpers.hang_on_wall_7,
+        )
+    assert retries == [] and again.crashed == first.crashed and again.elements == 599
+    assert f"Bekannt aus früheren Umwandlungen dieser Datei, wird übersprungen" in caplog.text
+
+    # With another kernel strategy, or once the file has changed, the wall is computed again.
+    assert convert_in_child(many_walls_ifc, tmp_path / "3.glb", "glb", threads=2, kernel="opencascade").elements == 600
+    stat = os.stat(many_walls_ifc)
+    os.utime(many_walls_ifc, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
+    assert convert_in_child(many_walls_ifc, tmp_path / "4.glb", "glb", threads=2).elements == 600
+
+
+def test_the_quarantine_key_belongs_to_one_unchanged_file(wall_ifc, tmp_path):
+    key = process._quarantine_key(wall_ifc, "accurate")
+    assert key == process._quarantine_key(wall_ifc, "accurate")
+    assert key.startswith("wall.ifc|") and key != process._quarantine_key(wall_ifc, "hybrid")
+    copy = tmp_path / "other.ifc"
+    copy.write_bytes(wall_ifc.read_bytes())
+    stat = os.stat(wall_ifc)
+    os.utime(copy, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert process._quarantine_key(copy, "accurate") != key
+    os.utime(wall_ifc, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
+    assert process._quarantine_key(wall_ifc, "accurate") != key
+    assert process._quarantine_key(tmp_path / "missing.ifc", "accurate") is None
+
+
+def test_the_quarantine_survives_a_broken_file_and_stays_small(own_quarantine):
+    import json
+
+    key = "a.ifc|1|2|accurate|0.2.5"
+    assert process.load_quarantine(key) == {}  # no file yet
+    own_quarantine.parent.mkdir(parents=True)
+    for broken in ("{kaputt", "[1, 2]", '{"a.ifc|1|2|accurate|0.2.5": []}', ""):
+        own_quarantine.write_text(broken)
+        assert process.load_quarantine(key) == {}
+    own_quarantine.write_text(json.dumps({key: {"elements": {"x": "#x", "7": "IfcWall 7", "8": 8}}, "b": [1]}))
+    assert process.load_quarantine(key) == {7: "IfcWall 7"}
+    process.save_quarantine(key, {5: "IfcWall 5"})  # over the broken entry
+    assert process.load_quarantine(key) == {5: "IfcWall 5"}
+
+    many = {id_: f"#{id_}" for id_ in range(process.QUARANTINE_ELEMENTS + 10)}
+    for number in range(process.QUARANTINE_FILES + 5):
+        process.save_quarantine(f"f{number}.ifc|1|2|accurate|0", many)
+    data = json.loads(own_quarantine.read_text(encoding="utf-8"))
+    assert len(data) == process.QUARANTINE_FILES
+    assert key not in data and "f0.ifc|1|2|accurate|0" not in data  # the oldest are forgotten
+    assert len(process.load_quarantine(f"f{process.QUARANTINE_FILES + 4}.ifc|1|2|accurate|0")) == process.QUARANTINE_ELEMENTS
+
+
+def test_an_unwritable_quarantine_is_only_logged(own_quarantine, caplog):
+    own_quarantine.parent.write_text("a file where the folder should be")
+    process.save_quarantine("a.ifc|1|2|accurate|0", {5: "IfcWall 5"})
+    assert "konnten nicht gespeichert werden" in caplog.text
+
+
+class _FakeJob:
+    """Stands in for the Windows job object of a conversion."""
+
+    limit = 3 * 1024 ** 3 // 2
+
+    def __init__(self, hit: bool):
+        self.hit = hit
+        self.assigned = []
+        self.closed = False
+
+    def assign(self, handle):
+        self.assigned.append(handle)
+        return True
+
+    def memory_limit_hit(self):
+        return self.hit
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_jobs(monkeypatch, hit: bool) -> list:
+    jobs = []
+
+    def create(low_priority=True):
+        jobs.append(_FakeJob(hit))
+        return jobs[-1]
+
+    monkeypatch.setattr(process._Job, "create", staticmethod(create))
+    return jobs
+
+
+@pytest.mark.parametrize("func", [child_helpers.exit_in_kernel, child_helpers.raise_memory_error])
+def test_running_into_the_job_memory_limit_is_reported_as_out_of_memory(wall_ifc, tmp_path, monkeypatch, func):
+    # Allocations beyond the limit fail: a crash in native code or a MemoryError, either way not
+    # something another attempt would help with.
+    jobs = _fake_jobs(monkeypatch, hit=True)
+    with pytest.raises(ConversionCrashed) as info:
+        convert_in_child(wall_ifc, tmp_path / "x.glb", on_retry=lambda message: pytest.fail(message), func=func)
+    assert info.value.memory_limit
+    assert str(info.value).startswith(
+        "Der Arbeitsspeicher hat nicht gereicht: Die Umwandlung darf höchstens 1,5 GB belegen (85 % des "
+    )
+    assert len(jobs) == 1 and jobs[0].assigned and jobs[0].closed
+
+
+def test_without_the_memory_limit_failures_stay_as_they_were(wall_ifc, tmp_path, monkeypatch):
+    jobs = _fake_jobs(monkeypatch, hit=False)
+    with pytest.raises(ConversionFailed, match="MemoryError"):
+        convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.raise_memory_error)
+    retries = []
+    with pytest.raises(ConversionCrashed) as info:
+        convert_in_child(wall_ifc, tmp_path / "x.glb", on_retry=retries.append, func=child_helpers.exit_in_kernel)
+    # The product computed on its own, then everything with OpenCASCADE alone.
+    assert not info.value.memory_limit and retries[1:] == [process.RETRY_MESSAGE]
+    assert all(job.closed for job in jobs)
+
+
+def test_a_conversion_that_finished_despite_the_memory_limit_is_kept(wall_ifc, tmp_path, monkeypatch, caplog):
+    _fake_jobs(monkeypatch, hit=True)
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        result = convert_in_child(wall_ifc, tmp_path / "wall.glb")
+    assert result.elements == 1
+    assert "Speichergrenze des Umwandlungsprozesses (1,5 GB) erreicht, die Umwandlung lief trotzdem" in caplog.text
+
+
+def test_there_is_no_job_object_outside_windows():
+    if sys.platform != "win32":
+        assert process._Job.create() is None
+        assert process.job_memory_limit() is None
+
+
+@windows_only
+def test_closing_the_job_ends_its_processes():
+    import ctypes
+
+    job = process._Job.create()
+    assert job is not None and job.limit == process.job_memory_limit()
+    child = subprocess.Popen([getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)"])
+    try:
+        assert job.assign(int(child._handle))
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.IsProcessInJob.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int))
+        inside = ctypes.c_int()
+        assert kernel32.IsProcessInJob(int(child._handle), job._handle, ctypes.byref(inside)) and inside.value
+        assert not job.memory_limit_hit()
+        job.close()
+        assert child.wait(10) is not None
+    finally:
+        child.kill()
+        child.wait()
+
+
+@windows_only
+def test_the_job_memory_limit_stops_a_runaway_conversion(wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "job_memory_limit", lambda: 1024 ** 3)
+    with pytest.raises(ConversionCrashed) as info:
+        convert_in_child(wall_ifc, tmp_path / "x.glb", on_retry=lambda message: pytest.fail(message),
+                         func=child_helpers.allocate_too_much)
+    assert info.value.memory_limit and "höchstens 1,0 GB" in str(info.value)
+
+
+def test_worker_processes_of_the_child_run_below_normal_priority(wall_ifc, tmp_path):
+    result = convert_in_child(wall_ifc, tmp_path / "priority.txt", func=child_helpers.report_worker_priority)
+    values = [int(line) for line in result.output.read_text().split()]
+    worker, child = values[:2]
+    assert worker == child
+    if sys.platform == "win32":
+        assert child == process.BELOW_NORMAL_PRIORITY_CLASS
+        assert values[2] == process.MEMORY_PRIORITY_BELOW_NORMAL
+    else:
+        assert child == min(19, os.getpriority(os.PRIO_PROCESS, 0) + process.NICE_INCREMENT)
+
+
+def test_stopping_a_child_that_cannot_be_killed_does_not_hang(monkeypatch, caplog):
+    monkeypatch.setattr(process, "KILL_WAIT", 0.1)
+
+    class Immortal:
+        pid = 4711
+        exitcode = None
+
+        def join(self, timeout=None):
+            assert timeout is not None  # never waits without end
+
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def close(self):
+            pytest.fail("closed while still running")
+
+    assert process._stop(Immortal()) is None
+    assert "ließ sich nicht beenden" in caplog.text
+
+
+def test_a_broken_pipe_is_a_crash_not_an_error_of_the_app(wall_ifc, tmp_path, monkeypatch):
+    # On Windows, reading from the pipe of a child that is gone raises BrokenPipeError, not EOFError.
+    context = process._CONTEXT
+
+    class BrokenReader:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def poll(self, *args):
+            raise BrokenPipeError(109, "Die Pipe wurde beendet")
+
+        def recv(self):
+            raise BrokenPipeError(109, "Die Pipe wurde beendet")
+
+    class Context:
+        def __getattr__(self, name):
+            return getattr(context, name)
+
+        def Pipe(self, duplex=True):
+            reader, writer = context.Pipe(duplex=duplex)
+            return BrokenReader(reader), writer
+
+    monkeypatch.setattr(process, "_CONTEXT", Context())
+    with pytest.raises(ConversionCrashed, match=r"Code 3\)$"):
+        convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.exit_hard)

@@ -1,6 +1,9 @@
+import contextvars
 import math
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import ifcopenshell
@@ -304,18 +307,19 @@ def test_type_geometry_with_opening_is_not_lost(mapped_with_opening_ifc, fmt, ge
         assert result.output.read_text().count("\nf ") > 12  # more than a plain box: the cut-out is there
 
 
-def test_default_threads_leave_cores_for_the_user(monkeypatch):
-    from ifc_converter import converter
+@pytest.mark.parametrize("cpus, threads", [(64, 16), (32, 11), (12, 4), (8, 3), (2, 1), (1, 1)])
+def test_default_threads_leave_half_the_cpus_to_other_programs(monkeypatch, cpus, threads):
+    # Kernel threads plus the Rhino export's workers (one per two threads) stay within about half the
+    # logical CPUs: 32 on the target PC give 11 threads and 5 workers.
+    from ifc_converter import converter, rhino
 
-    monkeypatch.setattr(os, "process_cpu_count", lambda: 64, raising=False)
-    monkeypatch.setattr(os, "cpu_count", lambda: 64)
-    assert converter.default_threads() == converter.MAX_DEFAULT_THREADS
-    monkeypatch.setattr(os, "process_cpu_count", lambda: 12, raising=False)
-    monkeypatch.setattr(os, "cpu_count", lambda: 12)
-    assert converter.default_threads() == 12 - converter.SPARE_CORES
-    monkeypatch.setattr(os, "process_cpu_count", lambda: 2, raising=False)
-    monkeypatch.setattr(os, "cpu_count", lambda: 2)
-    assert converter.default_threads() == 1
+    monkeypatch.setattr(os, "process_cpu_count", lambda: cpus, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: cpus)
+    assert converter.default_threads() == threads
+    assert converter.cpu_budget() == max(1, round(cpus * converter.CPU_SHARE))
+    workers = min(rhino.MAX_WORKERS, threads // rhino.THREADS_PER_WORKER)
+    assert threads + workers <= converter.cpu_budget()
+    assert converter.worker_budget(threads) == converter.cpu_budget() - threads
 
 
 def test_chunks_grow_with_the_thread_count():
@@ -598,3 +602,117 @@ def test_geometry_that_contains_itself_is_not_computed(wall_ifc, tmp_path):
     # Not computed (the kernel would recurse forever): the only wall gives no geometry.
     with pytest.raises(ValueError, match="Keine Geometrie erzeugt"):
         convert(path, tmp_path / "cyclic.glb", "glb")
+
+
+def _slow_kernel(monkeypatch, slow_name, release):
+    """Let the kernel hold back the shape of the product called ``slow_name`` until ``release`` is set,
+    like one slow element; returns the products of each iterator in the order they were started."""
+    from ifc_converter import converter
+
+    iterate = converter._iterate
+    started = []
+
+    def slow_iterate(model, settings, threads, products, library):
+        started.append([product.Name for product in products])
+        shapes = list(iterate(model, settings, threads, products, library))
+
+        def run():  # the other threads deliver their shapes meanwhile
+            slow = [shape for shape in shapes if model.by_id(shape.id).Name == slow_name]
+            yield from (shape for shape in shapes if shape not in slow)
+            if slow:
+                release.wait(60)
+            yield from slow
+
+        return run()
+
+    monkeypatch.setattr(converter, "_iterate", slow_iterate)
+    return started
+
+
+def _wait_until(condition, timeout=30):
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return condition()
+
+
+@pytest.mark.parametrize("memory, started_early", [(10 ** 12, 6), (1024 ** 3, 2)])
+def test_later_chunks_are_computed_while_a_slow_element_holds_one_up(
+    many_walls_ifc, monkeypatch, memory, started_early
+):
+    # The other threads go on with the next chunk instead of waiting idle; with LOOKAHEAD_MEMORY free,
+    # with further chunks as well. The shapes still come chunk by chunk in model order, and only the
+    # slow element is a suspect should the kernel crash or hang on it.
+    from ifc_converter import converter, process, rhino
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    monkeypatch.setattr(converter, "available_memory", lambda: memory)
+    release = threading.Event()
+    started = _slow_kernel(monkeypatch, "Wall 7", release)
+    model = ifcopenshell.open(str(many_walls_ifc))
+    products = converter.shape_products(model, rhino.EXCLUDED_CLASSES)
+    watch = process._Phases(Path("x.3dm"), None, None, None)
+    items = []
+    recovery = converter._recovery.set((watch.locate, set(), set()))
+    try:
+        shapes = converter.iter_shapes(model, rhino._settings(), 2, rhino.EXCLUDED_CLASSES, chunk_ends=True)
+        consumer = threading.Thread(target=contextvars.copy_context().run, args=(lambda: items.extend(shapes),))
+        consumer.start()
+        try:
+            assert _wait_until(lambda: len(started) >= started_early)
+            time.sleep(0.5)  # no further chunk starts
+            assert len(started) == started_early
+            assert all(len(names) == 100 for names in started)
+            assert _wait_until(lambda: watch.suspects() == ("chunk", [products[7].id()], ""))
+            assert len(items) == 99  # the first chunk waits for its slow element, the others for it
+        finally:
+            release.set()
+            consumer.join(60)
+    finally:
+        converter._recovery.reset(recovery)
+    ends = [index for index, item in enumerate(items) if isinstance(item, converter.ChunkEnd)]
+    assert ends == [100, 201, 302, 403, 504, 605]
+    for start, end in zip([-1, *ends], ends):
+        assert [item.id for item in items[start + 1:end]] != []
+        assert {item.id for item in items[start + 1:end]} == set(items[end].ids)
+    assert [id_ for end in ends for id_ in items[end].ids] == [product.id() for product in products]
+    assert watch.position == ("done", [], "")
+
+
+def test_overlapping_chunks_keep_the_threads_within_the_budget(many_walls_ifc, monkeypatch):
+    # A run starts only while at most a quarter of the threads are still busy with earlier ones.
+    from ifc_converter import converter, rhino
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 50)
+    monkeypatch.setattr(converter, "available_memory", lambda: 10 ** 12)
+    busy = []
+    start = converter._Pipeline.start
+
+    def recording_start(self, *args, **kwargs):
+        busy.append(sum(run.busy() for run in self._alive))
+        return start(self, *args, **kwargs)
+
+    monkeypatch.setattr(converter._Pipeline, "start", recording_start)
+    model = ifcopenshell.open(str(many_walls_ifc))
+    shapes = list(converter.iter_shapes(model, rhino._settings(), 8, rhino.EXCLUDED_CLASSES))
+    assert len(shapes) == 600 and len(busy) == 12
+    assert max(busy) <= 8 // converter.OVERLAP_SHARE
+
+
+def test_an_abandoned_iteration_stops_its_runs(many_walls_ifc, monkeypatch):
+    from ifc_converter import converter, rhino
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    runs = []
+    start = converter._Pipeline.start
+
+    def recording_start(self, *args, **kwargs):
+        runs.append(start(self, *args, **kwargs))
+        return runs[-1]
+
+    monkeypatch.setattr(converter._Pipeline, "start", recording_start)
+    model = ifcopenshell.open(str(many_walls_ifc))
+    shapes = converter.iter_shapes(model, rhino._settings(), 2, rhino.EXCLUDED_CLASSES)
+    next(shapes)
+    shapes.close()
+    assert runs and all(run.stopped for run in runs if not run.finished)
