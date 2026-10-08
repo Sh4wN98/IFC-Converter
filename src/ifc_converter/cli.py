@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="3dm only: brep = joined polysurfaces (very detailed elements stay meshes), "
              "mesh = meshes only (default: brep)",
     )
+    parser.add_argument(
+        "--blocks", action="store_true",
+        help="3dm only: type geometry placed several times becomes Rhino blocks (smaller file; "
+             "explode an instance in Rhino to edit it)",
+    )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
@@ -98,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.inputs:
         from ifc_converter.interactive import run
 
-        return run(args.format, args.out_dir, args.geometry, low_priority=not args.normal_priority)
+        return run(args.format, args.out_dir, args.geometry, low_priority=not args.normal_priority, blocks=args.blocks)
 
     if args.output and len(args.inputs) > 1:
         parser.error("--output only works with a single input; use --out-dir instead")
@@ -120,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
             result = convert_in_terminal(
                 source, target, args.format, args.threads, args.geometry, label=f"{source.name}: ",
                 on_retry=lambda message: print(f"⚠ {source.name}: {message}", file=sys.stderr),
-                low_priority=not args.normal_priority,
+                low_priority=not args.normal_priority, blocks=args.blocks,
             )
         except KeyboardInterrupt:
             print(f"■ {source}: abgebrochen", file=sys.stderr)

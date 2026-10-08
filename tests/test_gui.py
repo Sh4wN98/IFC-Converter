@@ -1085,3 +1085,26 @@ def test_error_dialog_offers_the_anonymized_log(app):
 
     dialog = ErrorDialog("x", "details")
     assert "Anonymisiert speichern…" in [button.text() for button in dialog.findChildren(QPushButton)]
+
+
+def test_rhino_blocks_setting(app, settings):
+    assert Preferences.load(settings).blocks is False  # off unless chosen
+    Preferences(blocks=True).save(settings)
+    assert Preferences.load(settings).blocks is True
+    dialog = SettingsDialog(Preferences(blocks=True))
+    assert dialog.blocks_check.isChecked() and "Blöcke" in dialog.blocks_check.text()
+    assert "_Explode" in dialog.blocks_check.toolTip()
+    dialog.blocks_check.setChecked(False)
+    assert dialog.preferences().blocks is False
+    dialog.deleteLater()
+
+
+@pytest.mark.parametrize("fmt", ["3dm", "glb"])
+def test_rhino_blocks_reach_only_the_3dm_conversion(window, wall_ifc, child_calls, fmt):
+    window.preferences = Preferences(blocks=True)
+    window.set_format(fmt)
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert child_calls[0].get("blocks") is (True if fmt == "3dm" else None)
+    assert ("als Blöcke" in window.log_view.toPlainText()) is (fmt == "3dm")

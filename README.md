@@ -52,14 +52,20 @@ Der Converter wird wie ein normales Windows-Programm installiert, Python ist daf
   - Bauteile außerhalb davon landen unter `Ohne Geschoss`.
 - **Achsen:** Trassierungsachsen (`IfcAlignment`) und Achsraster (`IfcGrid`) werden Rhino-Polylinien.
 - Objektname = IFC-Name, Farbe aus dem IFC-Material/-Stil.
-- GlobalId, IFC-Klasse, Property-Sets und die Standard-Mengen (`BaseQuantities` bzw. `Qto_…`: Flächen, Volumen, Längen) stehen als Benutzertexte (Attribute User Text) am Objekt. Herstellereigene Mengenlisten (z. B. `ArchiCADQuantities`) werden weggelassen; sie wiederholen meist die Standardwerte und machten bei ArchiCAD-Dateien fast die Hälfte der Datei aus.
+- **Mehrere Materialien:** Ein Bauteil mit mehreren Materialien (Fenster: Rahmen und Glas, Türen, Möbel) wird ein Objekt je Material, zusammengefasst als Gruppe mit dem Namen des Bauteils. Glas bleibt so durchsichtig. Gezählt wird weiterhin je IFC-Bauteil.
+- **Baugruppen:** Die Teile von Baugruppen ohne eigene Geometrie (`IfcElementAssembly`, Vorhangfassaden, Treppen, Dächer aus Einzelteilen …) bilden eine Gruppe mit dem Namen der Baugruppe; ein Klick wählt alle Teile.
+- **Benutzertexte (Attribute User Text)** am Objekt: GlobalId (`IfcGlobalId`), IFC-Klasse, Name, Typname (`IfcType`), `IfcPredefinedType` (bei USERDEFINED der vergebene Name), `IfcObjectType`, `IfcTag` (z. B. die Revit-Element-ID), Geschoss (`IfcStorey`), dazu die Property-Sets und die Standard-Mengen (`BaseQuantities` bzw. `Qto_…`: Flächen, Volumen, Längen in m, m², m³).
+  - Platzhalterwerte ohne Inhalt („N/A“, „-“, „NOTDEFINED“, „UNSET“, „None“, „<default>“, leer …) und Werte, die nur den Namen ihrer Eigenschaft wiederholen (Revits COBie-Parameter: „SerialNumber“ = „SerialNumber“), werden weggelassen. Bei Revit-Modellen waren das bis zur Hälfte aller Benutzertexte (Clinic: Datei 41 % kleiner).
+  - Herstellereigene Mengenlisten (z. B. `ArchiCADQuantities`) werden weggelassen; sie wiederholen meist die Standardwerte und machten bei ArchiCAD-Dateien fast die Hälfte der Datei aus.
+- **Dokument-Benutzertext** (Rhino: `GetDocumentUserText`): Name der IFC-Datei, IFC-Schema, Projektname und, falls vorhanden, die Georeferenzierung aus `IfcMapConversion` (Rechts-/Hochwert und Höhe in m, Drehung in Grad, Maßstab, Koordinatensystem z. B. „EPSG:25832“).
+- **Blöcke (Option, Standard aus):** Mit „Gleiche Bauteile als Blöcke (kleinere Datei)“ in den Einstellungen bzw. `--blocks` wird Typ-Geometrie, die mehrere Bauteile gemeinsam haben (Fenster, Türen, Möbel, Formteile), einmal als Blockdefinition gespeichert und jedes Bauteil als Blockinstanz an seiner Stelle, mit seinen Benutzertexten, seinem Layer und seiner Farbe. Die Lage ist dieselbe wie ohne Blöcke, auch bei gespiegelten Typen. Gemessen an drei Revit-Modellen: Datei 20–45 % kleiner, Schreiben 0,6–0,75× so lang; mit Polyflächen auch die ganze Umwandlung schneller (revit_arc 33 statt 50 s, Clinic 23 statt 37 s), weil jede Typ-Geometrie nur einmal zur Polyfläche wird. Aber: Blockinstanzen verhalten sich in Rhino anders als normale Objekte – zum Bearbeiten der Geometrie muss eine Instanz erst aufgelöst werden (`_Explode`). Die Objekte der Blockdefinitionen liegen auf dem Layer `Blockdefinitionen`, der sichtbar bleiben muss.
 - **Georeferenzierte Modelle** (Koordinaten in UTM/Gauß-Krüger, z. B. bei Brücken) behalten volle Genauigkeit.
 - Die Datei wird im Rhino-7-Format geschrieben und lässt sich damit in Rhino 7 und 8 öffnen.
 
 ### Maßhaltigkeit
 
 - **Einheiten:** Die Ausgabe ist immer in Metern, ob die IFC in mm, m, Fuß oder Zoll vorliegt. Die Rhino-Datei hat die Einheit Meter, die absolute Toleranz 0,001 m (1 mm) und die Winkeltoleranz 1°.
-- **Koordinaten:** Die Bauteile liegen in den Projektkoordinaten der IFC, wie im Autorenprogramm. Eine Georeferenzierung (`IfcMapConversion`: Rechts-/Hochwert, Drehung, Maßstab) wird nicht angewendet. Auch Hunderte Kilometer vom Ursprung bleiben die Koordinaten genau: `.3dm` speichert sie in doppelter Genauigkeit, `.obj` mit 15 Stellen, `.glb` jedes Bauteil um seinen Einfügepunkt.
+- **Koordinaten:** Die Bauteile liegen in den Projektkoordinaten der IFC, wie im Autorenprogramm. Eine Georeferenzierung (`IfcMapConversion`: Rechts-/Hochwert, Drehung, Maßstab) wird nicht angewendet; in `.3dm` stehen ihre Werte im Dokument-Benutzertext. Auch Hunderte Kilometer vom Ursprung bleiben die Koordinaten genau: `.3dm` speichert sie in doppelter Genauigkeit, `.obj` mit 15 Stellen, `.glb` jedes Bauteil um seinen Einfügepunkt.
 - **Ebene Geometrie** (Wände, Decken, Öffnungen, Profile) kommt eckpunktgenau heraus. Gemessen an 11 echten Modellen (mm, m, Fuß; IFC2X3, IFC4, IFC4X3) gegen IfcOpenShells eigene Geometrie und gegen die Maße in der IFC (Profile, Extrusionen, Mengen): Abweichung unter 0,001 mm in `.3dm` und `.obj`, unter 0,02 mm in `.glb`.
 - **Runde Geometrie** (Stützen, Rohre, Bögen) wird facettiert: Die Eckpunkte liegen genau auf der Rundung, die Sehnen höchstens 0,5 mm innen (mit OpenCASCADE, also im Standard „Genau“, 0,25 mm). Ein dünnes Rohr (Ø 10 cm) hat dadurch etwa 0,6 % weniger Volumen.
 - **Vollständig und reproduzierbar:** Der Standard-Geometriekern „Genau“ liefert jedes Bauteil vollständig und bei jedem Lauf gleich, unabhängig von der Zahl der Threads (siehe „Geometriekern“).
@@ -158,6 +164,7 @@ Optionen:
 
 - `-f, --format {glb,obj,3dm}`: Zielformat (Standard: `glb`)
 - `-g, --geometry {brep,mesh}`: nur für 3dm, Polyflächen oder Netze (Standard: `brep`)
+- `--blocks`: nur für 3dm, gleiche Bauteile als Blöcke (siehe „Rhino-Export“)
 - `-o, --output PFAD`: Ausgabedatei (nur bei einer Eingabedatei)
 - `-d, --out-dir ORDNER`: Ausgabeordner für mehrere Dateien
 - `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: automatisch wie im Programmfenster – zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte der Kerne, siehe „Rücksicht auf andere Programme“; `ifc-convert --help` zeigt die Zahl für diesen PC)

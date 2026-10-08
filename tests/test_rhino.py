@@ -541,3 +541,334 @@ def test_lengths_in_user_text_are_in_metres(tmp_path):
     assert strings["Custom.Offset"] == "0.25"
     assert strings["Custom.Count"] == "3"
     assert strings["Custom.Thick"] == "0.02"
+
+
+# ------------------------------------------------------------------------ user text
+
+
+def _with_psets(path, properties, **attributes):
+    """The first wall of the model at ``path`` with a property set "Test" and ``attributes`` set."""
+    import ifcopenshell
+    import ifcopenshell.api as api
+
+    model = ifcopenshell.open(str(path))
+    wall = model.by_type("IfcWall")[0]
+    pset = api.run("pset.add_pset", model, product=wall, name="Test")
+    pset.HasProperties = [
+        model.createIfcPropertySingleValue(name, None, model.create_entity(kind, value), None)
+        for name, (kind, value) in properties.items()
+    ]
+    for name, value in attributes.items():
+        setattr(wall, name, value)
+    model.write(str(path))
+    return path
+
+
+def test_placeholder_values_are_left_out(wall_ifc):
+    properties = {
+        "Empty": ("IfcLabel", ""), "Blank": ("IfcLabel", "  "), "NA": ("IfcLabel", "N/A"), "Dash": ("IfcLabel", "-"),
+        "Unset": ("IfcLabel", "UNSET"), "NotDefined": ("IfcLabel", "NOTDEFINED"), "Default": ("IfcLabel", "<default>"),
+        "NoneText": ("IfcLabel", "None"), "Dollar": ("IfcLabel", "$"),
+        # Revit's COBie parameters: the value repeats the property's name.
+        "SerialNumber": ("IfcText", "SerialNumber"),
+        # Real values, also short or zero ones, stay.
+        "Reference": ("IfcIdentifier", "AW-01"), "Zero": ("IfcInteger", 0), "Off": ("IfcBoolean", False),
+        "Kind": ("IfcLabel", "USERDEFINED"), "Ratio": ("IfcReal", 0.0),
+    }
+    attributes = _read(convert(_with_psets(wall_ifc, properties, Name=None), fmt="3dm").output).Objects[0].Attributes
+    strings = dict(attributes.GetUserStrings())
+    tests = {key.split(".", 1)[1]: value for key, value in strings.items() if key.startswith("Test.")}
+    assert tests == {"Reference": "AW-01", "Zero": "0", "Off": "False", "Kind": "USERDEFINED", "Ratio": "0.0"}
+    # Identity is always there (an empty name cannot be stored: Rhino drops empty user text).
+    assert strings["IfcClass"] == "IfcWall" and len(strings["IfcGlobalId"]) == 22
+
+
+def test_type_predefined_type_tag_and_storey_in_user_text(storey_ifc):
+    import ifcopenshell
+    import ifcopenshell.api as api
+
+    model = ifcopenshell.open(str(storey_ifc))
+    wall, slab = model.by_type("IfcWall")[0], model.by_type("IfcSlab")[0]
+    wall_type = api.run("root.create_entity", model, ifc_class="IfcWallType", name="AW 36.5", predefined_type="SOLIDWALL")
+    api.run("type.assign_type", model, related_objects=[wall], relating_type=wall_type)
+    wall.PredefinedType, wall.Tag = "NOTDEFINED", "123456"
+    slab.PredefinedType, slab.ObjectType = "USERDEFINED", "Bodenplatte"
+    model.write(str(storey_ifc))
+
+    objects = {o.Attributes.GetUserString("IfcClass"): dict(o.Attributes.GetUserStrings()) for o in _read(convert(storey_ifc, fmt="3dm").output).Objects}
+    wall, slab = objects["IfcWall"], objects["IfcSlab"]
+    assert (wall["IfcType"], wall["IfcPredefinedType"], wall["IfcTag"], wall["IfcStorey"]) == ("AW 36.5", "SOLIDWALL", "123456", "EG")
+    assert slab["IfcPredefinedType"] == "Bodenplatte" and "IfcObjectType" not in slab  # the name given, once
+    assert "IfcType" not in slab and "IfcTag" not in slab  # nothing to say
+
+
+def test_document_user_text_names_source_schema_and_georeferencing(wall_ifc):
+    import ifcopenshell
+
+    model = ifcopenshell.open(str(wall_ifc))
+    context = model.by_type("IfcGeometricRepresentationContext")[0]
+    millimetre = model.createIfcSIUnit(None, "LENGTHUNIT", "MILLI", "METRE")
+    crs = model.createIfcProjectedCRS("EPSG:25832", None, None, None, None, None, millimetre)
+    model.createIfcMapConversion(context, crs, 512345678.0, 5423456789.0, 312500.0, 0.0, 1.0, 1.0)
+    model.write(str(wall_ifc))
+
+    strings = dict(_read(convert(wall_ifc, fmt="3dm").output).Strings)
+    assert strings["IfcSourceFile"] == "wall.ifc"
+    assert strings["IfcSchema"] == "IFC4"
+    assert strings["IfcProject"] == "Test"
+    # In metres, like the model; the x axis points north: 90 degrees from grid east.
+    assert strings["IfcMapConversion.Eastings"] == "512345.678"
+    assert strings["IfcMapConversion.Northings"] == "5423456.789"
+    assert strings["IfcMapConversion.OrthogonalHeight"] == "312.5"
+    assert strings["IfcMapConversion.Rotation"] == "90.0"
+    assert strings["IfcMapConversion.Scale"] == "1.0"
+    assert strings["IfcProjectedCRS.Name"] == "EPSG:25832"
+    # The coordinates stay in the project's own system.
+    box = _read(convert(wall_ifc, fmt="3dm").output).Objects[0].Geometry.GetBoundingBox()
+    assert (box.Min.X, box.Min.Y, box.Min.Z) == pytest.approx((0, 0, 0))
+
+
+# ----------------------------------------------------------- several materials, groups
+
+
+def _styled(model, item, name, rgb, transparency=0.0):
+    import ifcopenshell.api as api
+
+    style = api.run("style.add_style", model, name=name)
+    api.run(
+        "style.add_surface_style", model, style=style, ifc_class="IfcSurfaceStyleShading",
+        attributes={"SurfaceColour": {"Name": None, "Red": rgb[0], "Green": rgb[1], "Blue": rgb[2]}, "Transparency": transparency},
+    )
+    api.run("style.assign_item_style", model, item=item, style=style)
+
+
+@pytest.fixture
+def window_ifc(tmp_path):
+    """Two windows of one type (a frame and a transparent glass pane), one inside a curtain wall
+    without geometry of its own (an aggregate), and a wall."""
+    import ifcopenshell.api as api
+    from conftest import _box, _metre_model
+
+    model, body, site = _metre_model("IFC4")
+    window_type = api.run("root.create_entity", model, ifc_class="IfcWindowType", name="Fenster 1")
+    frame = api.run("geometry.add_wall_representation", model, context=body, length=1.0, height=1.2, thickness=0.1)
+    glass = api.run("geometry.add_wall_representation", model, context=body, length=0.8, height=1.0, thickness=0.02)
+    glass.Items[0].Position.Location.Coordinates = (0.1, 0.04, 0.1)
+    frame.Items = frame.Items + glass.Items
+    _styled(model, frame.Items[0], "Rahmen", (0.5, 0.3, 0.1))
+    _styled(model, frame.Items[1], "Glas", (0.0, 0.5, 0.75), transparency=0.9)
+    api.run("geometry.assign_representation", model, product=window_type, representation=frame)
+    windows = []
+    for i, name in enumerate(("Fenster links", "Fenster rechts")):
+        window = api.run("root.create_entity", model, ifc_class="IfcWindow", name=name)
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (3.0 * i, 0.0, 1.0)
+        api.run("geometry.edit_object_placement", model, product=window, matrix=matrix)
+        api.run("type.assign_type", model, related_objects=[window], relating_type=window_type)
+        windows.append(window)
+    curtain_wall = api.run("root.create_entity", model, ifc_class="IfcCurtainWall", name="Fassade Süd")
+    api.run("aggregate.assign_object", model, relating_object=curtain_wall, products=[windows[1]])
+    wall = _box(model, body, "IfcWall", "Wand", (5, 0.3, 3), (0, 1, 0))
+    api.run("spatial.assign_container", model, relating_structure=site, products=[windows[0], curtain_wall, wall])
+    path = tmp_path / "window.ifc"
+    model.write(str(path))
+    return path
+
+
+def _group_names(rhino_file, attributes):
+    return sorted(rhino_file.Groups.FindIndex(index).Name for index in attributes.GetGroupList() or ())
+
+
+@pytest.mark.parametrize("geometry", ["brep", "mesh"])
+def test_element_with_several_materials_keeps_them(window_ifc, geometry):
+    result = convert(window_ifc, fmt="3dm", geometry=geometry)
+    assert result.elements == 3  # IFC elements, not objects
+
+    rhino_file = _read(result.output)
+    parts = [o for o in rhino_file.Objects if o.Attributes.Name == "Fenster links"]
+    materials = {rhino_file.Materials[o.Attributes.MaterialIndex].Name: o for o in parts}
+    assert set(materials) == {"Rahmen", "Glas"}
+    glass, frame = materials["Glas"], materials["Rahmen"]
+    assert rhino_file.Materials[glass.Attributes.MaterialIndex].Transparency == pytest.approx(0.9)
+    assert glass.Attributes.ObjectColor == (0, 128, 191, round((1 - 0.9) * 255))
+    assert frame.Attributes.ObjectColor[3] == 255
+    assert _size(glass.Geometry) == pytest.approx((0.8, 0.02, 1.0))
+    assert _size(frame.Geometry) == pytest.approx((1.0, 0.1, 1.2))
+    # The parts select together and carry the same user text, on the layer of their class.
+    assert _group_names(rhino_file, glass.Attributes) == _group_names(rhino_file, frame.Attributes) == ["Fenster links"]
+    assert list(glass.Attributes.GetUserStrings()) == list(frame.Attributes.GetUserStrings())
+    assert _layer_paths(rhino_file)[glass.Attributes.LayerIndex] == "Ohne Geschoss::IfcWindow"
+    # The material covering most faces comes first; the layer takes its colour.
+    assert parts[0] is frame or parts[0].Attributes.MaterialIndex == frame.Attributes.MaterialIndex
+
+
+@pytest.mark.parametrize("blocks", [False, True])
+def test_aggregate_parts_are_grouped_under_the_aggregate(window_ifc, blocks):
+    rhino_file = _read(convert(window_ifc, fmt="3dm", blocks=blocks).output)
+    right = [o for o in rhino_file.Objects if o.Attributes.Name == "Fenster rechts" and not o.Attributes.IsInstanceDefinitionObject]
+    # Also in the group of its two materials (as objects of their own; a block instance is one object).
+    expected = ["Fenster rechts", "Fassade Süd"] if not blocks else ["Fassade Süd"]
+    assert len(right) == (1 if blocks else 2)
+    for obj in right:
+        assert _group_names(rhino_file, obj.Attributes) == sorted(expected)
+    wall = next(o for o in rhino_file.Objects if o.Attributes.Name == "Wand")
+    assert not wall.Attributes.GetGroupList()
+
+
+# ------------------------------------------------------------------------------ blocks
+
+
+def _placed(rhino_file):
+    """Per element (GlobalId) its geometry as drawn: block instances resolved; and per element the
+    kind of object it is."""
+    definition_objects = {o.Attributes.Id: o.Geometry for o in rhino_file.Objects if o.Attributes.IsInstanceDefinitionObject}
+    definitions = {}
+    for index in range(len(rhino_file.InstanceDefinitions)):
+        definition = rhino_file.InstanceDefinitions.FindIndex(index)
+        definitions[definition.Id] = [definition_objects[i] for i in definition.GetObjectIds()]
+    placed, kinds = {}, {}
+    for o in rhino_file.Objects:
+        if o.Attributes.IsInstanceDefinitionObject:
+            continue
+        guid = o.Attributes.GetUserString("IfcGlobalId")
+        geometries = [o.Geometry]
+        if isinstance(o.Geometry, rhino3dm.InstanceReference):
+            geometries = []
+            for geometry in definitions[o.Geometry.ParentIdefId]:
+                geometry = geometry.Duplicate()
+                geometry.Transform(o.Geometry.Xform)
+                geometries.append(geometry)
+        placed.setdefault(guid, []).extend(geometries)
+        kinds.setdefault(guid, set()).add(type(o.Geometry).__name__)
+    return placed, kinds
+
+
+def _points(geometries):
+    points = []
+    for geometry in geometries:
+        if isinstance(geometry, rhino3dm.Brep):
+            points += [(v.Location.X, v.Location.Y, v.Location.Z) for v in geometry.Vertices]
+        else:
+            points += [(p.X, p.Y, p.Z) for p in geometry.Vertices.ToPoint3dArray()]
+    return numpy.unique(numpy.round(numpy.array(points), 9), axis=0)
+
+
+@pytest.mark.parametrize("geometry", ["brep", "mesh"])
+@pytest.mark.parametrize("fixture", ["mixed_ifc", "mirrored_type_ifc", "window_ifc"])
+def test_block_instances_are_exactly_where_the_copies_are(request, tmp_path, fixture, geometry):
+    path = request.getfixturevalue(fixture)
+    copies = convert(path, tmp_path / "copies.3dm", fmt="3dm", geometry=geometry)
+    blocks = convert(path, tmp_path / "blocks.3dm", fmt="3dm", geometry=geometry, blocks=True)
+    assert blocks.elements == copies.elements
+
+    reference, _ = _placed(_read(copies.output))
+    placed, kinds = _placed(_read(blocks.output))
+    assert set(placed) == set(reference)
+    assert any("InstanceReference" in kind for kind in kinds.values())
+    for guid, geometries in placed.items():
+        expected = reference[guid]
+        assert len(geometries) == len(expected)
+        # The same vertices (to a nanometre), the same orientation (signed volume) per part.
+        numpy.testing.assert_allclose(_points(geometries), _points(expected), rtol=0, atol=1e-9)
+        if geometry == "mesh":
+            assert sorted(_signed_volume(g) for g in geometries) == pytest.approx(sorted(_signed_volume(g) for g in expected), abs=1e-9)
+
+
+def test_blocks_share_the_type_geometry(mixed_ifc, tmp_path):
+    rhino_file = _read(convert(mixed_ifc, fmt="3dm", blocks=True).output)
+    # The furniture type, placed three times; everything else as before.
+    assert len(rhino_file.InstanceDefinitions) == 1
+    definition = rhino_file.InstanceDefinitions.FindIndex(0)
+    assert definition.Name == "Cabinet"
+    instances = [o for o in rhino_file.Objects if isinstance(o.Geometry, rhino3dm.InstanceReference)]
+    assert sorted(o.Attributes.Name for o in instances) == ["Cabinet 0", "Cabinet 1", "Cabinet 2"]
+    paths = _layer_paths(rhino_file)
+    for instance in instances:
+        attributes = instance.Attributes
+        assert paths[attributes.LayerIndex] == "OG::IfcFurniture"
+        assert attributes.GetUserString("Pset_Type.Maker") == "ACME"
+        assert attributes.GetUserString("IfcType") == "Cabinet"
+        assert attributes.ColorSource == rhino3dm.ObjectColorSource.ColorFromObject
+    # The definition's object takes colour and material from the instance, and sits on a layer of its own.
+    (member,) = [o for o in rhino_file.Objects if o.Attributes.IsInstanceDefinitionObject]
+    assert member.Attributes.ColorSource == rhino3dm.ObjectColorSource.ColorFromParent
+    assert member.Attributes.MaterialSource == rhino3dm.ObjectMaterialSource.MaterialFromParent
+    assert paths[member.Attributes.LayerIndex] == rhino.BLOCK_LAYER
+    assert not member.Attributes.GetUserStrings()
+
+
+def test_block_parts_keep_their_materials(window_ifc):
+    rhino_file = _read(convert(window_ifc, fmt="3dm", blocks=True).output)
+    members = [o for o in rhino_file.Objects if o.Attributes.IsInstanceDefinitionObject]
+    assert sorted(rhino_file.Materials[o.Attributes.MaterialIndex].Name for o in members) == ["Glas", "Rahmen"]
+    assert {o.Attributes.ColorSource for o in members} == {rhino3dm.ObjectColorSource.ColorFromObject}
+    assert rhino_file.InstanceDefinitions.FindIndex(0).Name == "Fenster 1"
+
+
+def test_cli_blocks_flag(mixed_ifc, tmp_path):
+    target = tmp_path / "mixed.3dm"
+    assert main([str(mixed_ifc), "-f", "3dm", "-o", str(target), "--blocks"]) == 0
+    assert len(_read(target).InstanceDefinitions) == 1
+    assert main([str(mixed_ifc), "-f", "3dm", "-o", str(target)]) == 0
+    assert len(_read(target).InstanceDefinitions) == 0
+
+
+# --------------------------------------------------------------- crashing worker processes
+
+
+@pytest.mark.parametrize("mode", ["brep", "always"])
+def test_worker_crash_is_put_down_to_its_element(mixed_ifc, tmp_path, monkeypatch, mode):
+    import ifcopenshell
+
+    import rhino_helpers
+
+    model = ifcopenshell.open(str(mixed_ifc))
+    culprit = next(p for p in model.by_type("IfcWall") if p.Name == "IfcWall 3")
+    serial = convert(mixed_ifc, tmp_path / "serial.3dm", fmt="3dm")
+    monkeypatch.setattr(rhino, "_worker_count", lambda threads, elements: 2)
+    monkeypatch.setattr(rhino, "BATCH_ELEMENTS", 3)
+    monkeypatch.setattr(rhino, "_build_batch", rhino_helpers.crash_on_element)
+    monkeypatch.setenv(rhino_helpers.CRASH_ELEMENT, str(culprit.id()))
+    monkeypatch.setenv(rhino_helpers.CRASH_MODE, mode)
+    notes = []
+    result = convert(mixed_ifc, tmp_path / "rescued.3dm", fmt="3dm", status=lambda phase, text: notes.append((phase, text)))
+
+    # The log names the element, nothing else is lost, and the rest is built as before.
+    (note,) = [text for phase, text in notes if phase == "note"]
+    assert culprit.GlobalId in note and "IfcWall" in note
+    expected = [entry for entry in _contents(serial.output)[2]]
+    rescued = _contents(result.output)[2]
+    if mode == "brep":  # as a mesh instead
+        assert "als Netz" in note and result.elements == serial.elements
+        index = next(i for i, entry in enumerate(expected) if entry[0] == "IfcWall 3")
+        assert rescued[index][1][0] == "Mesh"
+        del expected[index], rescued[index]
+    else:  # left out
+        assert "weggelassen" in note and result.elements == serial.elements - 1
+        expected = [entry for entry in expected if entry[0] != "IfcWall 3"]
+    assert rescued == expected
+
+
+def test_workers_restart_after_a_crash(monkeypatch):
+    # A pool whose worker died is replaced; the batches it lost are built one element at a time.
+    started = []
+
+    class Pool(_BrokenPool):
+        def __init__(self, workers, *args, **kwargs):
+            started.append(workers)
+
+    monkeypatch.setattr(rhino.concurrent.futures, "ProcessPoolExecutor", Pool)
+    builder = rhino._Builder(2)
+    prism = _prism(8)
+    geometry = SimpleNamespace(
+        verts_buffer=prism.verts_buffer, faces_buffer=prism.faces_buffer, item_ids_buffer=b"",
+        material_ids_buffer=b"", materials=[],
+    )
+    with builder:
+        for _ in range(rhino.MAX_POOL_RESTARTS + 2):
+            ((_, built),) = builder.build(1, geometry, False)
+            builder.flush()
+            assert isinstance(built.get(), rhino3dm.Mesh)
+    # Each failed pool is started anew (2 workers) and checked with a single worker that turns out
+    # broken as well, so the elements are built here; after MAX_POOL_RESTARTS no pool is started.
+    assert started.count(2) == rhino.MAX_POOL_RESTARTS + 1

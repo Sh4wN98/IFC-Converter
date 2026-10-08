@@ -10,6 +10,10 @@ extrusions, door and window OverallWidth/OverallHeight and the standard quantity
 
     python tools/accuracy.py files/*.ifc --modes 3dm-brep,3dm-mesh,glb,obj --out-dir out --report accuracy.md
 
+The modes 3dm-brep-blocks and 3dm-mesh-blocks write type geometry placed several times as Rhino
+blocks; their instances are measured as placed (the definition's geometry moved by the instance
+transform, as Rhino draws it).
+
 Each conversion runs in its own process, like tools/benchmark.py.
 """
 from __future__ import annotations
@@ -30,11 +34,14 @@ from pathlib import Path
 
 import numpy
 
+# Mode -> (format, Rhino geometry, Rhino blocks for repeated type geometry).
 MODES = {
-    "3dm-brep": ("3dm", "brep"),
-    "3dm-mesh": ("3dm", "mesh"),
-    "glb": ("glb", "brep"),
-    "obj": ("obj", "brep"),
+    "3dm-brep": ("3dm", "brep", False),
+    "3dm-mesh": ("3dm", "mesh", False),
+    "3dm-brep-blocks": ("3dm", "brep", True),
+    "3dm-mesh-blocks": ("3dm", "mesh", True),
+    "glb": ("glb", "brep", False),
+    "obj": ("obj", "brep", False),
 }
 # Elements compared per file (chosen at random with a fixed seed), plus up to GROUND_TRUTH_SAMPLE
 # elements with independently known dimensions.
@@ -261,21 +268,36 @@ def read_3dm(path: Path, wanted: set[str]) -> tuple[dict[str, list[Shape]], dict
         "relative_tolerance": settings.ModelRelativeTolerance,
         "single_precision_meshes": 0,
     }
+    # The geometry of the block definitions, by the ids of their objects.
+    definition_objects = {obj.Attributes.Id: obj.Geometry for obj in model.Objects if obj.Attributes.IsInstanceDefinitionObject}
+    definitions = {}
+    for index in range(len(model.InstanceDefinitions)):
+        definition = model.InstanceDefinitions.FindIndex(index)
+        definitions[definition.Id] = [definition_objects[i] for i in definition.GetObjectIds() if i in definition_objects]
+    info["block_instances"] = 0
     shapes: dict[str, list[Shape]] = {}
     for obj in model.Objects:
         guid = obj.Attributes.GetUserString("IfcGlobalId")
-        if guid not in wanted:
+        if guid not in wanted or obj.Attributes.IsInstanceDefinitionObject:
             continue
-        geometry = obj.Geometry
-        if isinstance(geometry, rhino3dm.Brep):
-            shape = brep_shape(geometry)
-        elif isinstance(geometry, rhino3dm.Mesh):
-            if not geometry.Vertices.UseDoublePrecisionVertices:
-                info["single_precision_meshes"] += 1
-            shape = rhino_mesh_shape(geometry)
-        else:
-            continue
-        shapes.setdefault(guid, []).append(shape)
+        geometries = [obj.Geometry]
+        if isinstance(obj.Geometry, rhino3dm.InstanceReference):
+            info["block_instances"] += 1
+            geometries = []
+            for geometry in definitions.get(obj.Geometry.ParentIdefId, []):
+                geometry = geometry.Duplicate()
+                geometry.Transform(obj.Geometry.Xform)
+                geometries.append(geometry)
+        for geometry in geometries:
+            if isinstance(geometry, rhino3dm.Brep):
+                shape = brep_shape(geometry)
+            elif isinstance(geometry, rhino3dm.Mesh):
+                if not geometry.Vertices.UseDoublePrecisionVertices:
+                    info["single_precision_meshes"] += 1
+                shape = rhino_mesh_shape(geometry)
+            else:
+                continue
+            shapes.setdefault(guid, []).append(shape)
     return shapes, info
 
 
@@ -835,11 +857,11 @@ def check_file(source: Path, modes: list[str], out_dir: Path, sample: int, threa
     _release_memory()  # the conversions run in children: hand the model's memory back meanwhile
 
     for mode in modes:
-        fmt, geometry = MODES[mode]
+        fmt, geometry, blocks = MODES[mode]
         output = out_dir / f"{source.stem}.{mode}.{fmt}"
         log(f"  ▶ {mode}")
         try:
-            result = convert_in_child(source, fmt, geometry, output, threads, deflection)
+            result = convert_in_child(source, fmt, geometry, output, threads, deflection, blocks)
             entry = {"seconds": result.get("seconds"), "status": result["status"]}
             if result["status"] == "ok":
                 entry["output_mb"] = round(sum(p.stat().st_size for p in (output, output.with_suffix(".mtl")) if p.exists()) / 1e6, 1)
@@ -1005,12 +1027,16 @@ def _worst_classes(comparisons: dict[str, dict], classes: dict[str, str]) -> dic
 # ------------------------------------------------------------------------------------ conversion
 
 
-def convert_in_child(source: Path, fmt: str, geometry: str, output: Path, threads: int, deflection: float | None) -> dict:
+def convert_in_child(
+    source: Path, fmt: str, geometry: str, output: Path, threads: int, deflection: float | None, blocks: bool = False,
+) -> dict:
     for stale in (output, output.with_suffix(".mtl")):
         stale.unlink(missing_ok=True)
     command = [sys.executable, __file__, "--child", str(source), fmt, geometry, str(output), "--threads", str(threads)]
     if deflection:
         command += ["--deflection", str(deflection)]
+    if blocks:
+        command.append("--blocks")
     started = time.time()
     process = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     seconds = round(time.time() - started, 1)
@@ -1020,7 +1046,7 @@ def convert_in_child(source: Path, fmt: str, geometry: str, output: Path, thread
     return {"status": "error", "seconds": seconds, "error": (process.stderr.strip().splitlines() or ["?"])[-1][:300]}
 
 
-def _child(source: str, fmt: str, geometry: str, output: str, threads: int, deflection: float | None) -> int:
+def _child(source: str, fmt: str, geometry: str, output: str, threads: int, deflection: float | None, blocks: bool = False) -> int:
     import ifcopenshell.geom as geom
 
     if deflection:
@@ -1036,7 +1062,7 @@ def _child(source: str, fmt: str, geometry: str, output: str, threads: int, defl
     from ifc_converter import convert
 
     with _quiet_stdout():
-        result = convert(source, output, fmt=fmt, geometry=geometry, threads=threads)
+        result = convert(source, output, fmt=fmt, geometry=geometry, threads=threads, blocks=blocks)
     print(json.dumps({"elements": result.elements, "skipped": result.skipped}), flush=True)
     return 0
 
@@ -1140,6 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--deflection", type=float, help="mesher-linear-deflection in metres for conversion and reference")
     parser.add_argument("--occ-sample", type=int, default=DEFAULT_OCC_SAMPLE, help="elements also compared with OpenCASCADE")
     parser.add_argument("--keep-output", action="store_true")
+    parser.add_argument("--blocks", action="store_true", help=argparse.SUPPRESS)  # for --child
     parser.add_argument("--from-jsonl", nargs="+", type=Path, help="only write the report from earlier results")
     parser.add_argument("--child", nargs=4, metavar=("IFC", "FMT", "GEOMETRY", "OUT"), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -1148,7 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
     if importlib.util.find_spec("ifc_converter") is None:  # not installed: use the source tree
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     if args.child:
-        return _child(*args.child, args.threads, args.deflection)
+        return _child(*args.child, args.threads, args.deflection, args.blocks)
     if args.from_jsonl:
         reports = [json.loads(line) for path in args.from_jsonl for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         write_report(reports, args.report)

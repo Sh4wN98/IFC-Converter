@@ -11,8 +11,9 @@ import re
 import threading
 import weakref
 from collections import OrderedDict, deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import ifcopenshell
 import ifcopenshell.geom as geom
@@ -24,7 +25,7 @@ import rhino3dm
 
 from ifc_converter.converter import (
     LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, StatusCallback, available_memory, geometry_library,
-    curve_phase, iter_shapes, shape_products,
+    curve_phase, iter_shapes, product_label, shape_products,
 )
 from ifc_converter.polysurface import planar_polysurface
 from ifc_converter.process import exit_with_parent, no_crash_dialogs
@@ -34,6 +35,10 @@ log = logging.getLogger(__name__)
 NO_STOREY = "Ohne Geschoss"
 # Root layer for curve-only elements outside the spatial structure, such as alignments.
 AXES = "Achsen"
+# Root layer of the objects that make up block definitions (option "blocks"). Rhino draws an
+# instance with the layer of each of these objects, so it stays visible; the instances themselves
+# are on the layers of their elements.
+BLOCK_LAYER = "Blockdefinitionen"
 FILE_VERSION = 7
 MAX_STRING_LENGTH = 1000
 # Classes whose layers start hidden: rooms (IfcSpace) are volumes that fill every storey and would
@@ -50,6 +55,15 @@ MEASURE_UNITS = {
     "IfcVolumeMeasure": "VOLUMEUNIT",
 }
 QUANTITY_UNITS = {"IfcQuantityLength": "LENGTHUNIT", "IfcQuantityArea": "AREAUNIT", "IfcQuantityVolume": "VOLUMEUNIT"}
+# Property values that only stand in for a missing value (compared stripped, in lower case). They
+# made up a third to half of all user text of Revit models, together with values that just repeat
+# their property's name (Revit's COBie parameters: "SerialNumber" = "SerialNumber"), and the user
+# text was a third of the file size. NOTDEFINED is IFC's own "no value" for enumerations (unlike
+# USERDEFINED, which is kept); "$" is an unset STEP attribute that an exporter wrote as text.
+PLACEHOLDERS = {
+    "", "-", "--", "---", "n/a", "n.a.", "none", "<none>", "null", "unset", "unknown", "notknown",
+    "notdefined", "undefined", "<default>", "$",
+}
 # Share of the progress range used by the geometry iterator; the rest covers writing the file.
 ITERATOR_SHARE = 90
 # Elements with more triangles than this are mostly tessellated organic shapes (sanitary objects,
@@ -98,6 +112,9 @@ BATCH_TRIANGLES = 20_000
 BATCH_ELEMENTS = 64
 PENDING_TRIANGLES = 2_000_000
 PENDING_BATCHES = 64
+# A pool whose worker died is started anew this many times; after that the elements are built one
+# at a time in a worker of their own.
+MAX_POOL_RESTARTS = 3
 
 Color = tuple[int, int, int, int]
 
@@ -123,24 +140,43 @@ def write_3dm(
     progress: ProgressCallback | None = None,
     geometry: str = "brep",
     status: StatusCallback | None = None,
+    blocks: bool = False,
+    source: Path | None = None,
 ) -> int:
     """Write every element with geometry, layered by its place in the spatial structure and IFC class.
 
     With ``geometry="brep"`` elements become joined planar polysurfaces; elements with more than
     MAX_BREP_FACES triangles (tessellated organic shapes) or without a valid Brep stay meshes.
     With ``geometry="mesh"`` every element is a mesh. Elements that only have edges (alignment
-    axes, grids) become polylines.
+    axes, grids) become polylines. An element with several materials becomes one object per
+    material, grouped. With ``blocks`` type geometry placed several times becomes a block
+    definition, and its elements block instances. ``source`` (the IFC file) is named in the
+    document user text.
     """
-    writer = _Writer(model)
+    products = shape_products(model, EXCLUDED_CLASSES)
+    writer = _Writer(model, products, source)
     curve_elements = {element.id(): element for element in _curve_elements(model)}
     yielded: set[int] = set()
     settings = _settings()
-    products = shape_products(model, EXCLUDED_CLASSES)
-    with _Builder(_worker_count(threads, len(products)), _SolidItems(model)) as builder:
-        # Meshes are computed in their own coordinates, so shapes that share a geometry share its
-        # mesh. Polysurfaces are built from world coordinates.
+
+    def culprit(element_id: int, fallback: str | None) -> None:
+        label = product_label(model.by_id(element_id))
+        if fallback:
+            text = f"Rhino-Geometrie ließ einen Hilfsprozess abstürzen, stattdessen als Netz übernommen: {label}"
+        else:
+            text = f"Rhino-Geometrie ließ einen Hilfsprozess abstürzen, Bauteil weggelassen: {label}"
+        if status:
+            status("note", text)
+        else:
+            log.warning("%s", text)
+
+    with _Builder(_worker_count(threads, len(products)), _SolidItems(model), culprit) as builder:
+        # Meshes and block definitions are computed in their own coordinates, so shapes that share
+        # a geometry share its mesh or block. Polysurfaces are built from world coordinates.
         meshes = _MeshCache(builder) if geometry == "mesh" else None
-        if meshes is not None:
+        definitions = _Blocks(model, products, builder) if blocks else None
+        local = meshes is not None or definitions is not None
+        if local:
             settings.set("use-world-coords", False)
         ordered = _Ordered(writer)
         shapes = iter_shapes(
@@ -160,13 +196,18 @@ def write_3dm(
             if not shape_geometry.verts_buffer:
                 continue
             triangles = len(shape_geometry.faces_buffer) // 12
+            brep = geometry == "brep" and triangles <= MAX_BREP_FACES
             if not triangles:
-                built = _Ready(_polylines(shape_geometry, _placement(shape)))
+                entry = _Element([(_material(shape_geometry), _Ready(_polylines(shape_geometry, _placement(shape))))])
+            elif definitions is not None and definitions.eligible(shape):
+                entry = _Instance(definitions.definition(shape, brep), _placement(shape))
             elif meshes is not None:
-                built = meshes.place(shape)
+                entry = _Element(meshes.place(shape))
             else:
-                built = builder.build(shape_geometry, geometry == "brep" and triangles <= MAX_BREP_FACES)
-            ordered.add(shape.id, _material(shape_geometry), built)
+                if local:  # polysurfaces: moved to world coordinates as the kernel would
+                    shape_geometry = _world(shape_geometry, _placement(shape))
+                entry = _Element(builder.build(shape.id, shape_geometry, brep))
+            ordered.add(shape.id, entry)
             ordered.commit()
         builder.flush()
         ordered.close(None)
@@ -181,10 +222,17 @@ def write_3dm(
     return writer.elements
 
 
+# Name, colour (RGBA) and transparency (0-1) of a material.
+Material = tuple[str, Color, float]
+
+
 class _Writer:
     """Adds objects to a Rhino file with the layers, colours, materials and user text of their element."""
 
-    def __init__(self, model: ifcopenshell.file):
+    def __init__(
+        self, model: ifcopenshell.file, products: list[ifcopenshell.entity_instance] | None = None,
+        source: Path | None = None,
+    ):
         self.model = model
         self.rhino = rhino3dm.File3dm()
         self.rhino.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
@@ -192,45 +240,145 @@ class _Writer:
         # with. The geometry is far more precise (polysurface faces: MAX_PLANE_DEVIATION, 1 mm at most).
         self.rhino.Settings.ModelAbsoluteTolerance = 0.001
         self.rhino.Settings.ModelAngleToleranceDegrees = 1.0
+        for key, value in _document_strings(model, source).items():
+            self.rhino.Strings[key] = value
         self.paths = _SpatialPaths(model)
         self.layers = _LayerTable(self.rhino)
         # Spatial layers are created up front so the layer panel lists them in the order of the
         # spatial structure, storeys by elevation, ahead of the fallback layers.
         for path in sorted(self.paths.levels(model), key=_levels_sort_key):
             self.layers.spatial(path)
-        self.materials: dict[tuple[str, Color, float], int] = {}
+        self.materials: dict[Material, int] = {}
         self.property_sets = _PropertySets(model)
+        self.groups = _Groups(self.rhino)
+        # Products with geometry of their own; aggregates without it become groups of their parts.
+        self._with_shape = {product.id() for product in products} if products is not None else None
+        self._aggregates: dict[int, int] = {}
+        self._block_layer: int | None = None
+        self._block_names: set[str] = set()  # Rhino needs them unique
         self.elements = 0
 
-    def add(
-        self, element_id: int, material: tuple[str, Color, float],
-        geometry: rhino3dm.Mesh | rhino3dm.Brep | list[rhino3dm.Polyline] | None,
-    ) -> None:
-        if geometry is None:
+    def add(self, element_id: int, parts: list[tuple[Material, object]]) -> None:
+        """Add an element as one object per part (several are grouped), or as polylines."""
+        parts = [(material, geometry) for material, geometry in parts if geometry is not None]
+        if not parts:
             return
         element = self.model.by_id(element_id)
-        name, color, transparency = material
-        attributes = _attributes(element, color, self.property_sets)
+        material, geometry = parts[0]
         curves = isinstance(geometry, list)
-        attributes.LayerIndex = self.layers.get(
-            self.paths.of_element(element), element.is_a(), color, AXES if curves else NO_STOREY
-        )
-        attributes.MaterialIndex = _material_index(self.rhino, self.materials, (name, color, transparency))
-        attributes.MaterialSource = rhino3dm.ObjectMaterialSource.MaterialFromObject
-        if isinstance(geometry, rhino3dm.Brep):
-            self.rhino.Objects.AddBrep(geometry, attributes)
-        elif not curves:
-            self.rhino.Objects.AddMesh(geometry, attributes)
-        else:
+        attributes = self._attributes(element, material, AXES if curves else NO_STOREY)
+        if curves:
             if len(geometry) > 1:
                 # The pieces of one element select together.
-                group = rhino3dm.Group()
-                group.Name = attributes.Name
-                self.rhino.Groups.Add(group)
-                attributes.AddToGroup(len(self.rhino.Groups) - 1)
+                attributes.AddToGroup(self.groups.add(attributes.Name))
             for polyline in geometry:
                 self.rhino.Objects.AddPolyline(polyline, attributes)
+        else:
+            if len(parts) > 1:
+                # One object per material, so glass stays transparent; they select together.
+                attributes.AddToGroup(self.groups.add(attributes.Name))
+            for material, geometry in parts:
+                self._set_material(attributes, material)
+                if isinstance(geometry, rhino3dm.Brep):
+                    self.rhino.Objects.AddBrep(geometry, attributes)
+                else:
+                    self.rhino.Objects.AddMesh(geometry, attributes)
         self.elements += 1
+
+    def add_instance(self, element_id: int, definition: _Definition, placement: numpy.ndarray | None) -> None:
+        """Add an element as an instance of a block definition."""
+        if not self._define(definition):
+            return
+        element = self.model.by_id(element_id)
+        attributes = self._attributes(element, definition.material, NO_STOREY)
+        reference = rhino3dm.InstanceReference(
+            definition.id, _transform(placement) if placement is not None else rhino3dm.Transform(1.0)
+        )
+        self.rhino.Objects.AddInstanceObject(reference, attributes)
+        self.elements += 1
+
+    def _define(self, definition: _Definition) -> bool:
+        """Add the block definition to the file on its first use; False if it has no geometry."""
+        if definition.id is None and definition.parts is not None:
+            parts = [(material, built.get()) for material, built in definition.parts]
+            parts = [(material, geometry) for material, geometry in parts if geometry is not None]
+            definition.parts = None  # only one copy of the geometry is kept: the file's
+            if parts:
+                if self._block_layer is None:
+                    self._block_layer = self.layers.root(BLOCK_LAYER)
+                objects = []
+                for material, _ in parts:
+                    attributes = rhino3dm.ObjectAttributes()
+                    attributes.LayerIndex = self._block_layer
+                    if len(parts) == 1:
+                        # Colour and material come from the instance, like those of any other element.
+                        attributes.ColorSource = rhino3dm.ObjectColorSource.ColorFromParent
+                        attributes.MaterialSource = rhino3dm.ObjectMaterialSource.MaterialFromParent
+                    else:  # each material its own, so glass stays transparent
+                        attributes.ColorSource = rhino3dm.ObjectColorSource.ColorFromObject
+                        self._set_material(attributes, material)
+                    objects.append(attributes)
+                index = self.rhino.InstanceDefinitions.Add(
+                    _unique(definition.name, self._block_names), "", "", "", rhino3dm.Point3d(0, 0, 0),
+                    tuple(geometry for _, geometry in parts), tuple(objects),
+                )
+                definition.id = self.rhino.InstanceDefinitions.FindIndex(index).Id
+        return definition.id is not None
+
+    def _attributes(self, element: ifcopenshell.entity_instance, material: Material, root: str) -> rhino3dm.ObjectAttributes:
+        path = self.paths.of_element(element)
+        attributes = _attributes(element, material[1], self.property_sets, _storey(path))
+        attributes.LayerIndex = self.layers.get(path, element.is_a(), material[1], root)
+        self._set_material(attributes, material)
+        for group in self._aggregate_groups(element):
+            attributes.AddToGroup(group)
+        return attributes
+
+    def _set_material(self, attributes: rhino3dm.ObjectAttributes, material: Material) -> None:
+        attributes.ObjectColor = material[1]
+        attributes.MaterialIndex = _material_index(self.rhino, self.materials, material)
+        attributes.MaterialSource = rhino3dm.ObjectMaterialSource.MaterialFromObject
+
+    def _aggregate_groups(self, element: ifcopenshell.entity_instance) -> list[int]:
+        """The groups of the aggregates (assemblies, curtain walls, stairs) the element is a part of.
+
+        Only aggregates without geometry of their own, up to the first one with geometry or a
+        spatial element: the parts are all there is of them in Rhino.
+        """
+        groups: list[int] = []
+        if self._with_shape is None:
+            return groups
+        parent = element_util.get_aggregate(element)
+        while parent is not None and not _is_spatial(parent) and parent.id() not in self._with_shape:
+            key = parent.id()
+            if key not in self._aggregates:
+                self._aggregates[key] = self.groups.add(_clean_name(parent.Name, f"{parent.is_a()} {parent.GlobalId}"))
+            groups.append(self._aggregates[key])
+            parent = element_util.get_aggregate(parent)
+        return groups
+
+
+class _Groups:
+    """Adds groups to a Rhino file under names not used yet."""
+
+    def __init__(self, rhino: rhino3dm.File3dm):
+        self._rhino = rhino
+        self._names: set[str] = set()
+
+    def add(self, name: str) -> int:
+        group = rhino3dm.Group()
+        group.Name = _unique(name, self._names)
+        self._rhino.Groups.Add(group)
+        return len(self._rhino.Groups) - 1
+
+
+def _unique(name: str, names: set[str]) -> str:
+    """``name``, or with " (2)", " (3)" ... appended if it is in ``names``; added to them."""
+    candidate, n = name, 2
+    while candidate in names:
+        candidate, n = f"{name} ({n})", n + 1
+    names.add(candidate)
+    return candidate
 
 
 def _curve_elements(model: ifcopenshell.file) -> list[ifcopenshell.entity_instance]:
@@ -308,13 +456,14 @@ def _polyline(points: list[tuple[float, float, float]]) -> rhino3dm.Polyline | N
 
 
 def _attributes(
-    element: ifcopenshell.entity_instance, color: Color, property_sets: _PropertySets | None = None
+    element: ifcopenshell.entity_instance, color: Color, property_sets: _PropertySets | None = None,
+    storey: str | None = None,
 ) -> rhino3dm.ObjectAttributes:
     attributes = rhino3dm.ObjectAttributes()
     attributes.Name = element.Name or element.GlobalId
     attributes.ObjectColor = color
     attributes.ColorSource = rhino3dm.ObjectColorSource.ColorFromObject
-    for key, value in _user_strings(element, property_sets).items():
+    for key, value in _user_strings(element, property_sets, storey).items():
         attributes.SetUserString(key, value)
     return attributes
 
@@ -329,11 +478,11 @@ class _Ordered:
 
     def __init__(self, writer: _Writer):
         self._writer = writer
-        self._open: list[tuple[int, tuple, _Ready | _Deferred | _Placed]] = []
-        self._closed: deque[tuple[int, tuple, _Ready | _Deferred | _Placed]] = deque()
+        self._open: list[tuple[int, _Element | _Instance]] = []
+        self._closed: deque[tuple[int, _Element | _Instance]] = deque()
 
-    def add(self, element_id: int, material: tuple, built) -> None:
-        self._open.append((element_id, material, built))
+    def add(self, element_id: int, entry: _Element | _Instance) -> None:
+        self._open.append((element_id, entry))
 
     def close(self, ids: list[int] | None) -> None:
         """End the chunk of products ``ids`` (in model order; None: keep the order of arrival)."""
@@ -349,10 +498,36 @@ class _Ordered:
         A closed chunk is committed after the first shape of the next one has arrived, so the
         kernel's threads already work on that chunk meanwhile.
         """
-        while self._closed and (wait or self._closed[0][2].ready()):
-            element_id, material, built = self._closed.popleft()
+        while self._closed and (wait or self._closed[0][1].ready()):
+            element_id, entry = self._closed.popleft()
             # Each object goes into the Rhino file right away, so only one copy of the geometry is kept.
-            self._writer.add(element_id, material, built.get())
+            entry.write(self._writer, element_id)
+
+
+class _Element:
+    """An element as objects of their own: its parts, (material, geometry being built) each."""
+
+    def __init__(self, parts: list[tuple[Material, _Ready | _Deferred | _Placed]]):
+        self._parts = parts
+
+    def ready(self) -> bool:
+        return all(built.ready() for _, built in self._parts)
+
+    def write(self, writer: _Writer, element_id: int) -> None:
+        writer.add(element_id, [(material, built.get()) for material, built in self._parts])
+
+
+class _Instance:
+    """An element as an instance of a block definition, at ``placement`` (None: where it is)."""
+
+    def __init__(self, definition: _Definition, placement: numpy.ndarray | None):
+        self._definition, self._placement = definition, placement
+
+    def ready(self) -> bool:
+        return self._definition.ready()
+
+    def write(self, writer: _Writer, element_id: int) -> None:
+        writer.add_instance(element_id, self._definition, self._placement)
 
 
 class _Ready:
@@ -375,12 +550,13 @@ class _Batch:
         self.jobs: list[tuple] | None = []
         self.triangles = 0
         self.future: concurrent.futures.Future | None = None
+        self.pool: concurrent.futures.Executor | None = None  # the pool it was sent to
         # Per job the encoded polysurface or mesh, or None (see _build_batch).
         self.results: list | None = None
 
     def set_results(self, results: list) -> None:
         self.results = results
-        self.jobs = self.future = None  # the future would keep the results
+        self.jobs = self.future = self.pool = None  # the future would keep the results
 
 
 class _Deferred:
@@ -407,12 +583,23 @@ class _Deferred:
 
 
 class _Builder:
-    """Builds the polysurfaces and meshes of shapes, in ``workers`` worker processes or (0) right away."""
+    """Builds the polysurfaces and meshes of shapes, in ``workers`` worker processes or (0) right away.
 
-    def __init__(self, workers: int, solids: _SolidItems | None = None):
+    If a worker dies (out of memory, or a crash in native code such as rhino3dm), the pool is
+    started anew for the batches to come, and the batches it lost are built again one element at a
+    time in a worker of their own, so a crash there points at its element: that one is retried as a
+    mesh, or left out, and ``culprit`` hears about it (element id, "mesh" or None).
+    """
+
+    def __init__(self, workers: int, solids: _SolidItems | None = None, culprit: Callable | None = None):
         self._workers = workers
         self._solids = solids
+        self._culprit = culprit
         self._pool: concurrent.futures.ProcessPoolExecutor | None = None
+        self._restarts = 0
+        # The worker for elements built one at a time, and whether workers cannot run at all.
+        self._isolation: concurrent.futures.ProcessPoolExecutor | None = None
+        self._in_process = False
         self._batch = _Batch()
         # Batches sent to the workers: their futures and triangles.
         self._pending: deque[tuple[concurrent.futures.Future, int]] = deque()
@@ -422,22 +609,29 @@ class _Builder:
         return self
 
     def __exit__(self, *exc_info) -> None:
-        if self._pool is not None:
-            # On an error or a cancel nothing more is needed from the workers.
-            self._pool.shutdown(wait=exc_info[0] is None, cancel_futures=True)
-            self._pool = None
+        for pool in (self._pool, self._isolation):
+            if pool is not None:
+                # On an error or a cancel nothing more is needed from the workers.
+                pool.shutdown(wait=exc_info[0] is None, cancel_futures=True)
+        self._pool = self._isolation = None
 
-    def build(self, geometry, brep: bool) -> _Ready | _Deferred:
-        """The polysurface of ``geometry`` (if ``brep``) or else its mesh, or None."""
+    def build(self, element_id: int, geometry, brep: bool) -> list[tuple[Material, _Ready | _Deferred]]:
+        """Per material of ``geometry``: the material and its polysurface (if ``brep``) or else its
+        mesh, or None."""
         faces, solid_ids = geometry.faces_buffer, b""
         if self._solids is not None:
             faces, solid_ids = _outward(geometry, self._solids)
-        job = (brep, geometry.verts_buffer, faces, geometry.item_ids_buffer if brep else b"", solid_ids if brep else b"")
-        if not self._workers:
-            return _Ready(_build_from_buffers(*job))
+        return [
+            (material, self._submit((element_id, brep, verts, part_faces, items if brep else b"", solid_ids if brep else b"")))
+            for material, verts, part_faces, items in _split(geometry, faces)
+        ]
+
+    def _submit(self, job: tuple) -> _Ready | _Deferred:
+        if not self._workers and not self._restarts:
+            return _Ready(_build_from_buffers(*job[1:]))
         batch = self._batch
         batch.jobs.append(job)
-        batch.triangles += len(geometry.faces_buffer) // 12
+        batch.triangles += len(job[3]) // 12
         built = _Deferred(self, batch, len(batch.jobs) - 1)
         if batch.triangles >= BATCH_TRIANGLES or len(batch.jobs) >= BATCH_ELEMENTS:
             self.flush()
@@ -449,8 +643,8 @@ class _Builder:
         if not batch.jobs:
             return
         self._batch = _Batch()
-        if not self._workers:  # the workers broke down
-            batch.set_results(_build_batch(batch.jobs))
+        if not self._workers:  # the workers broke down too often: one at a time from here on
+            batch.set_results(self._isolated(batch.jobs))
             return
         # Keep what is in flight within bounds: wait for the oldest batches.
         while self._pending and (
@@ -462,40 +656,99 @@ class _Builder:
             concurrent.futures.wait([future])
         try:
             if self._pool is None:
-                self._pool = concurrent.futures.ProcessPoolExecutor(
-                    self._workers, multiprocessing.get_context("spawn"), _worker_init, (os.getpid(),)
-                )
+                self._pool = _pool(self._workers)
             batch.future = self._pool.submit(_build_batch, batch.jobs)
+            batch.pool = self._pool
         except Exception as exc:  # a broken pool, or workers that cannot be started at all
             self._broken(exc)
             batch.set_results(_build_batch(batch.jobs))
             return
-        # The input is only kept to build it here should a worker fail.
+        # The input is only kept to build it again should a worker fail.
         batch.future.add_done_callback(functools.partial(_release_jobs, weakref.ref(batch)))
         self._pending.append((batch.future, batch.triangles))
         self._pending_triangles += batch.triangles
 
     def result(self, batch: _Batch) -> list:
-        """The results of ``batch``, built here if the workers failed."""
+        """The results of ``batch``, built again one element at a time if a worker died."""
         if batch.results is None:
             if batch.future is None:
                 self.flush()
             if batch.results is None:
                 try:
                     batch.set_results(batch.future.result())
-                except concurrent.futures.BrokenExecutor:
-                    # A worker died (out of memory, a crash in native code): build the rest here.
-                    self._broken()
-                    batch.set_results(_build_batch(batch.jobs))
+                except concurrent.futures.BrokenExecutor as exc:
+                    # Every batch in the pool fails with it; the pool is replaced once.
+                    if batch.pool is self._pool:
+                        self._restart(exc)
+                    batch.set_results(self._isolated(batch.jobs))
         return batch.results
 
-    def _broken(self, error: BaseException | None = None) -> None:
+    def _restart(self, error: BaseException) -> None:
+        self._restarts += 1
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._pool = None
+        if self._restarts > MAX_POOL_RESTARTS:
+            self._workers = 0
+        log.warning(
+            "A worker process ended (%s: %s), %s", type(error).__name__, error,
+            "building its elements again one by one" if self._workers else
+            "building the remaining geometry one element at a time",
+        )
+
+    def _isolated(self, jobs: list[tuple]) -> list:
+        """Build ``jobs`` one at a time in a worker of their own: a crash points at its element."""
+        results = []
+        for job in jobs:
+            element_id, brep = job[0], job[1]
+            # A polysurface that crashes the worker is tried once more as a mesh.
+            attempts = [job, (element_id, False, job[2], job[3], b"", b"")] if brep else [job]
+            for number, attempt in enumerate(attempts):
+                try:
+                    result = self._build_isolated(attempt)
+                except concurrent.futures.BrokenExecutor:
+                    self._isolation.shutdown(wait=False, cancel_futures=True)
+                    self._isolation = None
+                    continue
+                if number and self._culprit:
+                    self._culprit(element_id, "mesh")
+                break
+            else:
+                result = None
+                if self._culprit:
+                    self._culprit(element_id, None)
+            results.append(result)
+        return results
+
+    def _build_isolated(self, job: tuple):
+        if self._isolation is None and not self._in_process:
+            try:
+                self._isolation = _pool(1)
+                # An empty batch shows the new worker runs at all (it may not, e.g. out of memory).
+                self._isolation.submit(_build_batch, []).result()
+            except Exception as exc:
+                log.warning("Worker processes cannot run (%s: %s), building in the main process", type(exc).__name__, exc)
+                if self._isolation is not None:
+                    self._isolation.shutdown(wait=False, cancel_futures=True)
+                    self._isolation = None
+                self._in_process = True
+        if self._in_process:
+            return _build_batch([job])[0]
+        return self._isolation.submit(_build_batch, [job]).result()[0]
+
+    def _broken(self, error: BaseException) -> None:
         if self._workers:
             log.warning(
-                "Worker processes failed (%s), building the remaining geometry in the main process",
-                f"{type(error).__name__}: {error}" if error else "a worker ended",
+                "Worker processes failed (%s: %s), building the remaining geometry in the main process",
+                type(error).__name__, error,
             )
         self._workers = 0
+        self._in_process = True
+
+
+def _pool(workers: int) -> concurrent.futures.ProcessPoolExecutor:
+    return concurrent.futures.ProcessPoolExecutor(
+        workers, multiprocessing.get_context("spawn"), _worker_init, (os.getpid(),)
+    )
 
 
 def _release_jobs(batch: weakref.ref, future: concurrent.futures.Future) -> None:
@@ -525,12 +778,12 @@ def _worker_init(parent_pid: int) -> None:
 def _build_batch(jobs: list[tuple]) -> list[tuple[str, dict] | None]:
     """Run in a worker: the encoded polysurfaces or meshes of a batch of elements (see _build).
 
-    Each job is (brep, verts, faces, item ids, solid item ids); each result ("brep" or "mesh", the
-    geometry's Encode()) or None. Decoding gives the very same geometry.
+    Each job is (element id, brep, verts, faces, item ids, solid item ids); each result ("brep" or
+    "mesh", the geometry's Encode()) or None. Decoding gives the very same geometry.
     """
     results = []
     for job in jobs:
-        geometry = _build_from_buffers(*job)
+        geometry = _build_from_buffers(*job[1:])
         kind = "brep" if isinstance(geometry, rhino3dm.Brep) else "mesh"
         results.append(None if geometry is None else (kind, geometry.Encode()))
     return results
@@ -551,6 +804,42 @@ def _build_from_buffers(
         if polysurface is not None:
             return polysurface
     return _mesh_from_buffers(verts, faces)
+
+
+def _split(geometry, faces: bytes) -> list[tuple[Material, bytes, bytes, bytes]]:
+    """The parts of a shape by material: (material, verts, faces, item ids), each with only its own
+    vertices; the material covering most faces first.
+
+    Faces without a material go with that one. Materials alike in name, colour and transparency
+    count as one.
+    """
+    materials = [_material_of(material) for material in geometry.materials]
+    count = len(faces) // 12
+    ids = numpy.frombuffer(geometry.material_ids_buffer, dtype=numpy.int32)
+    if not materials or len(ids) != count:
+        return [(_material(geometry), geometry.verts_buffer, faces, geometry.item_ids_buffer)]
+    # Each material index stands for the first one alike.
+    first = {}
+    alike = numpy.array([first.setdefault(material, index) for index, material in enumerate(materials)])
+    known = ids[(ids >= 0) & (ids < len(materials))]
+    main = _main_material(alike[known]) if len(known) else 0
+    keys = numpy.where((ids >= 0) & (ids < len(materials)), alike[numpy.clip(ids, 0, len(materials) - 1)], main)
+    present = numpy.unique(keys)
+    if len(present) == 1:
+        return [(materials[int(present[0])], geometry.verts_buffer, faces, geometry.item_ids_buffer)]
+    triangles = numpy.frombuffer(faces, dtype=numpy.int32).reshape(-1, 3)
+    points = numpy.frombuffer(geometry.verts_buffer, dtype=numpy.float64).reshape(-1, 3)
+    items = numpy.frombuffer(geometry.item_ids_buffer, dtype=numpy.int32)
+    order = [main] + [int(key) for key in present if key != main]
+    parts = []
+    for key in order:
+        selected = keys == key
+        used, local = numpy.unique(triangles[selected], return_inverse=True)
+        part_items = items[selected].tobytes() if len(items) == count else b""
+        parts.append((
+            materials[key], points[used].tobytes(), local.reshape(-1, 3).astype(numpy.int32).tobytes(), part_items,
+        ))
+    return parts
 
 
 class _Placed:
@@ -579,25 +868,109 @@ class _MeshCache:
 
     def __init__(self, builder: _Builder):
         self._builder = builder
-        # Per geometry its mesh and the number of input vertices.
-        self._meshes: OrderedDict[str, tuple[_Ready | _Deferred, int]] = OrderedDict()
+        # Per geometry its parts (material, mesh) and the number of input vertices.
+        self._meshes: OrderedDict[str, tuple[list, int]] = OrderedDict()
         self._vertices = 0
 
-    def place(self, shape) -> _Placed:
-        """The mesh of a shape, moved to where the shape is."""
+    def place(self, shape) -> list[tuple[Material, _Placed]]:
+        """The meshes of a shape (one per material), moved to where the shape is."""
         key = shape.geometry.id
         if key in self._meshes:
             self._meshes.move_to_end(key)
-            mesh = self._meshes[key][0]
+            parts = self._meshes[key][0]
         else:
             # Counted before welding: the meshes being built in the workers are not known yet.
             vertices = len(shape.geometry.verts_buffer) // 24
-            mesh = self._builder.build(shape.geometry, False)
-            self._meshes[key] = mesh, vertices
+            parts = self._builder.build(shape.id, shape.geometry, False)
+            self._meshes[key] = parts, vertices
             self._vertices += vertices
             while self._vertices > MESH_CACHE_VERTICES and len(self._meshes) > 1:
                 self._vertices -= self._meshes.popitem(last=False)[1][1]
-        return _Placed(mesh, _placement(shape))
+        placement = _placement(shape)
+        return [(material, _Placed(mesh, placement)) for material, mesh in parts]
+
+
+class _Definition:
+    """A block definition: built once, added to the file on its first use."""
+
+    def __init__(self, name: str, parts: list[tuple[Material, _Ready | _Deferred]]):
+        self.name = name
+        self.parts: list | None = parts
+        self.material = parts[0][0]  # the instances' colour and material
+        self.id = None  # the definition's id in the file, once added
+
+    def ready(self) -> bool:
+        return self.id is not None or self.parts is None or all(built.ready() for _, built in self.parts)
+
+
+class _Blocks:
+    """The block definitions of type geometry that several elements place (option "blocks").
+
+    Which elements share a geometry shows in the IFC: their body is the same representation, or
+    places the same representation maps (IfcMappedItem). Only those become instances: a block for a
+    single element would only add a definition. The kernel's geometry id tells which of them do
+    end up with the same geometry (an opening cut into one makes it differ).
+    """
+
+    def __init__(self, model: ifcopenshell.file, products: list, builder: _Builder):
+        self._model = model
+        self._builder = builder
+        self._definitions: dict[str, _Definition] = {}
+        users: dict[int, int] = {}
+        keys: dict[int, set[int]] = {}
+        for product in products:
+            if _has_openings(product):
+                continue
+            shared = _shared_representations(product)
+            keys[product.id()] = shared
+            for key in shared:
+                users[key] = users.get(key, 0) + 1
+        self._eligible = {product for product, shared in keys.items() if any(users[key] > 1 for key in shared)}
+
+    def eligible(self, shape) -> bool:
+        # Shapes the kernel could only compute in world coordinates have no placement of their own.
+        return shape.id in self._eligible and not shape.geometry.id.endswith("world-coords")
+
+    def definition(self, shape, brep: bool) -> _Definition:
+        """The block definition of the shape's geometry (polysurfaces if ``brep``, else meshes)."""
+        key = shape.geometry.id
+        if key not in self._definitions:
+            # Named after the type, as in the authoring program, else after the first element.
+            element = self._model.by_id(shape.id)
+            element_type = element_util.get_type(element)
+            name = _clean_name(element_type.Name if element_type else None, _clean_name(element.Name, element.is_a()))
+            self._definitions[key] = _Definition(name, self._builder.build(shape.id, shape.geometry, brep))
+        return self._definitions[key]
+
+
+def _has_openings(product: ifcopenshell.entity_instance) -> bool:
+    return bool(getattr(product, "HasOpenings", None))
+
+
+def _shared_representations(product: ifcopenshell.entity_instance) -> set[int]:
+    """The ids of the body representations of a product and of the representation maps they place:
+    what other products may share with it."""
+    shared: set[int] = set()
+    for representation in product.Representation.Representations if product.Representation else ():
+        if representation.RepresentationIdentifier not in (None, "Body", "Facetation"):
+            continue
+        shared.add(representation.id())
+        for item in representation.Items:
+            if item.is_a("IfcMappedItem"):
+                shared.add(item.MappingSource.id())
+    return shared
+
+
+def _world(geometry, placement: numpy.ndarray | None):
+    """The geometry with its vertices moved by ``placement`` (None: as it is)."""
+    if placement is None:
+        return geometry
+    points = numpy.frombuffer(geometry.verts_buffer, dtype=numpy.float64).reshape(-1, 3)
+    return SimpleNamespace(
+        verts_buffer=(points @ placement[:3, :3].T + placement[:3, 3]).tobytes(),
+        faces_buffer=geometry.faces_buffer, item_ids_buffer=geometry.item_ids_buffer,
+        material_ids_buffer=geometry.material_ids_buffer, materials=geometry.materials,
+    )
 
 
 def _placement(shape) -> numpy.ndarray | None:
@@ -829,19 +1202,25 @@ def _hash(columns: numpy.ndarray) -> numpy.ndarray:
     return result
 
 
-def _material(geometry) -> tuple[str, Color, float]:
+def _material(geometry) -> Material:
     """Name, colour and transparency (0-1) of the material covering most faces."""
     if not geometry.materials:
-        return "Default", (180, 180, 180, 255), 0.0
+        return DEFAULT_MATERIAL
     ids = numpy.frombuffer(geometry.material_ids_buffer, dtype=numpy.int32)
     ids = ids[ids >= 0]
-    index = 0
-    if len(ids):
-        # The most frequent material; on a tie the one that comes first.
-        values, first, counts = numpy.unique(ids, return_index=True, return_counts=True)
-        index = int(values[numpy.lexsort((first, -counts))[0]])
-    material = geometry.materials[index]
+    return _material_of(geometry.materials[_main_material(ids) if len(ids) else 0])
 
+
+DEFAULT_MATERIAL: Material = ("Default", (180, 180, 180, 255), 0.0)
+
+
+def _main_material(ids: numpy.ndarray) -> int:
+    """The most frequent of the material ids; on a tie the one that comes first."""
+    values, first, counts = numpy.unique(ids, return_index=True, return_counts=True)
+    return int(values[numpy.lexsort((first, -counts))[0]])
+
+
+def _material_of(material) -> Material:
     diffuse = material.diffuse
     transparency = material.transparency
     if transparency is None or math.isnan(transparency):
@@ -860,7 +1239,7 @@ def _channel(value: float) -> int:
     return round(min(max(value, 0.0), 1.0) * 255)
 
 
-def _material_index(rhino: rhino3dm.File3dm, cache: dict, key: tuple[str, Color, float]) -> int:
+def _material_index(rhino: rhino3dm.File3dm, cache: dict, key: Material) -> int:
     if key not in cache:
         name, color, transparency = key
         material = rhino3dm.Material()
@@ -961,12 +1340,26 @@ def _level_name(level: ifcopenshell.entity_instance) -> str:
     return _clean_name(level.Name, _clean_name(kind, level.is_a()))
 
 
-def _user_strings(element: ifcopenshell.entity_instance, property_sets: _PropertySets | None = None) -> dict[str, str]:
+def _user_strings(
+    element: ifcopenshell.entity_instance, property_sets: _PropertySets | None = None, storey: str | None = None,
+) -> dict[str, str]:
     strings = {
         "IfcGlobalId": element.GlobalId,
         "IfcClass": element.is_a(),
         "IfcName": element.Name or "",
     }
+    element_type = element_util.get_type(element)
+    predefined = _predefined_type(element, element_type)
+    object_type = getattr(element, "ObjectType", None)
+    for key, value in (
+        ("IfcType", element_type.Name if element_type else None),
+        ("IfcPredefinedType", predefined),
+        ("IfcObjectType", object_type if object_type != predefined else None),
+        ("IfcTag", getattr(element, "Tag", None)),
+        ("IfcStorey", storey),
+    ):
+        if isinstance(value, str) and not _placeholder(value):
+            strings[key] = value[:MAX_STRING_LENGTH]
     try:
         if property_sets is None:
             psets = element_util.get_psets(element, psets_only=True)
@@ -983,11 +1376,82 @@ def _user_strings(element: ifcopenshell.entity_instance, property_sets: _Propert
         for prop, value in properties.items():
             if prop == "id" or not isinstance(value, (str, int, float, bool)):
                 continue
+            if isinstance(value, str) and _placeholder(value, prop):
+                continue
             # 12 significant digits drop float noise ("6403.99999999979" → "6404") and keep 0.01 mm
             # even in georeferenced coordinates.
             text = _float_text(value) if isinstance(value, float) else str(value)
             strings[f"{pset}.{prop}"] = text[:MAX_STRING_LENGTH]
     return strings
+
+
+def _predefined_type(element: ifcopenshell.entity_instance, element_type: ifcopenshell.entity_instance | None) -> str | None:
+    """The element's PredefinedType, or its type's, which takes precedence; for USERDEFINED the
+    name given in ObjectType (ElementType for types). None if neither has one (NOTDEFINED)."""
+    for entity, custom in ((element_type, "ElementType"), (element, "ObjectType")):
+        value = getattr(entity, "PredefinedType", None) if entity is not None else None
+        if value == "USERDEFINED":
+            value = getattr(entity, custom, None) or value
+        if value and value != "NOTDEFINED":
+            return value
+    return None
+
+
+def _placeholder(value: str, name: str | None = None) -> bool:
+    """Whether a text value only stands in for a missing one (see PLACEHOLDERS), or repeats the
+    ``name`` of its property."""
+    return value.strip().lower() in PLACEHOLDERS or value == name
+
+
+def _storey(path: SpatialPath) -> str | None:
+    """The name of the innermost storey in a layer path."""
+    for level in reversed(path):
+        if level.is_a("IfcBuildingStorey"):
+            return level.Name
+    return None
+
+
+def _document_strings(model: ifcopenshell.file, source: Path | None) -> dict[str, str]:
+    """The document user text: source file, schema, project and georeferencing.
+
+    The geometry stays in the project coordinates; IfcMapConversion is given here so it can be
+    applied in Rhino. Eastings, northings and height in metres, the rotation of the project's x
+    axis from grid east in degrees (counter-clockwise).
+    """
+    strings = {}
+    if source is not None:
+        strings["IfcSourceFile"] = Path(source).name
+    strings["IfcSchema"] = getattr(model, "schema_identifier", None) or model.schema
+    projects = model.by_type("IfcProject")
+    if projects and projects[0].Name and not _placeholder(projects[0].Name):
+        strings["IfcProject"] = projects[0].Name
+    try:
+        conversions = model.by_type("IfcMapConversion")
+    except RuntimeError:  # IFC2X3
+        conversions = []
+    if conversions:
+        conversion = conversions[0]
+        crs = conversion.TargetCRS
+        map_unit = getattr(crs, "MapUnit", None)
+        try:
+            scale = unit_util.get_named_unit_scale(map_unit) if map_unit else unit_util.calculate_unit_scale(model)
+        except Exception:
+            scale = 1.0
+        for name in ("Eastings", "Northings", "OrthogonalHeight"):
+            value = getattr(conversion, name, None)
+            if value is not None:
+                strings[f"IfcMapConversion.{name}"] = _float_text(float(value) * scale)
+        abscissa = getattr(conversion, "XAxisAbscissa", None)
+        ordinate = getattr(conversion, "XAxisOrdinate", None)
+        if abscissa is not None and ordinate is not None:
+            strings["IfcMapConversion.XAxisAbscissa"] = _float_text(float(abscissa))
+            strings["IfcMapConversion.XAxisOrdinate"] = _float_text(float(ordinate))
+            strings["IfcMapConversion.Rotation"] = _float_text(math.degrees(math.atan2(ordinate, abscissa)))
+        if getattr(conversion, "Scale", None) is not None:
+            strings["IfcMapConversion.Scale"] = _float_text(float(conversion.Scale))
+        if crs is not None and crs.Name:
+            strings["IfcProjectedCRS.Name"] = crs.Name
+    return {key: value[:MAX_STRING_LENGTH] for key, value in strings.items()}
 
 
 def _float_text(value: float) -> str:
@@ -1153,6 +1617,12 @@ class _LayerTable:
             )[0]
         return self._classes[key]
 
+    def root(self, name: str) -> int:
+        """A layer of its own at the top level."""
+        if name not in self._parents:
+            self._parents[name] = self._add(name, (0, 0, 0, 255), None)
+        return self._parents[name][0]
+
     def spatial(self, path: SpatialPath) -> tuple[int, object]:
         key = path[-1].id()
         if key not in self._parents:
@@ -1161,14 +1631,8 @@ class _LayerTable:
         return self._parents[key]
 
     def _add(self, name: str, color: Color, parent_id, visible: bool = True) -> tuple[int, object]:
-        names = self._names.setdefault(parent_id, set())
-        candidate, n = name, 2
-        while candidate in names:
-            candidate, n = f"{name} ({n})", n + 1
-        names.add(candidate)
-
         layer = rhino3dm.Layer()
-        layer.Name = candidate
+        layer.Name = _unique(name, self._names.setdefault(parent_id, set()))
         layer.Color = color
         layer.Visible = visible
         if parent_id is not None:
