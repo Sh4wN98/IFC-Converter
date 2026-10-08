@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest  # noqa: E402
 from PySide6.QtCore import QEventLoop, QMimeData, QPointF, QSettings, Qt, QTimer, QUrl  # noqa: E402
 from PySide6.QtGui import QDropEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 import child_helpers  # noqa: E402
 from ifc_converter import __version__, gui, process  # noqa: E402
@@ -271,7 +271,7 @@ def test_crashed_conversion_reports_exit_code(app, wall_ifc, tmp_path, monkeypat
     use_child_func(monkeypatch, child_helpers.exit_hard)
     worker = ConversionWorker([(0, wall_ifc)], "glb", tmp_path)
     failures = []
-    worker.file_failed.connect(lambda row, message: failures.append((row, message)))
+    worker.file_failed.connect(lambda row, message, internal: failures.append((row, message)))
     worker.run()
     assert failures == [(0, "Umwandlung abgestürzt (Code 3)")]
 
@@ -446,12 +446,12 @@ def test_skipped_elements_are_shown_in_row_tooltip_and_log(window, wall_ifc, mon
 
 def test_no_skipped_elements_no_hint(window, wall_ifc, tmp_path):
     window.add_paths([wall_ifc])
-    window._on_file_done(0, tmp_path / "wall.glb", 5, 0)
+    window._on_file_done(0, ConversionResult(tmp_path / "wall.glb", 5))
     assert window.status_text(0) == "Fertig – 5 Bauteile"
     assert "ohne Geometrie" not in window.table.item(0, 2).toolTip()
     assert "⚠" not in window.log_view.toPlainText()
 
-    window._on_file_done(0, tmp_path / "wall.glb", 5, 1)
+    window._on_file_done(0, ConversionResult(tmp_path / "wall.glb", 5, 1))
     assert window.status_text(0) == "Fertig – 5 Bauteile (1 ohne Geometrie)"
     assert "1 Bauteil ohne Geometrie" in window.table.item(0, 2).toolTip()
 
@@ -635,7 +635,8 @@ def test_convert_and_remove_actions(window, wall_ifc, tmp_path, child_calls):
 
     window.set_format("glb")
     window.convert_action.trigger()
-    assert not window.convert_action.isEnabled() and not window.add_files_action.isEnabled()
+    assert not window.convert_action.isEnabled()
+    assert window.add_files_action.isEnabled()  # files added during a run are converted after it
     wait_finished(window)
     assert window.queue[0].status is Status.DONE
     assert window.convert_action.isEnabled()
@@ -645,7 +646,9 @@ def test_help_menu_has_log_output_and_about(window):
     menus = {action.text(): action.menu() for action in window.menuBar().actions()}
     assert list(menus) == ["&Datei", "&Bearbeiten", "E&xtras", "&Hilfe"]
     help_items = [action.text() for action in menus["&Hilfe"].actions() if not action.isSeparator()]
-    assert help_items == ["Ausgabeordner öffnen", "Logdatei öffnen", "Über IFC Converter"]
+    assert help_items == [
+        "Ausgabeordner öffnen", "Logdatei öffnen", "Anonymisierte Logdatei speichern…", "Über IFC Converter",
+    ]
 
 
 def test_finished_notification_in_background(window, wall_ifc, child_calls, monkeypatch):
@@ -844,7 +847,9 @@ def test_deep_elements_are_shown_in_the_row(window, wall_ifc, tmp_path):
 
 def test_elements_skipped_after_kernel_crashes_are_named(window, wall_ifc, tmp_path):
     window.add_paths([wall_ifc])
-    window._on_file_done(0, tmp_path / "wall.3dm", 117137, 3, ["IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag“"])
+    window._on_file_done(0, ConversionResult(
+        tmp_path / "wall.3dm", 117137, 3, crashed=["IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag“"]
+    ))
     log = window.log_view.toPlainText()
     assert "(117.137 Bauteile)" in log
     assert ("⚠ wall.ifc: 1 Bauteil übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb: "
@@ -892,3 +897,191 @@ def test_durations_in_german():
     assert duration_text(3122.3) == "52 min 2 s"
     assert duration_text(3725) == "1 h 2 min"
     assert number_text(117137) == "117.137"
+
+
+def _gated_child(monkeypatch):
+    """Replace convert_in_child() with one that runs until the returned event is set (or it is cancelled)."""
+    gate = threading.Event()
+
+    def fake(source, target, fmt, threads, progress, cancelled, **options):
+        progress(0)
+        while not gate.wait(0.01):
+            if cancelled():
+                raise process.Cancelled
+        target.write_text("fake")
+        progress(100)
+        return ConversionResult(output=target, elements=1)
+
+    monkeypatch.setattr(gui, "convert_in_child", fake)
+    return gate
+
+
+@pytest.mark.parametrize("how", ["drop", "second start"])
+def test_files_added_during_a_run_are_converted_after_it(window, wall_ifc, tmp_path, monkeypatch, how):
+    gate = _gated_child(monkeypatch)
+    second = tmp_path / "zweite.ifc"
+    second.write_text("x")
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    assert window.is_running
+    if how == "drop":
+        window.add_paths([second])
+    else:
+        window.receive_paths([str(second)])
+
+    assert window.queue[1].status is Status.WAITING and window.queue[1].queued
+    assert window.status_text(1) == "Vorgemerkt – startet danach"
+    assert "+ 1 Datei(en) vorgemerkt: Sie werden gleich nach der laufenden Konvertierung" in window.log_view.toPlainText()
+    gate.set()
+    assert wait_finished(window) is False
+    out = tmp_path / "out"
+    assert [item.status for item in window.queue.items] == [Status.DONE, Status.DONE]
+    assert (out / "wall.glb").is_file() and (out / "zweite.glb").is_file()
+    log = window.log_view.toPlainText()
+    assert "▶ Weiter mit 1 während der Konvertierung hinzugefügten Datei(en)" in log
+    assert window.status_text(1).startswith("Fertig")
+    assert window.convert_button.isEnabled()
+
+
+def test_files_added_during_a_cancelled_run_wait(window, wall_ifc, tmp_path, monkeypatch):
+    _gated_child(monkeypatch)
+    second = tmp_path / "zweite.ifc"
+    second.write_text("x")
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    window.add_paths([second])
+    window.cancel_conversion()
+    assert wait_finished(window) is True
+    assert window.queue[1].status is Status.WAITING and not window.queue[1].queued
+    assert window.status_text(1) == "Wartend"
+    assert "1 vorgemerkte Datei(en) nicht umgewandelt – „Konvertieren“ startet sie." in window.log_view.toPlainText()
+    assert not (tmp_path / "out" / "zweite.glb").exists()
+
+
+def test_skipped_elements_can_be_listed_and_copied(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window.table.selectRow(0)
+    assert not window.details_button.isEnabled()
+    window._on_file_done(0, ConversionResult(
+        tmp_path / "wall.3dm", 10, 3, crashed=["IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag“"],
+        no_geometry=["IfcWall 1hqIFTRjfV6AWq_bMtnZwI „Wand“", "IfcSlab 0xScRe4drECQ4DMSqUjd6d"],
+    ))
+    assert window.details_button.isEnabled()
+    assert "„Übersprungene Bauteile…“" in window.table.item(0, 2).toolTip()
+    assert "Rechtsklick auf die Datei → „Übersprungene Bauteile…“" in window.log_view.toPlainText()
+
+    dialog = window.show_details()
+    try:
+        assert dialog.table.rowCount() == 3
+        cells = [[dialog.table.item(row, column).text() for column in range(4)] for row in range(3)]
+        assert ["Übersprungen (Geometriekern abgestürzt)", "IfcCovering", "2ZLyRk6BAL6bNsO1TmDoEc", "Belag"] in cells
+        assert ["Ohne Geometrie", "IfcSlab", "0xScRe4drECQ4DMSqUjd6d", ""] in cells
+        assert "1 weitere Bauteile ohne Geometrie" in " ".join(label.text() for label in dialog.findChildren(QLabel))
+        dialog.copy_all()
+        lines = QApplication.clipboard().text().splitlines()
+        assert lines[0] == "Grund\tKlasse\tGlobalId\tName"
+        assert "Ohne Geometrie\tIfcWall\t1hqIFTRjfV6AWq_bMtnZwI\tWand" in lines
+        dialog.table.clearSelection()
+        dialog.table.selectRow(0)
+        dialog.copy_selection()
+        assert len(QApplication.clipboard().text().splitlines()) == 2
+    finally:
+        dialog.close()
+
+
+def test_rows_without_skipped_elements_have_no_details(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._on_file_done(0, ConversionResult(tmp_path / "wall.3dm", 10))
+    window.table.selectRow(0)
+    assert not window.details_button.isEnabled()
+    assert window.show_details() is None
+    assert "Übersprungene" not in window.log_view.toPlainText()
+
+
+@pytest.mark.parametrize("func, message, hint", [
+    (child_helpers.raise_bare_error, "Interner Fehler (KeyError)",
+     "Bitte die Logdatei (Hilfe → Logdatei öffnen) mitschicken, wenn Sie den Fehler melden."),
+    (child_helpers.raise_error, "wall.ifc ist kaputt", "Details in der Logdatei (Hilfe → Logdatei öffnen)."),
+])
+def test_failures_say_where_the_details_are(window, wall_ifc, monkeypatch, func, message, hint):
+    use_child_func(monkeypatch, func)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert window.status_text(0) == f"Fehler: {message}"
+    assert hint in window.table.item(0, 2).toolTip()
+    lines = window.log_view.toPlainText().splitlines()
+    failed = next(i for i, line in enumerate(lines) if "✗ Fehler bei wall.ifc" in line)
+    assert lines[failed].endswith(f"✗ Fehler bei wall.ifc: {message}")
+    assert lines[failed + 1].endswith(f"→ {hint}")
+
+
+def test_start_line_shows_threads_and_priority(window, wall_ifc, child_calls):
+    window.preferences = Preferences(threads=3, low_priority=True)
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    log = window.log_view.toPlainText()
+    assert (f"• Rechenleistung: bis zu 3 Threads (von {process.cpu_count()} logischen Kernen), niedrige Priorität – "
+            "andere Programme haben Vorrang") in log
+    assert "Hilfsprozesse" not in log  # only the Rhino export starts them
+
+
+def test_settings_dialog_shows_what_a_conversion_uses(app):
+    dialog = SettingsDialog(Preferences())
+    assert dialog.threads_usage.text().startswith(f"Eine Umwandlung nutzt damit bis zu {process.auto_threads()} ")
+    dialog.threads_spin.setValue(1)
+    dialog.priority_check.setChecked(False)
+    assert dialog.threads_usage.text().startswith("Eine Umwandlung nutzt damit bis zu 1 Thread (von ")
+    assert dialog.threads_usage.text().endswith("normale Priorität.")
+
+
+def test_anonymized_log_is_saved_where_the_user_wants(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from ifc_converter import app as app_info
+    from ifc_converter import dialogs
+
+    child_helpers.isolate_user_dirs(monkeypatch, tmp_path)
+    monkeypatch.setenv("USERNAME", "mmuster")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "ifc-converter.log").write_text(r"Umwandlung: C:\Users\mmuster\Desktop\Haus A.ifc" + "\n", encoding="utf-8")
+    asked, opened = [], []
+    monkeypatch.setattr("ifc_converter.interactive.desktop_dir", lambda: tmp_path / "Desktop")
+    target = tmp_path / "anonym.txt"
+
+    def save_name(parent, title, start, filters):
+        asked.append(start)
+        return str(target), filters
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", save_name)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(dialogs, "open_path", opened.append)
+    window.save_log_action.trigger()
+
+    assert asked == [str(tmp_path / "Desktop" / "ifc-converter-log-anonym.txt")]
+    assert target.read_text(encoding="utf-8") == "Umwandlung: C:\\Users\\<Benutzer>\\Desktop\\Datei-1.ifc\n"
+    assert opened == [tmp_path]
+    assert app_info.log_files() == [logs / "ifc-converter.log"]
+
+
+def test_settings_dialog_switches_log_anonymisation(app, settings):
+    dialog = SettingsDialog(Preferences(anonymize_log=True))
+    assert dialog.anonymize_check.isChecked()
+    assert "<Ordner>" in dialog.anonymize_check.toolTip()
+    dialog.anonymize_check.setChecked(False)
+    assert dialog.preferences().anonymize_log is False
+    Preferences(anonymize_log=True).save(settings)
+    assert Preferences.load(settings).anonymize_log is True
+
+
+def test_error_dialog_offers_the_anonymized_log(app):
+    from PySide6.QtWidgets import QPushButton
+
+    dialog = ErrorDialog("x", "details")
+    assert "Anonymisiert speichern…" in [button.text() for button in dialog.findChildren(QPushButton)]

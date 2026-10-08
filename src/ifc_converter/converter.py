@@ -183,18 +183,18 @@ def convert(
     """
     fmt = fmt.lower()
     if fmt not in FORMATS:
-        raise ValueError(f"Unsupported format '{fmt}', choose one of: {', '.join(FORMATS)}")
+        raise ValueError(f"Nicht unterstütztes Format „{fmt}“, möglich sind: {', '.join(FORMATS)}")
     geometry = geometry.lower()
     if geometry not in GEOMETRIES:
-        raise ValueError(f"Unsupported geometry '{geometry}', choose one of: {', '.join(GEOMETRIES)}")
+        raise ValueError(f"Nicht unterstützte Geometrieart „{geometry}“, möglich sind: {', '.join(GEOMETRIES)}")
 
     kernel = (kernel or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL).lower()
     if kernel not in KERNELS:
-        raise ValueError(f"Unsupported kernel '{kernel}', choose one of: {', '.join(KERNELS)}")
+        raise ValueError(f"Unbekannter Geometriekern „{kernel}“, möglich sind: {', '.join(KERNELS)}")
 
     input_path = Path(input_path)
     if not input_path.is_file():
-        raise FileNotFoundError(f"Input file not found: {input_path}")
+        raise FileNotFoundError(f"IFC-Datei nicht gefunden: {input_path}")
     output_path = Path(output_path) if output_path else input_path.with_suffix(f".{fmt}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -21,8 +21,8 @@ Der Converter wird wie ein normales Windows-Programm installiert, Python ist daf
   - Keine Dienste, kein Autostart, keine Hintergrund-Updates, keine Internetverbindung im Betrieb.
 - **Portable Version:** `IFC-Converter-<Version>-portable.zip` entpacken (z. B. in „Dokumente“) und `IFC Converter.exe` im entpackten Ordner starten. Nichts wird installiert.
 - **Windows SmartScreen:** Das Programm ist nicht digital signiert. Beim ersten Start des Installers (bzw. der portablen exe) erscheint deshalb „Der Computer wurde durch Windows geschützt“. Dann auf **„Weitere Informationen“ → „Trotzdem ausführen“** klicken. Blockiert der Virenscanner der Firma das Programm, die IT um eine Ausnahme für den Programmordner bitten.
-- **Update:** Den Installer der neuen Version ausführen. Er ersetzt die alte Version (ein laufender Converter wird vorher geschlossen); Einstellungen bleiben erhalten.
-- **Deinstallation:** Windows-Einstellungen → Apps → „IFC Converter“ → Deinstallieren. Einstellungen und Logdateien (`%APPDATA%\IFC Converter`, `%LOCALAPPDATA%\IFC Converter`) bleiben liegen und können bei Bedarf von Hand gelöscht werden. Die portable Version wird einfach gelöscht.
+- **Update:** Den Installer der neuen Version ausführen. Er ersetzt die alte Version; Einstellungen bleiben erhalten. Läuft der Converter noch (Fenster oder `ifc-convert`, z. B. mit einer langen Umwandlung), bittet der Installer, ihn erst zu schließen, und macht sonst nichts – eine laufende Umwandlung wird nie abgebrochen.
+- **Deinstallation:** Windows-Einstellungen → Apps → „IFC Converter“ → Deinstallieren (ebenfalls erst, wenn der Converter beendet ist). Einstellungen und Logdateien (`%APPDATA%\IFC Converter`, `%LOCALAPPDATA%\IFC Converter`) bleiben liegen und können bei Bedarf von Hand gelöscht werden; entfernt werden der „Öffnen mit“-Eintrag und die alten Einstellungen in der Registry (`HKCU\Software\IFC File Converter\IFC File Converter`, aus der Zeit vor der Umbenennung). Die portable Version wird einfach gelöscht.
 - **Kommandozeile:** Neben `IFC Converter.exe` liegt `ifc-convert.exe` mit denselben Optionen wie unten beschrieben, z. B. `"%LOCALAPPDATA%\Programs\IFC Converter\ifc-convert.exe" haus.ifc -f 3dm`. Ohne Argumente (Doppelklick) startet der Terminal-Modus.
 
 ## Schnellstart (Programmfenster)
@@ -32,6 +32,10 @@ Der Converter wird wie ein normales Windows-Programm installiert, Python ist daf
 3. IFC-Dateien oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“).
 4. Format wählen (Standard: 3DM), Ausgabeordner prüfen und auf „Konvertieren“ klicken.
 5. Die fertigen Dateien landen standardmäßig auf dem Desktop. Gibt es den Namen schon, wird `(2)`, `(3)` … angehängt.
+
+- **Während einer Umwandlung** hinzugefügte Dateien (ins Fenster gezogen, über „Dateien hinzufügen…“ oder per „Öffnen mit“/Ziehen aufs Programmsymbol) werden vorgemerkt und gleich danach mit denselben Einstellungen umgewandelt. Nach „Abbrechen“ bleiben sie in der Liste stehen.
+- **Rechenleistung:** Zu Beginn steht im Protokoll, wie viele Threads die Umwandlung höchstens nutzt und dass sie mit niedriger Priorität läuft. Unter Extras → Einstellungen → Leistung lässt sich die Zahl der Threads verringern, damit andere rechenintensive Programme mehr Luft haben; „Automatisch“ lässt einige Kerne frei und nimmt bei wenig freiem RAM weniger.
+- **Fehler:** Schlägt eine Datei fehl, steht im Protokoll darunter, wo die Details sind (Hilfe → Logdatei öffnen). „Interner Fehler (…)“ bedeutet einen Fehler im Programm selbst: dann bitte die Logdatei mitschicken (siehe „Logdatei und Datenschutz“).
 
 ### Rhino-Export (.3dm)
 
@@ -75,7 +79,7 @@ python tools/accuracy.py modell.ifc --out-dir out --report genauigkeit.md
   - **Schnell** (`hybrid`): alles mit dem Hybrid-Kern (CGAL + OpenCASCADE), auf echten Modellen 3–13× schneller. Er lässt aber bei einzelnen Bauteilen Flächen weg oder erzeugt sie doppelt, je nach Zahl der Threads (z. B. fehlte einer ArchiCAD-Wand ein Viertel ihrer Fläche).
   - **Nur OpenCASCADE** (`opencascade`): alles mit OpenCASCADE, auch Geländemodelle.
   - Stürzt der Hybrid-Kern bei der Bauteilberechnung ab („Genau“ und „Schnell“) und lässt sich das betroffene Bauteil nicht eingrenzen, wird die ganze Datei automatisch nur mit OpenCASCADE wiederholt. Ein Absturz beim Lesen der IFC-Datei oder beim Schreiben der Ausgabe wird nicht so wiederholt, er käme wieder.
-- **Absturz oder Hänger bei einzelnen Bauteilen:** Stürzt die Umwandlung ab oder rechnet sie nicht mehr (alle Prozesse bei 0 % CPU), wird sie beendet und automatisch neu gestartet. Hängt sie nach einem gemeldeten Stapelüberlauf, wird das nach einer Minute erkannt, sonst nach 10 Minuten ohne Rechenaktivität. Verdächtig sind nur die Bauteile, die dabei noch nicht fertig waren; sie werden im neuen Versuch zuerst und einzeln berechnet, und ein Bauteil, an dem es erneut hängt oder abstürzt, wird übersprungen. Nach der Umwandlung nennt das Fenster die übersprungenen Bauteile mit Klasse, GlobalId und Name (z. B. „IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc“), damit sie sich im CAD-Programm finden lassen; die Logdatei listet außerdem alle Bauteile ohne Geometrie. Geometrie, die sich selbst enthält (fehlerhafte Datei), wird gar nicht erst berechnet.
+- **Absturz oder Hänger bei einzelnen Bauteilen:** Stürzt die Umwandlung ab oder rechnet sie nicht mehr (alle Prozesse bei 0 % CPU), wird sie beendet und automatisch neu gestartet. Hängt sie nach einem gemeldeten Stapelüberlauf, wird das nach einer Minute erkannt, sonst nach 10 Minuten ohne Rechenaktivität. Verdächtig sind nur die Bauteile, die dabei noch nicht fertig waren; sie werden im neuen Versuch zuerst und einzeln berechnet, und ein Bauteil, an dem es erneut hängt oder abstürzt, wird übersprungen. Nach der Umwandlung nennt das Fenster die übersprungenen Bauteile mit Klasse, GlobalId und Name (z. B. „IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc“), damit sie sich im CAD-Programm finden lassen. Die vollständige Liste – übersprungene Bauteile und Bauteile ohne Geometrie – zeigt ein Rechtsklick auf die Datei → „Übersprungene Bauteile…“ (oder der gleichnamige Knopf unter der Liste); dort lässt sie sich markieren und kopieren (Strg+A, Strg+C, „Alles kopieren“), als Tabelle zum Einfügen in Excel. Geometrie, die sich selbst enthält (fehlerhafte Datei), wird gar nicht erst berechnet.
   - **Gemerkt pro Datei:** Übersprungene Bauteile merkt sich der Converter in `%LOCALAPPDATA%\IFC Converter\quarantine.json` (Linux: `~/.local/state/ifc-converter/`), zur Datei mit Name, Größe und Änderungszeit, Geometriekern und Converter-Version. Wird dieselbe, unveränderte Datei wieder umgewandelt, werden sie gleich übersprungen und wieder gemeldet, ohne neue Versuche. Ändert sich die Datei (oder der Kern, oder kommt eine neue Version), wird alles neu berechnet. Gemerkt werden höchstens 100 Bauteile für die 50 zuletzt umgewandelten Dateien; ist die Datei beschädigt, fängt der Converter einfach neu an.
   - **Achsen:** Stürzt die Umwandlung bei den Achsen der Rhino-Ausgabe ab (`IfcAlignment`, `IfcGrid`, die nach den Bauteilen berechnet werden) oder hängt sie dort, wird sie einmal ohne diese Achsen wiederholt; sie werden als übersprungen gemeldet.
 - **Eigener Prozess:** Jede Umwandlung läuft in einem eigenen Prozess (im Fenster wie im Terminal). Reicht der Arbeitsspeicher nicht und das System beendet die Umwandlung (oder sie stürzt ab), wird nur diese Datei als Fehler markiert, und die nächste wird umgewandelt. „Abbrechen“ im Fenster wirkt sofort, auch während die IFC-Datei noch gelesen wird. Im Terminal zeigt eine Zeile den Fortschritt in Prozent.
@@ -115,9 +119,15 @@ Die Zeiten wurden mit dem Kern „Schnell“ gemessen. Mit dem Standard „Genau
 
 ### Terminal-Modus (Drag & Drop ins Konsolenfenster)
 
-Die alte Konsolen-Variante gibt es weiterhin: `IFC_CONVERTER_CLI=1 ./start.sh` (Linux/macOS) bzw. `python -m ifc_converter` in der Umgebung. Dort Dateien ins Fenster ziehen, Enter drücken, `3dm`, `glb` oder `obj` eingeben, um das Format zu wechseln, und `q`, um zu beenden.
+Die alte Konsolen-Variante gibt es weiterhin: `IFC_CONVERTER_CLI=1 ./start.sh` (Linux/macOS) bzw. `python -m ifc_converter` in der Umgebung. Dort Dateien ins Fenster ziehen, Enter drücken, `3dm`, `glb` oder `obj` eingeben, um das Format zu wechseln, und `q`, um zu beenden. Strg+C bricht die laufende Umwandlung ab (ohne halbe Ausgabe und ohne Reste im Temp-Ordner).
 
 Voraussetzung: Python 3.10 oder neuer ([python.org](https://www.python.org/downloads/), unter Windows den Haken bei „Add python.exe to PATH“ setzen).
+
+## Logdatei und Datenschutz
+
+- Der Converter schreibt ein Protokoll nach `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (höchstens ca. 4 MB, ältere Teile werden überschrieben); Hilfe → Logdatei öffnen. Es bleibt auf diesem PC: Der Converter versendet nichts, er braucht keine Internetverbindung.
+- Das Protokoll enthält Dateipfade (mit Benutzer- und Servernamen), Datei- und Bauteilnamen. **Zum Verschicken** Hilfe → „Anonymisierte Logdatei speichern…“ wählen (auch im Fehlerdialog und unter Einstellungen): Das speichert eine Kopie des ganzen Protokolls, standardmäßig als `ifc-converter-log-anonym.txt` auf dem Desktop. Darin sind Benutzer- und Rechnername durch `<Benutzer>`/`<Rechner>` ersetzt, Server und Freigaben von Netzlaufwerken durch `<Server>`/`<Freigabe>`, Ordner durch `<Ordner>` und Dateinamen durch `Datei-1.ifc`, `Datei-1.3dm` … (gleicher Name, gleiche Nummer); Bauteilnamen fallen weg. Erhalten bleiben IFC-Klasse und GlobalId, Zeiten, Größen, Versionen und Fehlermeldungen. Vor dem Versenden kurz durchsehen.
+- Mit Extras → Einstellungen → „Logdatei anonymisieren“ wird das Protokoll schon beim Schreiben anonymisiert (ab dann; ältere Einträge bleiben, wie sie sind). Die Nummern der Dateien beginnen dabei mit jedem Programmstart neu.
 
 ## Manuelle Einrichtung
 
@@ -150,8 +160,11 @@ Optionen:
 - `-g, --geometry {brep,mesh}`: nur für 3dm, Polyflächen oder Netze (Standard: `brep`)
 - `-o, --output PFAD`: Ausgabedatei (nur bei einer Eingabedatei)
 - `-d, --out-dir ORDNER`: Ausgabeordner für mehrere Dateien
-- `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: zwei Drittel der halben Kernzahl, höchstens 16; siehe „Rücksicht auf andere Programme“)
+- `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: automatisch wie im Programmfenster – zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte der Kerne, siehe „Rücksicht auf andere Programme“; `ifc-convert --help` zeigt die Zahl für diesen PC)
+- `--normal-priority`: mit normaler statt niedriger Priorität umwandeln
 - `--kernel {accurate,hybrid,opencascade}`: Geometriekern (Standard: `accurate`, siehe „Geometriekern“)
+
+Strg+C (bzw. Strg+Untbr) bricht ab: Exit-Code 130, halbe Ausgabedateien und Zwischendateien werden entfernt.
 
 Auch aus Python nutzbar:
 
@@ -176,8 +189,8 @@ Die Windows-App ist ein mit [PyInstaller](https://pyinstaller.org) gebauter Prog
 
 1. Tests unter Linux und Windows.
 2. Build der App, der portablen ZIP und des Installers unter Windows.
-3. Test der gebauten exe: eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben; außerdem muss das Programmfenster starten.
-4. Test des Installers: stille Installation, Umwandlung mit dem installierten Programm, Deinstallation.
+3. Test der gebauten exe (`packaging/smoke_test.py`): eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben. Dazu: Ausgabe auf ein Netzlaufwerk (UNC), tief verschachtelte Geometrie, eine mit Strg+Untbr abgebrochene und eine hart beendete Umwandlung; im Temp-Ordner darf nichts liegen bleiben (Reste einer hart beendeten räumt ein späterer Start weg). Außerdem muss das Programmfenster starten.
+4. Test des Installers (`packaging/installer_test.py`): Update von der letzten veröffentlichten Version (Einstellungen bleiben, das Programm läuft), stille Neuinstallation mit Umwandlung durch das installierte Programm, Installer und Deinstallation verweigern sich bei laufendem Programm, Installation mit „Öffnen mit“-Eintrag; jede Deinstallation muss Programm, Verknüpfung und Registry-Einträge entfernen.
 5. Installer und ZIP liegen 7 Tage als Artefakt „IFC-Converter-windows“ am Workflow-Lauf.
 
 **Neue Version veröffentlichen:** `version` in `pyproject.toml` erhöhen, committen und pushen, dann ein Tag setzen:
