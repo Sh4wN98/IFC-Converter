@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import shutil
@@ -47,6 +48,7 @@ DEFAULT_KERNEL = "accurate"
 MIN_HYBRID_TRIANGLES = 1000
 # Representations that never become a body (curves, boxes, points), for _triangle_mesh_only.
 NON_BODY_TYPES = ("Curve", "Curve2D", "Curve3D", "BoundingBox", "Point", "PointCloud")
+log = logging.getLogger(__name__)
 _kernel: ContextVar[str | None] = ContextVar("kernel", default=None)
 # Labels of the products of the running conversion that produced no geometry.
 _missing: ContextVar[list | None] = ContextVar("missing", default=None)
@@ -120,6 +122,11 @@ LOOKAHEAD_CHUNKS = 16
 LOOKAHEAD_MEMORY = 4 * 1024 ** 3
 # Seconds between checks for idle threads while waiting for a slow element.
 OVERLAP_POLL = 0.5
+# IfcOpenShell cannot stop an iterator: once started, its threads compute all its products and read
+# the model meanwhile. When iter_shapes ends early (an error in the consumer, a closed generator),
+# it waits up to CLOSE_WAIT seconds for them; slower runs keep the model alive until they are done
+# (freeing it under them crashed the process).
+CLOSE_WAIT = 60
 
 # Share of the logical CPUs a conversion keeps busy by default, kernel threads and the Rhino export's
 # worker processes together: it is a work PC, where other demanding programs run at the same time.
@@ -602,7 +609,9 @@ class _Run:
     of its own takes them from the kernel as they are done and queues them for iter_shapes.
     """
 
-    def __init__(self, index: int, products: list, library: str, width: int):
+    def __init__(self, index: int, products: list, library: str, width: int, model, settings):
+        # The kernel's threads read the model (and the iterator its settings) until they are done.
+        self.model, self.settings = model, settings
         self.index = index  # of the chunk
         self.products = products
         self.ids = [product.id() for product in products]
@@ -618,19 +627,30 @@ class _Run:
         return 0 if self.finished else max(0, min(self.width, len(self.ids) - len(self.computed)))
 
     def drain(self, shapes, computed: Callable[[_Run, object], None]) -> None:
-        """Runs in the run's thread: queue each shape once the kernel has computed it."""
+        """Runs in the run's thread: queue each shape once the kernel has computed it.
+
+        Once the run is stopped, the remaining shapes are taken and dropped: only an iterator that
+        has delivered everything has no threads left that read the model.
+        """
         # The iterator stays until the run is finished with, like the shapes it produced.
         self._source = shapes
+        failed = None
         try:
             for shape in shapes:
-                if self.stopped:
-                    break
-                computed(self, shape)
+                if self.stopped or failed:
+                    continue
+                try:
+                    computed(self, shape)
+                except BaseException as exc:  # e.g. the pipe to the parent is gone
+                    failed = exc
+                    continue
                 self._queue.put(shape)
-        except BaseException as exc:  # handed to iter_shapes
-            self._queue.put(_Failed(exc))
+        except BaseException as exc:
+            failed = failed or exc
         finally:
             self.finished = True
+            if failed and not self.stopped:  # handed to iter_shapes
+                self._queue.put(_Failed(failed))
             self._queue.put(_END)
 
     def shapes(self, waiting: Callable[[], None]) -> Iterator:
@@ -678,6 +698,7 @@ class _Pipeline:
         self._planned: deque[tuple[int, list, str]] = deque()  # parts of chunks, not started yet
         self._started: deque[_Run] = deque()  # planned runs started, in the order they are needed
         self._alive: list[_Run] = []  # every run started and not finished with
+        self._threads: list[threading.Thread] = []  # of every run started
 
     def next_run(self, index: int) -> _Run | None:
         """The next planned run of chunk ``index``, started now if it was not yet; None after its last."""
@@ -692,7 +713,7 @@ class _Pipeline:
 
     def start(self, index: int, products: list, library: str, world: bool = False) -> _Run:
         """Start a run for ``products`` of chunk ``index`` right away (in world coordinates if ``world``)."""
-        run = _Run(index, products, library, _kernel_threads(self.threads))
+        run = _Run(index, products, library, _kernel_threads(self.threads), self.model, self.settings)
         self._alive.append(run)
         if self._position:
             with self._lock:
@@ -710,7 +731,9 @@ class _Pipeline:
         finally:
             if world:
                 self.settings.set("use-world-coords", False)
-        threading.Thread(target=run.drain, args=(shapes, self._computed), name="geometry-run", daemon=True).start()
+        thread = threading.Thread(target=run.drain, args=(shapes, self._computed), name="geometry-run", daemon=True)
+        thread.start()
+        self._threads.append(thread)
         return run
 
     def shapes(self, run: _Run, index: int) -> Iterator:
@@ -732,9 +755,18 @@ class _Pipeline:
             self._start_planned()
 
     def close(self) -> None:
-        """Let the runs' threads stop (when iter_shapes ends early)."""
+        """Stop the runs not finished with and wait for the threads of all runs (see CLOSE_WAIT)."""
         for run in self._alive:
             run.stopped = True
+        deadline = time.monotonic() + CLOSE_WAIT
+        for thread in self._threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        left = sum(thread.is_alive() for thread in self._threads)
+        if left:
+            log.warning("%d Geometrie-Berechnungen laufen nach %d s noch und werden im Hintergrund beendet",
+                        left, CLOSE_WAIT)
+        self._alive.clear()
+        self._threads.clear()
 
     def _look_ahead(self, current: int, index: int) -> bool:
         """Whether chunk ``index`` may start: only while an element keeps chunk ``current`` waiting."""
@@ -990,14 +1022,22 @@ def _iterate(model, settings, threads: int, products: list, library: str) -> Ite
                 settings, model, _kernel_threads(threads), include=valid, geometry_library=library,
             )
             initialized = iterator.initialize()
-    return _Shapes(iterator if initialized else None)
+    return _Shapes(iterator if initialized else None, model)
 
 
 class _Shapes:
-    """The shapes of an initialized geometry iterator (None: no shapes), which it keeps alive."""
+    """The shapes of an initialized geometry iterator (None: no shapes), which it keeps alive.
 
-    def __init__(self, iterator):
+    It also keeps the model, which the iterator only points to, and is released after the iterator.
+    """
+
+    def __init__(self, iterator, model):
         self.iterator = iterator
+        self.model = model
+
+    def __del__(self):
+        self.iterator = None  # before the model
+        self.model = None
 
     def __iter__(self) -> Iterator:
         if self.iterator is None:
