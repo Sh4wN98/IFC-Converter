@@ -172,10 +172,12 @@ def convert(
     position: PositionCallback | None = None,
     isolate_ids: list[int] | None = None,
     skip_ids: list[int] | None = None,
+    blocks: bool = False,
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl) or Rhino 3DM and return what was written.
 
-    ``geometry`` ("brep" or "mesh") only affects the Rhino export. ``kernel`` picks the geometry
+    ``geometry`` ("brep" or "mesh") and ``blocks`` (type geometry placed several times as Rhino
+    blocks) only affect the Rhino export. ``kernel`` picks the geometry
     kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL. ``status`` gets the
     phases (see StatusCallback). Output for a network folder is written in ``staging_dir`` (or a
     temp folder) first and then copied. ``position``, ``isolate_ids`` and ``skip_ids`` let a caller
@@ -226,7 +228,7 @@ def convert(
             if fmt == "3dm":
                 from ifc_converter.rhino import write_3dm
 
-                elements = write_3dm(model, target, threads, progress, geometry, report)
+                elements = write_3dm(model, target, threads, progress, geometry, report, blocks, input_path)
             else:
                 elements = _serialize(model, target, fmt, threads, progress, report)
         finally:
