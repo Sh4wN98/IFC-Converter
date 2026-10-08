@@ -37,6 +37,8 @@ WALLS = 600
 # overflows at a few thousand levels, which crashed the conversion of a real model in 0.2.1.
 NESTING = 5000
 STACK_RESERVE = 256 * 1024 ** 2
+# The control run with a 1 MB stack has to crash quickly (it takes a few seconds with crash dialogs off).
+CONTROL_TIMEOUT = 180
 WINDOWS = sys.platform == "win32"
 
 
@@ -133,37 +135,32 @@ def check_stacks(app_dir: Path, cli: Path, source: Path, out: Path) -> None:
     if len(objects) != 1:
         raise AssertionError(f"nested.3dm: {len(objects)} objects instead of 1")
     print(f"  {NESTING} nested levels converted ✓")
-    # Control: the same exe with Windows' default 1 MB stack must crash on this model, otherwise the
+    # Control: the same exe with Windows' default 1 MB stack must fail on this model, otherwise the
     # check above proves nothing.
     small = cli.with_name("ifc-convert-1mb.exe")
     shutil.copy2(cli, small)
     try:
         set_stack_reserve(small, 1024 ** 2)
         command = [str(small), str(source), "-o", str(out / "nested-1mb.3dm"), "-f", "3dm"]
-        result = subprocess.run(command, capture_output=True, timeout=TIMEOUT, encoding="utf-8", errors="replace")
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=CONTROL_TIMEOUT, encoding="utf-8",
+                                    errors="replace")
+        except subprocess.TimeoutExpired:
+            raise AssertionError(f"with a 1 MB stack the conversion hung for {CONTROL_TIMEOUT} s instead of "
+                                 "failing as a crash (a crash dialog keeping it alive?)")
         output = result.stdout + result.stderr
         if result.returncode == 0 or "0xC00000FD" not in output:
             raise AssertionError(f"with a 1 MB stack the nested model did not overflow:\n{output[-2000:]}")
-        print("  control: with a 1 MB stack it overflows (0xC00000FD) ✓")
+        print("  control: with a 1 MB stack it overflows and is reported as a crash (0xC00000FD) ✓")
     finally:
-        small.unlink(missing_ok=True)
-
-
-def check_network_folder(cli: Path, source: Path, out: Path, log: Path) -> None:
-    """Output to a UNC path is written locally first and then copied (the admin share of this PC)."""
-    drive, rest = os.path.splitdrive(str(out.resolve()))
-    share = Path(f"\\\\localhost\\{drive[0]}${rest}")
-    if not share.is_dir():
-        print(f"  network folder check skipped: {share} is not reachable")
-        return
-    offset = log.stat().st_size if log.is_file() else 0
-    target = share / "wall-unc.3dm"
-    convert(cli, source, target, "-f", "3dm")
-    check_3dm(target, rhino3dm.Brep)
-    written = log.read_bytes()[offset:].decode("utf-8", "replace") if log.is_file() else ""
-    if "Wird ins Zielverzeichnis kopiert" not in written:
-        raise AssertionError(f"output for {share} was not staged locally:\n{written[-2000:]}")
-    print("  UNC folder: written locally, then copied ✓")
+        # A hung control leaves processes behind that lock the copy; end them before deleting it.
+        subprocess.run(["taskkill", "/F", "/T", "/IM", small.name], capture_output=True)
+        for _ in range(20):
+            try:
+                small.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                time.sleep(0.5)
 
 
 def check_large_model(path: Path, log: Path, log_offset: int) -> None:

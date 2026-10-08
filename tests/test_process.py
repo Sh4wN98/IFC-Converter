@@ -387,3 +387,16 @@ def test_the_staging_folder_is_removed_after_a_cancel(wall_ifc, tmp_path):
                          cancelled=lambda: side.exists() and side.read_text() != "")
     staging = Path(side.read_text())
     assert staging.name.startswith("ifc-converter-") and not staging.exists()
+
+
+def test_crash_dialogs_are_turned_off_on_windows(monkeypatch):
+    # A crash must end the process, not keep it alive behind Windows Error Reporting's dialog.
+    import ctypes
+    import types
+
+    modes = []
+    kernel32 = types.SimpleNamespace(SetErrorMode=modes.append)
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False)
+    monkeypatch.setattr(process.sys, "platform", "win32")
+    process.no_crash_dialogs()
+    assert modes and modes[0] & 0x0002  # SEM_NOGPFAULTERRORBOX
