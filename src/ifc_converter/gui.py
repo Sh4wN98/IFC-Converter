@@ -246,7 +246,7 @@ class ConversionWorker(QObject):
     file_started = Signal(int, object)  # row, target path
     file_warning = Signal(int, str)  # row, RAM warning
     file_progress = Signal(int, int)  # row, percent
-    file_retrying = Signal(int)  # row; converting again with the OpenCASCADE kernel after a crash
+    file_retrying = Signal(int, str)  # row, message; converting again after a crash or hang
     file_status = Signal(int, str, str)  # row, phase, description (see process.convert_in_child)
     file_done = Signal(int, object, int, int)  # row, output path, elements, skipped elements
     file_failed = Signal(int, str)  # row, message
@@ -316,10 +316,10 @@ class ConversionWorker(QObject):
                 options["kernel"] = self.kernel
             if self.use_subprocess:
 
-                def retrying() -> None:
+                def retrying(message: str) -> None:
                     nonlocal last
                     last = READING
-                    self.file_retrying.emit(row)
+                    self.file_retrying.emit(row, message)
 
                 result = convert_in_child(
                     source, target, self.fmt, self.threads, progress, self._cancel.is_set,
@@ -991,7 +991,7 @@ class MainWindow(QMainWindow):
         self._set_activity(f"IFC wird gelesen ({format_size(item.size)}) – kann einige Minuten dauern …")
         self.log(f"… {item.path.name} ({format_size(item.size)}) → {target.name}")
 
-    def _on_file_retrying(self, row: int) -> None:
+    def _on_file_retrying(self, row: int, message: str = RETRY_MESSAGE) -> None:
         item = self.queue[row]
         if item.status is not Status.RUNNING:
             return
@@ -1000,15 +1000,16 @@ class MainWindow(QMainWindow):
         self._refresh_row(row)
         self._update_overall(0)
         self.overall_progress.setRange(0, 0)
-        self._set_activity(f"{item.path.name}: neuer Versuch mit dem OpenCASCADE-Kern – IFC wird gelesen …")
-        self.log(f"⚠ {RETRY_MESSAGE}")
+        self._set_activity(f"{item.path.name}: neuer Versuch – IFC wird gelesen …")
+        self.log(f"⚠ {item.path.name}: {message}")
 
     def _on_file_status(self, row: int, phase: str, text: str) -> None:
         item = self.queue[row]
         if item.status is not Status.RUNNING:
             return
-        # The row only shows the long final phases, in which the percentage stands still.
-        detail = text if phase in ("write", "copy") else ""
+        # The row only shows the long phases in which the percentage stands still: deeply nested
+        # elements (computed one by one), writing and copying the output.
+        detail = text if phase in ("write", "copy", "deep") else ""
         if detail != item.detail:
             if detail and phase != item.phase:
                 self.log(f"… {item.path.name}: {text}")

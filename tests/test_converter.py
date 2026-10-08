@@ -1,5 +1,6 @@
 import math
 import os
+import sys
 from pathlib import Path
 
 import ifcopenshell
@@ -489,3 +490,37 @@ def test_size_text():
 
     assert size_text(345 * 1024 ** 2) == "345 MB"
     assert size_text(int(1.25 * 1024 ** 3)) == "1,2 GB"
+
+
+def test_deeply_nested_products_are_found(nested_ifc, wall_ifc):
+    from ifc_converter.converter import DEEP_NESTING, deep_products
+
+    model = ifcopenshell.open(str(nested_ifc))
+    [(product, depth)] = deep_products(model.by_type("IfcWall"))
+    assert depth == 5001 > DEEP_NESTING  # 5000 mapped items around the extrusion
+    assert deep_products(ifcopenshell.open(str(wall_ifc)).by_type("IfcWall")) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stack limit is set with POSIX rlimits")
+@pytest.mark.parametrize("fmt, geometry", [("3dm", "brep"), ("3dm", "mesh"), ("glb", "brep")])
+def test_deep_nesting_converts_with_a_1_mb_stack(nested_ifc, tmp_path, fmt, geometry):
+    # Every thread of the process gets 1 MB of stack, as on Windows: only the thread the converter
+    # starts for deeply nested products has more. Before, this crashed (or hung, on Windows).
+    import resource
+    import subprocess
+
+    def small_stack():
+        resource.setrlimit(resource.RLIMIT_STACK, (1024 ** 2, resource.getrlimit(resource.RLIMIT_STACK)[1]))
+
+    output = tmp_path / f"nested.{fmt}"
+    code = (
+        "import sys; from ifc_converter import convert; "
+        "r = convert(sys.argv[1], sys.argv[2], sys.argv[3], threads=4, geometry=sys.argv[4]); "
+        "sys.exit(0 if (r.elements, r.skipped) == (1, 0) else 3)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(nested_ifc), str(output), fmt, geometry],
+        preexec_fn=small_stack, capture_output=True, timeout=300,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")[-2000:]
+    assert output.stat().st_size > 0

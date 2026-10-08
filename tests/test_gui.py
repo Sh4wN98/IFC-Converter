@@ -468,8 +468,8 @@ def test_kernel_crash_is_retried_and_logged(window, wall_ifc, tmp_path, monkeypa
     assert window.queue[0].status is Status.DONE, window.queue[0].error
     assert (tmp_path / "out" / "wall.glb").stat().st_size > 0
     log = window.log_view.toPlainText()
-    assert f"⚠ {process.RETRY_MESSAGE}" in log
-    assert log.index("⚠ Absturz") < log.index("✓ wall.ifc")
+    assert f"⚠ wall.ifc: {process.RETRY_MESSAGE}" in log
+    assert log.index("⚠ wall.ifc: Absturz") < log.index("✓ wall.ifc")
 
 
 def test_retry_goes_back_to_reading_state(window, wall_ifc, tmp_path):
@@ -481,7 +481,7 @@ def test_retry_goes_back_to_reading_state(window, wall_ifc, tmp_path):
         window._on_file_retrying(0)
         assert window.status_text(0) == "IFC wird gelesen …"
         assert window.overall_progress.maximum() == 0  # busy indicator again
-        assert "OpenCASCADE" in window.status_label.text()
+        assert "neuer Versuch" in window.status_label.text()
         window._on_file_progress(0, 0)
         assert window.status_text(0) == "Läuft … 0 %"
     finally:
@@ -828,3 +828,15 @@ def test_long_final_phases_are_shown_in_the_row_and_status_line(window, wall_ifc
     assert "1,2 GB geschrieben" in window.status_label.text()
     assert "Rhino-Datei wird geschrieben" in window.log_view.toPlainText()
     window._worker = None
+
+
+def test_deep_elements_are_shown_in_the_row(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._worker = ConversionWorker([], "3dm", tmp_path)
+    try:
+        window._on_file_started(0, tmp_path / "out" / "wall.3dm")
+        window._on_file_progress(0, 97)
+        window._on_file_status(0, "deep", "Bauteil 3 von 40 wird einzeln berechnet: IfcWall 2O2Fr … …")
+        assert "Bauteil 3 von 40" in window.status_text(0)
+    finally:
+        window._worker = None

@@ -9,7 +9,7 @@ from pathlib import Path
 from ifc_converter import __version__
 from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
 from ifc_converter.interactive import check_memory, convert_in_terminal, skipped_warning
-from ifc_converter.process import RETRY_MESSAGE, SPARE_CORES
+from ifc_converter.process import SPARE_CORES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             # In a child process, so running out of memory or a crash only fails this file.
             result = convert_in_terminal(
                 source, target, args.format, args.threads, args.geometry, label=f"{source.name}: ",
-                on_retry=lambda: print(f"⚠ {source.name}: {RETRY_MESSAGE}", file=sys.stderr),
+                on_retry=lambda message: print(f"⚠ {source.name}: {message}", file=sys.stderr),
                 low_priority=not args.normal_priority,
             )
         except Exception as exc:

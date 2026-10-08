@@ -194,7 +194,7 @@ def test_hybrid_kernel_crash_is_retried_with_opencascade(wall_ifc, tmp_path, mon
     target = tmp_path / "wall.glb"
     events = []
     result = convert_in_child(
-        wall_ifc, target, progress=events.append, on_retry=lambda: events.append("retry"),
+        wall_ifc, target, progress=events.append, on_retry=lambda message: events.append("retry"),
         func=child_helpers.segfault_unless_opencascade,
     )
     assert result.elements == 1 and target.stat().st_size > 0
@@ -216,9 +216,9 @@ def test_strategies_using_the_hybrid_kernel_are_retried(wall_ifc, tmp_path, monk
         monkeypatch.setenv("IFC_CONVERTER_KERNEL", kernel)
     retries = []
     result = convert_in_child(
-        wall_ifc, target, on_retry=lambda: retries.append(1), func=child_helpers.segfault_unless_opencascade, **options,
+        wall_ifc, target, on_retry=retries.append, func=child_helpers.segfault_unless_opencascade, **options,
     )
-    assert result.elements == 1 and retries == [1]
+    assert result.elements == 1 and retries == [process.RETRY_MESSAGE]
     assert _attempts(target)[-1] == "opencascade"
 
 
@@ -228,8 +228,8 @@ def test_crash_of_the_retry_fails_with_crash_message(wall_ifc, tmp_path, monkeyp
     target = tmp_path / "wall.glb"
     retries = []
     with pytest.raises(ConversionCrashed, match=r"^Umwandlung abgestürzt \(Code -11\)$"):
-        convert_in_child(wall_ifc, target, on_retry=lambda: retries.append(1), func=child_helpers.always_segfault)
-    assert retries == [1]
+        convert_in_child(wall_ifc, target, on_retry=retries.append, func=child_helpers.always_segfault)
+    assert retries == [process.RETRY_MESSAGE]
     assert _attempts(target) == ["None", "opencascade"]
 
 
@@ -244,7 +244,7 @@ def test_no_retry_when_opencascade_was_chosen(wall_ifc, tmp_path, monkeypatch, h
         monkeypatch.setenv("IFC_CONVERTER_KERNEL", "opencascade")
     with pytest.raises(ConversionCrashed):
         convert_in_child(
-            wall_ifc, target, on_retry=lambda: pytest.fail("retried"), func=child_helpers.always_segfault,
+            wall_ifc, target, on_retry=lambda message: pytest.fail("retried"), func=child_helpers.always_segfault,
             **options,
         )
     assert len(_attempts(target)) == 1
@@ -255,7 +255,7 @@ def test_no_retry_after_out_of_memory_or_python_error(tmp_path, monkeypatch):
     monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
     crash = tmp_path / "crash.ifc"
     crash.write_text("x")
-    no_retry = lambda: pytest.fail("retried")  # noqa: E731
+    no_retry = lambda message: pytest.fail("retried")  # noqa: E731
     with pytest.raises(ConversionCrashed, match=re.escape(MEMORY_MESSAGE)):
         convert_in_child(crash, tmp_path / "crash.glb", on_retry=no_retry, func=child_helpers.killed_if_named_crash)
     with pytest.raises(ConversionFailed):
@@ -345,7 +345,7 @@ def test_native_crash_stack_and_retry_are_logged(wall_ifc, tmp_path, monkeypatch
         convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.always_segfault)
     assert "Fatal Python error: Segmentation fault" in caplog.text
     assert "always_segfault" in caplog.text  # the Python stack of the crash
-    assert "neuer Versuch mit OpenCASCADE" in caplog.text
+    assert "(Exit-Code -11) – Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE" in caplog.text
     assert "Absturz nach" in caplog.text
 
 
@@ -400,3 +400,62 @@ def test_crash_dialogs_are_turned_off_on_windows(monkeypatch):
     monkeypatch.setattr(process.sys, "platform", "win32")
     process.no_crash_dialogs()
     assert modes and modes[0] & 0x0002  # SEM_NOGPFAULTERRORBOX
+
+
+def test_a_conversion_without_any_cpu_activity_is_stopped_as_stuck(wall_ifc, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 2)
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    started = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        with pytest.raises(process.ConversionStalled, match="nicht mehr gerechnet"):
+            convert_in_child(wall_ifc, tmp_path / "stuck.3dm", "3dm", func=child_helpers.wait_forever)
+    assert time.monotonic() - started < 30
+    assert "Keine Rechenaktivität" in caplog.text
+
+
+def test_a_slow_but_working_conversion_is_not_stopped(wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 2)
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    result = convert_in_child(wall_ifc, tmp_path / "slow.3dm", "3dm", func=child_helpers.compute_for_a_while)
+    assert result.output.read_text() == "done"
+
+
+def test_cpu_time_of_a_process_tree():
+    assert process.tree_cpu_seconds(os.getpid()) > 0
+
+
+@pytest.mark.parametrize("fmt", ["3dm", "glb"])
+@pytest.mark.parametrize("failure", ["hang", "crash"])
+def test_an_element_that_hangs_or_crashes_the_kernel_is_skipped(
+    many_walls_ifc, tmp_path, monkeypatch, caplog, fmt, failure
+):
+    if failure == "crash" and sys.platform == "win32":
+        pytest.skip("crashes with POSIX signals")
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 3)
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    target = tmp_path / f"walls.{fmt}"
+    messages = []
+    func = child_helpers.hang_on_wall_7 if failure == "hang" else child_helpers.crash_on_wall_7
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        result = convert_in_child(many_walls_ifc, target, fmt, threads=2, on_retry=messages.append, func=func)
+    # First the chunk with the wall is computed element by element, then the wall is left out.
+    assert len(messages) == 2
+    assert "einzeln berechnet" in messages[0]
+    assert "IfcWall" in messages[1] and "übersprungen" in messages[1]
+    assert (result.elements, result.skipped) == (599, 1)
+    assert target.stat().st_size > 0
+    assert "Übersprungen, weil der Geometriekern" in caplog.text
+
+
+def test_the_watchdog_leaves_copying_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 0)
+    monkeypatch.setattr(process, "tree_cpu_seconds", lambda pid: 0.0)
+    watch = process._Phases(tmp_path / "x.3dm", None, None, None)
+    watch.pid = 1
+    watch.enter("copy", "Wird ins Zielverzeichnis kopiert …")
+    watch._check_stall(time.monotonic())
+    watch._check_stall(time.monotonic() + 1)  # no CPU used, but copying to a network folder
+    watch.enter("geometry", "Geometrie …")
+    watch._check_stall(time.monotonic() + 2)  # first sample
+    with pytest.raises(process.ConversionStalled):
+        watch._check_stall(time.monotonic() + 3)

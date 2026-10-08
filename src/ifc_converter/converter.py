@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -45,6 +46,8 @@ MIN_HYBRID_TRIANGLES = 1000
 # Representations that never become a body (curves, boxes, points), for _triangle_mesh_only.
 NON_BODY_TYPES = ("Curve", "Curve2D", "Curve3D", "BoundingBox", "Point", "PointCloud")
 _kernel: ContextVar[str | None] = ContextVar("kernel", default=None)
+# (position callback, step ids to compute one by one, step ids to skip) of the running conversion.
+_recovery: ContextVar[tuple | None] = ContextVar("recovery", default=None)
 # Number of elements iter_shapes was asked to process during the current conversion.
 _candidates: ContextVar[list[int] | None] = ContextVar("candidates", default=None)
 
@@ -68,6 +71,17 @@ ProgressCallback = Callable[[int], None]
 # conversion enters a phase or makes progress within one. Reading the IFC, writing the output and
 # copying it to a network folder can each take minutes without any percentage moving.
 StatusCallback = Callable[[str, str], None]
+# Called with "chunk" or "element", the step ids of the products about to be computed and a label
+# ("IfcWall 2O2Fr…"), so that after a crash or a hang the parent knows where it happened.
+PositionCallback = Callable[[str, list, str], None]
+
+# Products whose geometry is nested deeper than this (IfcBooleanResult chains, IfcMappedItems within
+# IfcMappedItems; normal elements have fewer than 10 levels) are computed one by one in a thread of
+# our own with DEEP_STACK of stack. The kernels recurse once per level, and in their worker threads
+# a model with thousands of levels overflowed the stack: a crash (0xC00000FD), or with a larger main
+# thread stack a conversion that hung at 0 % CPU for good.
+DEEP_NESTING = 100
+DEEP_STACK = 256 * 1024 ** 2
 
 # Output for a network folder is written to the local temp folder first and copied in one go:
 # openNURBS writes in small pieces, each a round trip over the network. Only if the temp folder has
@@ -125,13 +139,17 @@ def convert(
     kernel: str | None = None,
     status: StatusCallback | None = None,
     staging_dir: str | Path | None = None,
+    position: PositionCallback | None = None,
+    isolate_ids: list[int] | None = None,
+    skip_ids: list[int] | None = None,
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl) or Rhino 3DM and return what was written.
 
     ``geometry`` ("brep" or "mesh") only affects the Rhino export. ``kernel`` picks the geometry
     kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL. ``status`` gets the
     phases (see StatusCallback). Output for a network folder is written in ``staging_dir`` (or a
-    temp folder) first and then copied.
+    temp folder) first and then copied. ``position``, ``isolate_ids`` and ``skip_ids`` let a caller
+    recover from a crash or hang in the kernel: products are computed one by one or left out.
     """
     fmt = fmt.lower()
     if fmt not in FORMATS:
@@ -166,6 +184,7 @@ def convert(
     token = _kernel.set(kernel)
     candidates = [0]
     candidates_token = _candidates.set(candidates)
+    recovery_token = _recovery.set((position, set(isolate_ids or ()), set(skip_ids or ())))
     report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
     if progress:
         progress(0)
@@ -181,6 +200,7 @@ def convert(
         finally:
             _kernel.reset(token)
             _candidates.reset(candidates_token)
+            _recovery.reset(recovery_token)
 
         if elements == 0:
             # An empty file reported as success would look like a finished conversion.
@@ -351,24 +371,38 @@ def iter_shapes(
     progress_share: int = 100,
     products: list[ifcopenshell.entity_instance] | None = None,
     chunk_ends: bool = False,
+    status: StatusCallback | None = None,
 ) -> Iterator:
     """Yield the triangulated shape of every product, computed chunk by chunk to cap memory use.
 
     Progress is reported from 0 up to ``progress_share`` percent. ``products`` may pass in
     ``shape_products(model, exclude)`` if already known. With ``chunk_ends`` a ChunkEnd follows
-    the shapes of each chunk.
+    the shapes of each chunk. Deeply nested products come last, one by one (see DEEP_NESTING);
+    ``status`` hears about each of them.
     """
     if products is None:
         products = shape_products(model, exclude)
     counter = _candidates.get()
     if counter is not None:
         counter[0] += len(products)
+    position, isolate, skip = _recovery.get() or (None, set(), set())
+    if skip:  # products that crashed or hung the kernel before: left out (counted as skipped)
+        products = [product for product in products if product.id() not in skip]
+    total = len(products)
+    deep = deep_products(products)
+    deep_ids = {product.id() for product, _ in deep}
+    deep += [(product, 0) for product in products if product.id() in isolate and product.id() not in deep_ids]
+    if deep:
+        deep_ids = {product.id() for product, _ in deep}
+        products = [product for product in products if product.id() not in deep_ids]
     strategy = kernel_strategy()
     library = geometry_library()
     local = not settings.get("use-world-coords")
     size = chunk_size(threads)
     for start in range(0, len(products), size):
         chunk = products[start:start + size]
+        if position:
+            position("chunk", [product.id() for product in chunk], "")
         if strategy == "accurate":
             hybrid = [product for product in chunk if _triangle_mesh_only(product)]
             fast = {product.id() for product in hybrid}
@@ -416,7 +450,142 @@ def iter_shapes(
             yield ChunkEnd([product.id() for product in chunk])
         _release_memory()
         if progress:
-            progress((start + len(chunk)) * progress_share // len(products))
+            progress((start + len(chunk)) * progress_share // total)
+
+    for number, (product, depth) in enumerate(deep, 1):
+        label = f"{product.is_a()} {product.GlobalId}"
+        if position:
+            position("element", [product.id()], label)
+        if status:
+            kind = f"Tief verschachteltes Bauteil ({depth} Ebenen)" if depth else "Bauteil"
+            # One phase for all of them: the log gets the first line, the window each one.
+            status("deep", f"{kind} {number} von {len(deep)} wird einzeln berechnet: {label} …")
+        shape = _deep_shape(settings, product, strategy)
+        if shape is not None:
+            yield shape
+        if progress:
+            progress((len(products) + number) * progress_share // total)
+    if deep and chunk_ends:
+        yield ChunkEnd([product.id() for product, _ in deep])
+    if position:  # a crash or hang from here on is not in the kernel
+        position("done", [], "")
+
+
+def deep_products(products: list) -> list[tuple[ifcopenshell.entity_instance, int]]:
+    """The products whose geometry (or that of their openings) is nested deeper than DEEP_NESTING."""
+    depths: dict[int, int] = {}
+    deep = []
+    for product in products:
+        depth = _product_depth(product, depths)
+        for relation in getattr(product, "HasOpenings", None) or ():
+            depth = max(depth, _product_depth(relation.RelatedOpeningElement, depths))
+        if depth > DEEP_NESTING:
+            deep.append((product, depth))
+    return deep
+
+
+def _product_depth(product: ifcopenshell.entity_instance, depths: dict[int, int]) -> int:
+    if not product.Representation:
+        return 0
+    return max(
+        (_nesting_depth(item, depths) for representation in product.Representation.Representations
+         for item in representation.Items or ()),
+        default=0,
+    )
+
+
+def _nesting_depth(item: ifcopenshell.entity_instance, depths: dict[int, int]) -> int:
+    """Levels of IfcMappedItem / IfcBooleanResult / IfcCsgSolid nesting below ``item`` (itself: 1).
+
+    Iterative, as the nesting can be far deeper than Python's recursion limit; ``depths`` caches the
+    result per entity, since type geometry and operands are shared.
+    """
+    stack = [(item, False)]
+    while stack:
+        entity, expanded = stack.pop()
+        key = entity.id()
+        if key in depths:
+            continue
+        children = _nested_children(entity)
+        if expanded or not children:
+            depths[key] = 1 + max((depths.get(child.id(), 0) for child in children), default=0)
+            continue
+        stack.append((entity, True))
+        stack.extend((child, False) for child in children if child.id() not in depths)
+    return depths[item.id()]
+
+
+def _nested_children(entity: ifcopenshell.entity_instance) -> list:
+    if entity.is_a("IfcMappedItem"):
+        return list(entity.MappingSource.MappedRepresentation.Items)
+    if entity.is_a("IfcBooleanResult"):
+        return [operand for operand in (entity.FirstOperand, entity.SecondOperand) if operand is not None]
+    if entity.is_a("IfcCsgSolid"):
+        return [entity.TreeRootExpression]
+    return []
+
+
+def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, strategy: str):
+    """The shape of a deeply nested product, computed in a thread with DEEP_STACK of stack, or None.
+
+    geom.create_shape() computes in the calling thread, unlike the iterator's worker threads.
+    """
+    representation = _body_representation(product)
+    if representation is None:
+        return None
+    libraries = ["opencascade"] if strategy != "hybrid" else ["hybrid", "opencascade"]
+    for library in libraries:
+
+        def compute():
+            return geom.create_shape(settings, product, representation, geometry_library=LIBRARIES[library])
+
+        try:
+            shape = _with_large_stack(compute)
+        except RuntimeError:  # the kernel could not build it
+            continue
+        if shape.geometry.verts or settings.get("use-world-coords"):
+            return shape
+        # Local coordinates gave nothing (type geometry with openings): world coordinates do.
+        settings.set("use-world-coords", True)
+        try:
+            return _with_large_stack(compute)
+        except RuntimeError:
+            continue
+        finally:
+            settings.set("use-world-coords", False)
+    return None
+
+
+def _body_representation(product: ifcopenshell.entity_instance):
+    """The representation the iterator would compute for ``product``: "Body", else the first 3D one."""
+    representations = [r for r in product.Representation.Representations if r.is_a("IfcShapeModel") and r.Items]
+    for identifier in ("Body", "Facetation"):
+        for representation in representations:
+            if representation.RepresentationIdentifier == identifier:
+                return representation
+    return next((r for r in representations if r.RepresentationType not in NON_BODY_TYPES), None)
+
+
+def _with_large_stack(function: Callable):
+    """``function()`` run in a thread with DEEP_STACK of stack (the calling thread waits)."""
+    outcome: dict = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = function()
+        except BaseException as exc:  # handed to the calling thread
+            outcome["error"] = exc
+
+    previous = threading.stack_size(DEEP_STACK)
+    try:
+        thread = threading.Thread(target=run, name="deep-geometry")
+        thread.start()
+    finally:
+        threading.stack_size(previous)
+    thread.join()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def _triangle_mesh_only(product: ifcopenshell.entity_instance) -> bool:
@@ -553,7 +722,7 @@ def _serialize(
     serializer.writeHeader()
 
     elements = 0
-    for shape in iter_shapes(model, settings, threads, EXCLUDED_CLASSES, progress, 95):
+    for shape in iter_shapes(model, settings, threads, EXCLUDED_CLASSES, progress, 95, status=report):
         if not shape.geometry.verts:  # nothing to write, so it counts as skipped
             continue
         serializer.write(shape)

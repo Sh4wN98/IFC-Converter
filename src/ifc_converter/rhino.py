@@ -129,7 +129,8 @@ def write_3dm(
             settings.set("use-world-coords", False)
         ordered = _Ordered(writer)
         shapes = iter_shapes(
-            model, settings, threads, EXCLUDED_CLASSES, progress, ITERATOR_SHARE, products, chunk_ends=True
+            model, settings, threads, EXCLUDED_CLASSES, progress, ITERATOR_SHARE, products, chunk_ends=True,
+            status=status,
         )
         # The second pass is generated lazily, after the first has recorded what it yielded.
         missing = (element for id_, element in curve_elements.items() if id_ not in yielded)

@@ -526,3 +526,41 @@ def many_walls_ifc(tmp_path):
     path = tmp_path / "walls.ifc"
     model.write(str(path))
     return path
+
+
+@pytest.fixture
+def nested_ifc(tmp_path):
+    """One 10 x 0.3 x 3 m wall whose geometry is nested 5000 levels deep in IfcMappedItems.
+
+    The kernels recurse once per level: with 1 MB of stack (Windows' default for a thread) a model
+    like this overflowed it, in a worker thread of the kernel even with a large main thread.
+    """
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="Test")
+    api.run("unit.assign_unit", model)
+    context = api.run("context.add_context", model, context_type="Model")
+    body = api.run(
+        "context.add_context", model,
+        context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context,
+    )
+    site = api.run("root.create_entity", model, ifc_class="IfcSite", name="Site")
+    api.run("aggregate.assign_object", model, relating_object=project, products=[site])
+    origin = model.createIfcCartesianPoint((0.0, 0.0, 0.0))
+    placement = model.createIfcAxis2Placement3D(origin, None, None)
+    profile = model.createIfcRectangleProfileDef(
+        "AREA", None, model.createIfcAxis2Placement2D(model.createIfcCartesianPoint((0.0, 0.0)), None), 10.0, 0.3
+    )
+    solid = model.createIfcExtrudedAreaSolid(profile, placement, model.createIfcDirection((0.0, 0.0, 1.0)), 3.0)
+    representation = model.createIfcShapeRepresentation(body, "Body", "SweptSolid", [solid])
+    operator = model.createIfcCartesianTransformationOperator3D(None, None, origin, 1.0, None)
+    for _ in range(5000):
+        source = model.createIfcRepresentationMap(placement, representation)
+        item = model.createIfcMappedItem(source, operator)
+        representation = model.createIfcShapeRepresentation(body, "Body", "MappedRepresentation", [item])
+    wall = api.run("root.create_entity", model, ifc_class="IfcWall", name="Deep wall")
+    wall.Representation = model.createIfcProductDefinitionShape(None, None, [representation])
+    api.run("geometry.edit_object_placement", model, product=wall)
+    api.run("spatial.assign_container", model, relating_structure=site, products=[wall])
+    path = tmp_path / "nested.ifc"
+    model.write(str(path))
+    return path
