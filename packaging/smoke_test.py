@@ -126,7 +126,8 @@ def make_nested(path: Path, depth: int = NESTING) -> None:
 
 def check_stacks(app_dir: Path, cli: Path, source: Path, out: Path) -> None:
     """The exes have a large default thread stack, and that is what deeply nested models need."""
-    for exe in sorted(app_dir.glob("*.exe")):
+    # Only our exes: an installed copy also contains Inno Setup's (32-bit) uninstaller.
+    for exe in (cli, cli.with_name("IFC Converter.exe")):
         if stack_reserve(exe) != STACK_RESERVE:
             raise AssertionError(f"{exe.name}: default thread stack {stack_reserve(exe)} instead of {STACK_RESERVE}")
     print(f"  default thread stack of the exes: {STACK_RESERVE // 1024 ** 2} MB ✓")
