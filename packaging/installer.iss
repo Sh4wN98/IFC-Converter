@@ -89,7 +89,8 @@ Root: HKCU; Subkey: "Software\Classes\IFCConverter.ifc"; ValueType: string; Valu
 Root: HKCU; Subkey: "Software\Classes\IFCConverter.ifc\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"",0"; Tasks: openwith
 Root: HKCU; Subkey: "Software\Classes\IFCConverter.ifc\shell\open"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Tasks: openwith
 Root: HKCU; Subkey: "Software\Classes\IFCConverter.ifc\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: openwith
-Root: HKCU; Subkey: "Software\Classes\.ifc\OpenWithProgids"; ValueType: none; ValueName: "IFCConverter.ifc"; Flags: uninsdeletevalue; Tasks: openwith
+; An empty string value: "none" would only create the key, without the entry Windows looks for.
+Root: HKCU; Subkey: "Software\Classes\.ifc\OpenWithProgids"; ValueType: string; ValueData: ""; ValueName: "IFCConverter.ifc"; Flags: uninsdeletevalue; Tasks: openwith
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent

@@ -783,8 +783,10 @@ def test_error_dialog_copies_details(app):
 
 def test_error_reporter_shows_one_dialog_at_a_time(app):
     reporter = ErrorReporter()
-    threading.Thread(target=lambda: reporter.report("A", "a")).start()
+    other = threading.Thread(target=lambda: reporter.report("A", "a"))
+    other.start()
     reporter.report("B", "b")
+    other.join()  # both reports are queued before the first dialog shows (else "A" could come after it closed)
     deadline = time.monotonic() + 5
     while reporter.dialog is None and time.monotonic() < deadline:
         app.processEvents()
