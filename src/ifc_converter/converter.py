@@ -50,6 +50,8 @@ MIN_HYBRID_TRIANGLES = 1000
 NON_BODY_TYPES = ("Curve", "Curve2D", "Curve3D", "BoundingBox", "Point", "PointCloud")
 log = logging.getLogger(__name__)
 _kernel: ContextVar[str | None] = ContextVar("kernel", default=None)
+# The checkpoint of the running conversion (3dm only), see checkpoint.py.
+_checkpoint: ContextVar = ContextVar("checkpoint", default=None)
 # Labels of the products of the running conversion that produced no geometry.
 _missing: ContextVar[list | None] = ContextVar("missing", default=None)
 # (position callback, step ids to compute one by one, step ids to skip) of the running conversion.
@@ -180,6 +182,7 @@ def convert(
     isolate_ids: list[int] | None = None,
     skip_ids: list[int] | None = None,
     blocks: bool = False,
+    checkpoint_dir: str | Path | None = None,
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl) or Rhino 3DM and return what was written.
 
@@ -226,6 +229,12 @@ def convert(
     recovery_token = _recovery.set((position, set(isolate_ids or ()), set(skip_ids or ())))
     missing: list[str] = []
     missing_token = _missing.set(missing)
+    checkpoint = None
+    if checkpoint_dir and fmt == "3dm":
+        from ifc_converter.checkpoint import Checkpoint
+
+        checkpoint = Checkpoint(checkpoint_dir)
+    checkpoint_token = _checkpoint.set(checkpoint)
     report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
     if progress:
         progress(0)
@@ -243,6 +252,7 @@ def convert(
             _candidates.reset(candidates_token)
             _recovery.reset(recovery_token)
             _missing.reset(missing_token)
+            _checkpoint.reset(checkpoint_token)
 
         if elements == 0:
             # An empty file reported as success would look like a finished conversion.
@@ -505,6 +515,39 @@ def iter_shapes(
     total = len(products)
     candidates = products
     produced: set[int] = set()
+    checkpoint = _checkpoint.get()
+    finished = 0
+    if checkpoint is not None:
+        # Chunks finished by an attempt that crashed or hung: read back instead of computed again.
+        wanted = {product.id() for product in products}
+        replayed: set[int] = set()
+        for ids, shapes in checkpoint.replay():
+            for shape in shapes:
+                if shape.id in wanted:
+                    yield _produced(shape, produced)
+            if chunk_ends:
+                yield ChunkEnd([id_ for id_ in ids if id_ in wanted])
+            replayed.update(ids)
+            finished = len(replayed & wanted)
+            if progress:
+                progress(finished * progress_share // total)
+        if replayed:
+            products = [product for product in products if product.id() not in replayed]
+            if status:
+                status("note", f"{finished} Bauteile aus dem vorigen Versuch übernommen, "
+                               f"{len(products)} werden berechnet")
+
+    def keep(shape):
+        if checkpoint is not None:
+            checkpoint.record(shape)
+        return _produced(shape, produced)
+
+    def chunk_end(ids: list[int]) -> Iterator:
+        if checkpoint is not None:
+            checkpoint.chunk_done(ids)
+        if chunk_ends:
+            yield ChunkEnd(ids)
+
     deep = deep_products(products)
     deep_ids = {product.id() for product, _ in deep}
     deep += [(product, 0) for product in products if product.id() in isolate and product.id() not in deep_ids]
@@ -531,18 +574,17 @@ def iter_shapes(
             status("deep", f"{kind} {number} von {len(deep)} wird einzeln berechnet: {label} …")
         shape = _deep_shape(settings, product, strategy)
         if shape is not None:
-            yield _produced(shape, produced)
+            yield keep(shape)
         if progress:
-            progress(number * progress_share // total)
+            progress((finished + number) * progress_share // total)
     if deep:
-        if chunk_ends:
-            yield ChunkEnd([product.id() for product, _ in deep])
+        yield from chunk_end([product.id() for product, _ in deep])
         if status:
             status("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
 
     chunks = [products[start:start + size] for start in range(0, len(products), size)]
     pipeline = _Pipeline(model, settings, threads, position, chunks, strategy, library)
-    finished = len(deep)
+    finished += len(deep)
     try:
         for index, chunk in enumerate(chunks):
             hybrid: list = []
@@ -559,7 +601,7 @@ def iter_shapes(
                     if local and not shape.geometry.verts:
                         empty.append(model.by_id(shape.id))
                     else:
-                        yield _produced(shape, produced)
+                        yield keep(shape)
             if hybrid:
                 # The hybrid kernel gives up on some shapes that OpenCASCADE can still build, and leaves
                 # type geometry with openings empty in local coordinates, where OpenCASCADE builds it:
@@ -573,12 +615,11 @@ def iter_shapes(
                         if local and not shape.geometry.verts:
                             empty.append(model.by_id(shape.id))
                         else:
-                            yield _produced(shape, produced)
+                            yield keep(shape)
             if empty:
                 for shape in pipeline.shapes(pipeline.start(index, empty, library, world=True), index):
-                    yield _produced(shape, produced)
-            if chunk_ends:
-                yield ChunkEnd([product.id() for product in chunk])
+                    yield keep(shape)
+            yield from chunk_end([product.id() for product in chunk])
             _release_memory()
             finished += len(chunk)
             if progress:
