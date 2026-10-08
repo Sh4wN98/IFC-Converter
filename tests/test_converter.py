@@ -460,6 +460,51 @@ def test_output_for_a_network_folder_is_staged_locally_and_copied(wall_ifc, tmp_
         assert target.with_suffix(".mtl").is_file()
     assert [phase for phase, _ in calls][-1] == "copy"
     assert not list(staging.iterdir())  # the staged copy is gone
+    assert not list(target.parent.glob("*.part"))
+
+
+def _failing_copies(monkeypatch, failures: int):
+    """Make the first ``failures`` copies to the network folder fail like a lost connection."""
+    from ifc_converter import converter
+
+    copy = converter._copy
+    calls = []
+
+    def flaky(source, target, done, total, report):
+        calls.append(target)
+        if len(calls) <= failures:
+            target.with_name(target.name + ".part").write_bytes(b"half")
+            raise OSError(64, "Der angegebene Netzwerkname ist nicht mehr verfügbar")
+        return copy(source, target, done, total, report)
+
+    monkeypatch.setattr(converter, "_copy", flaky)
+    monkeypatch.setattr(converter, "COPY_RETRY_WAITS", (0, 0))
+    monkeypatch.setattr(converter, "is_network_path", lambda path: True)
+    return calls
+
+
+def test_a_failed_copy_to_the_network_is_tried_again(wall_ifc, tmp_path, monkeypatch):
+    calls = _failing_copies(monkeypatch, failures=2)
+    messages = []
+    target = tmp_path / "share" / "wall.3dm"
+    result = convert(wall_ifc, target, "3dm", status=lambda phase, text: messages.append(text),
+                     staging_dir=tmp_path)
+    assert result.output == target and target.stat().st_size > 1000
+    assert len(calls) == 3
+    assert any("Kopieren fehlgeschlagen" in text and "neuer Versuch 2" in text for text in messages)
+
+
+def test_output_that_cannot_be_copied_is_kept_locally(wall_ifc, tmp_path, monkeypatch):
+    from ifc_converter import app
+
+    _failing_copies(monkeypatch, failures=99)
+    rescue = tmp_path / "rescue"
+    monkeypatch.setattr(app, "rescue_dir", lambda: rescue)
+    target = tmp_path / "share" / "wall.3dm"
+    with pytest.raises(OSError, match="Sie liegt hier: .*wall.3dm – bitte von Hand kopieren"):
+        convert(wall_ifc, target, "3dm", staging_dir=tmp_path)
+    assert (rescue / "wall.3dm").stat().st_size > 1000
+    assert not target.exists()
 
 
 def test_staging_is_skipped_without_room(wall_ifc, tmp_path, monkeypatch):
@@ -534,3 +579,22 @@ def test_the_deep_stack_size_is_accepted_on_this_platform():
 
     previous = threading.stack_size(DEEP_STACK)
     threading.stack_size(previous)
+
+
+def test_geometry_that_contains_itself_is_not_computed(wall_ifc, tmp_path):
+    from ifc_converter.converter import CYCLIC, _triangle_mesh_only, deep_products
+
+    model = ifcopenshell.open(str(wall_ifc))
+    wall = model.by_type("IfcWall")[0]
+    body = wall.Representation.Representations[-1]
+    origin = model.createIfcCartesianPoint((0.0, 0.0, 0.0))
+    source = model.createIfcRepresentationMap(model.createIfcAxis2Placement3D(origin, None, None), body)
+    item = model.createIfcMappedItem(source, model.createIfcCartesianTransformationOperator3D(None, None, origin, 1.0, None))
+    body.Items = list(body.Items) + [item]  # the body now contains itself
+    assert deep_products([wall]) == [(wall, CYCLIC)]
+    assert _triangle_mesh_only(wall) is False
+    path = tmp_path / "cyclic.ifc"
+    model.write(str(path))
+    # Not computed (the kernel would recurse forever): the only wall gives no geometry.
+    with pytest.raises(ValueError, match="Keine Geometrie erzeugt"):
+        convert(path, tmp_path / "cyclic.glb", "glb")

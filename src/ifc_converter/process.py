@@ -21,7 +21,8 @@ import tempfile
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from multiprocessing.connection import wait
 from pathlib import Path
 
@@ -43,12 +44,28 @@ HEARTBEAT = 60
 # forever): it is ended and reported. Slow but working conversions keep using CPU. Sampled every
 # CPU_SAMPLE seconds.
 STALL_TIMEOUT = 10 * 60
+# Once the child has reported a fatal error (faulthandler writes e.g. "Windows fatal exception:
+# stack overflow" to its stderr), it is stuck for good as soon as it stops computing: this is how
+# long it may then go without CPU. On Windows a stack overflow in a kernel thread leaves the
+# process alive at 0 % CPU instead of ending it.
+# SetThreadExecutionState flags.
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+FATAL_STALL_TIMEOUT = 60
+# Only the stack overflow: faulthandler also reports access violations that OpenCASCADE then handles.
+FATAL_MARKERS = {"Windows fatal exception: stack overflow": "Stapelüberlauf"}
 STALL_CPU = 1.0
 CPU_SAMPLE = 30
+# A pause this long between two samples means the computer was suspended, not the conversion stuck.
+SUSPEND_GAP = 5 * 60
+# Temp files of conversions untouched for this long are leftovers of a killed app.
+STALE_TEMP_AGE = 24 * 3600
 
 MEMORY_MESSAGE = "Der Arbeitsspeicher hat nicht gereicht (Prozess wurde vom System beendet)"
 # Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
 RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE …"
+# How many of the elements without geometry the log lists by name.
+NO_GEOMETRY_LOG_LIMIT = 2000
 # Recovery attempts after crashes or hangs in the kernel: computing the affected chunk one product at
 # a time, then leaving out a product that still fails (each step needs a new attempt).
 MAX_RECOVERIES = 6
@@ -89,13 +106,21 @@ class ConversionCrashed(Exception):
 
 
 class ConversionStalled(Exception):
-    """The child's processes used no CPU for STALL_TIMEOUT: they wait for something that never comes."""
+    """The child's processes stopped using CPU: they wait for something that never comes.
 
-    def __init__(self, seconds: float):
-        super().__init__(
-            f"Die Umwandlung hat {seconds / 60:.0f} Minuten lang nicht mehr gerechnet und wurde abgebrochen "
-            "(sie hing fest). Bitte die Logdatei an den Entwickler schicken."
-        )
+    ``fatal`` is the fatal error the child reported before (e.g. "stack overflow"), if any.
+    """
+
+    def __init__(self, seconds: float, fatal: str = ""):
+        if fatal:
+            super().__init__(f"Absturz im Geometriekern ({fatal}), danach hing die Umwandlung fest")
+        else:
+            super().__init__(f"Die Umwandlung hat {_duration(seconds)} lang nicht mehr gerechnet (sie hing fest)")
+        self.fatal = fatal
+
+
+def _duration(seconds: float) -> str:
+    return f"{seconds / 60:.0f} Minuten" if seconds >= 120 else f"{seconds:.0f} Sekunden"
 
 
 def cpu_count() -> int:
@@ -109,6 +134,15 @@ def auto_threads() -> int:
     return default_threads()
 
 
+# What the common Windows crash codes mean.
+CRASH_NAMES = {
+    0xC00000FD: "Stapelüberlauf im Geometriekern",
+    0xC0000005: "Speicherzugriffsfehler",
+    0xC0000409: "interner Programmabbruch",
+    -getattr(signal, "SIGSEGV", 11): "Speicherzugriffsfehler",
+}
+
+
 def crash_message(exitcode: int | None) -> str:
     """A German message for a child that ended with ``exitcode`` but delivered no result."""
     if _out_of_memory(exitcode):
@@ -117,7 +151,8 @@ def crash_message(exitcode: int | None) -> str:
         return "Umwandlung wurde ohne Ergebnis beendet"
     # Windows reports crashes as NTSTATUS codes such as 0xC0000005, which are only readable in hex.
     code = f"0x{exitcode:08X}" if exitcode is not None and exitcode >= 0xC0000000 else exitcode
-    return f"Umwandlung abgestürzt (Code {code})"
+    name = CRASH_NAMES.get(exitcode)
+    return f"Umwandlung abgestürzt: {name} (Code {code})" if name else f"Umwandlung abgestürzt (Code {code})"
 
 
 def _out_of_memory(exitcode: int | None) -> bool:
@@ -134,23 +169,31 @@ def _retry_with_opencascade(exitcode: int | None, options: dict) -> bool:
     return kernel.lower() in ("accurate", "hybrid") and exitcode not in (None, 0) and not _out_of_memory(exitcode)
 
 
-def _recover(failure: Exception, options: dict, isolate: set[int], skipped: dict[int, str]) -> str | None:
-    """Plan the next attempt after a crash or hang; returns the message for it, or None to give up.
+def _recover(
+    failure: Exception, options: dict, isolate: set[int], skipped: dict[int, str], attempt: int = 2
+) -> str | None:
+    """Plan attempt number ``attempt`` after a crash or hang; returns the message for it, or None to give up.
 
-    ``failure.position`` is where the child was: ("chunk", ids, "") or ("element", [id], label).
+    ``failure.position`` is where the child was: ("chunk", ids, "") with the products not finished
+    yet, or ("element", [id], label).
     """
-    what = "hängt fest" if isinstance(failure, ConversionStalled) else "ist abgestürzt"
     if isinstance(failure, ConversionCrashed) and _out_of_memory(failure.exitcode):
         return None
+    if isinstance(failure, ConversionStalled):
+        what = f"Absturz im Geometriekern ({failure.fatal})" if failure.fatal else "Hänger im Geometriekern"
+    else:
+        what = "Absturz im Geometriekern"
+    again = f"Neuer Versuch ({attempt}. von höchstens {MAX_RECOVERIES + 1})"
     kind, ids, label = getattr(failure, "position", None) or (None, [], "")
     if kind == "element" and ids and ids[0] not in skipped:
         skipped[ids[0]] = label or f"#{ids[0]}"
-        return (f"Die Umwandlung {what} bei {skipped[ids[0]]} – dieses Bauteil wird übersprungen, "
-                "neuer Versuch …")
+        return f"{what} bei {skipped[ids[0]]}. {again}, dieses Bauteil wird übersprungen …"
     if kind == "chunk" and ids and not set(ids) <= isolate:
         isolate.update(ids)
-        return (f"Die Umwandlung {what} in einem Paket von {len(ids)} Bauteilen – diese werden einzeln "
-                "berechnet, neuer Versuch …")
+        if len(ids) == 1:
+            return f"{what} bei einem Bauteil. {again}, es wird zuerst und einzeln berechnet …"
+        return (f"{what} bei einem von {len(ids)} Bauteilen. {again}, diese werden zuerst und einzeln "
+                "berechnet, um das betroffene zu finden …")
     if isinstance(failure, ConversionCrashed) and _retry_with_opencascade(failure.exitcode, options) \
             and options.get("kernel") != "opencascade":
         options["kernel"] = "opencascade"
@@ -266,6 +309,26 @@ def _redirect_stderr(path: str | None) -> None:
         pass
 
 
+@contextmanager
+def keep_awake() -> Iterator[None]:
+    """Keep Windows from going to standby (by its idle timer) while a conversion runs.
+
+    Heavy CPU use does not count as activity there, so a conversion of an hour was suspended
+    midway. The screen may still turn off and lock. The setting belongs to the calling thread.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    try:
+        yield
+    finally:
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+
+
 def lower_priority() -> None:
     """Run the calling process (and the processes it starts) below normal priority.
 
@@ -367,26 +430,25 @@ def convert_in_child(
     isolate: set[int] = set()
     skipped: dict[int, str] = {}
     try:
-        for attempt in range(MAX_RECOVERIES + 1):
-            attempt_options = dict(options)
-            if isolate:
-                attempt_options["isolate_ids"] = sorted(isolate)
-            if skipped:
-                attempt_options["skip_ids"] = sorted(skipped)
-            try:
-                result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started)
-                break
-            except (ConversionCrashed, ConversionStalled) as failure:
-                message = _recover(failure, options, isolate, skipped)
-                if message is None or attempt == MAX_RECOVERIES:
-                    raise
-                code = f" (Exit-Code {failure.exitcode})" if isinstance(failure, ConversionCrashed) else ""
-                log.warning("%s%s – %s", failure, code, message)
-                if on_retry:
-                    on_retry(message)
-        if skipped:
-            log.warning("Übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb: %s",
-                        "; ".join(skipped.values()))
+        with keep_awake():
+            for attempt in range(MAX_RECOVERIES + 1):
+                attempt_options = dict(options)
+                if isolate:
+                    attempt_options["isolate_ids"] = sorted(isolate)
+                if skipped:
+                    attempt_options["skip_ids"] = sorted(skipped)
+                try:
+                    result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started)
+                    break
+                except (ConversionCrashed, ConversionStalled) as failure:
+                    message = _recover(failure, options, isolate, skipped, attempt + 2)
+                    if message is None or attempt == MAX_RECOVERIES:
+                        raise
+                    code = f" (Exit-Code {failure.exitcode})" if isinstance(failure, ConversionCrashed) else ""
+                    log.warning("%s%s. %s", failure, code, message.split(". ", 1)[-1])
+                    if on_retry:
+                        on_retry(message)
+            result.crashed = list(skipped.values())
     except Cancelled:
         log.info("Abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
         raise
@@ -404,8 +466,17 @@ def convert_in_child(
     except Exception:
         log.exception("Umwandlung von %s fehlgeschlagen", input_path)
         raise
-    log.info("Fertig nach %.1f s: %s -> %s, %d Bauteile, %d ohne Geometrie", time.monotonic() - started,
-             input_path, result.output, result.elements, result.skipped)
+    log.info("Fertig nach %.1f s: %s -> %s, %d Bauteile, %d ohne Geometrie, %d übersprungen",
+             time.monotonic() - started, input_path, result.output, result.elements, result.skipped,
+             len(result.crashed))
+    if result.crashed:
+        log.warning("Übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb (%d):\n  %s",
+                    len(result.crashed), "\n  ".join(result.crashed))
+    if result.no_geometry:
+        shown = result.no_geometry[:NO_GEOMETRY_LOG_LIMIT]
+        more = len(result.no_geometry) - len(shown)
+        log.info("Ohne Geometrie (%d):\n  %s%s", len(result.no_geometry), "\n  ".join(shown),
+                 f"\n  … und {more} weitere" if more else "")
     return result
 
 
@@ -430,6 +501,7 @@ def _run_child(
     stderr_path = _stderr_file()
     staging = _staging_dir()
     watch = _Phases(args[1] or Path(args[0]).with_suffix(f".{args[2]}"), staging, status, started)
+    watch.stderr_path = stderr_path
     reader, writer = _CONTEXT.Pipe(duplex=False)
     process = _CONTEXT.Process(
         target=_child_main,
@@ -462,7 +534,7 @@ def _run_child(
                 elif message[0] == "status":
                     watch.enter(message[1], message[2])
                 elif message[0] == "position":
-                    watch.position = tuple(message[1:])
+                    watch.locate(*message[1:])
                 else:
                     outcome = message
             elif process.sentinel in ready:
@@ -473,7 +545,7 @@ def _run_child(
                     except EOFError:
                         break
                     if message[0] == "position":
-                        watch.position = tuple(message[1:])
+                        watch.locate(*message[1:])
                     elif message[0] not in ("progress", "status"):
                         outcome = message
                 break
@@ -487,7 +559,7 @@ def _run_child(
 
     if outcome is None:
         crash = ConversionCrashed(exitcode)
-        crash.position = watch.position
+        crash.position = watch.suspects()
         raise crash
     if outcome[0] == "error":
         raise ConversionFailed(*outcome[1:])
@@ -519,18 +591,45 @@ class _Phases:
         self._shown = self._logged = time.monotonic()
         self.pid: int | None = None
         self.position: tuple | None = None  # where the child is: ("chunk"|"element", ids, label)
+        self._remaining: set[int] | None = None  # products of the chunk not delivered yet
+        self.stderr_path: str | None = None
+        self.fatal = ""  # the first fatal error found in the child's stderr
+        self._stderr_read = 0
         self._sampled = self._active = time.monotonic()
         self._active_cpu: float | None = None
 
     def enter(self, phase: str, text: str) -> None:
+        if phase == "note":  # something for the log only
+            log.warning("%s", text)
+            return
         if phase != self.phase:
             log.info("%s (nach %.0f s)", text, time.monotonic() - self.started)
         self.phase, self.text = phase, text
         self._show(text)
 
+    def locate(self, kind: str, ids: list, label: str) -> None:
+        """Where the child is: computing a "chunk" of products or one "element", or "done"; or which
+        products of the chunk it has "delivered"."""
+        if kind == "delivered":
+            if self._remaining is not None:
+                self._remaining.difference_update(ids)
+            return
+        self.position = (kind, ids, label)
+        self._remaining = set(ids) if kind == "chunk" else None
+
+    def suspects(self) -> tuple | None:
+        """The position for recovery: of a chunk only the products not delivered yet (all of them if
+        it got past every one, e.g. when the crash came after the kernel)."""
+        if self.position and self.position[0] == "chunk" and self._remaining:
+            return ("chunk", sorted(self._remaining), "")
+        return self.position
+
     def tick(self) -> None:
         now = time.monotonic()
         if self.pid and now - self._sampled >= CPU_SAMPLE:
+            if now - self._sampled > SUSPEND_GAP:
+                # The computer was asleep (this loop runs every second): no reason to stop the child.
+                self._active, self._active_cpu = now, None
             self._sampled = now
             self._check_stall(now)
         if now - self._logged >= HEARTBEAT:
@@ -546,14 +645,36 @@ class _Phases:
         cpu = tree_cpu_seconds(self.pid)
         if cpu is None:  # not measurable here: no watchdog
             return
+        if not self.fatal:
+            self._find_fatal()
+        timeout = FATAL_STALL_TIMEOUT if self.fatal else STALL_TIMEOUT
         if self._active_cpu is None or cpu - self._active_cpu >= STALL_CPU:
             self._active, self._active_cpu = now, cpu
-        elif now - self._active >= STALL_TIMEOUT:
-            log.error("Keine Rechenaktivität seit %.0f s (CPU %.1f s), %d %%: %s",
-                      now - self._active, cpu, self.percent, self.text or "…")
-            stalled = ConversionStalled(now - self._active)
-            stalled.position = self.position
+        elif now - self._active >= timeout:
+            log.error("Keine Rechenaktivität seit %.0f s (CPU %.1f s)%s, %d %%: %s",
+                      now - self._active, cpu, f" nach {self.fatal}" if self.fatal else "", self.percent,
+                      self.text or "…")
+            stalled = ConversionStalled(now - self._active, self.fatal)
+            stalled.position = self.suspects()
             raise stalled
+
+    def _find_fatal(self) -> None:
+        """Look for a fatal error in what the child wrote to stderr since the last look."""
+        if not self.stderr_path:
+            return
+        overlap = max(len(marker) for marker in FATAL_MARKERS)
+        try:
+            with open(self.stderr_path, "rb") as file:
+                file.seek(max(0, self._stderr_read - overlap))
+                text = file.read(16 * 1024 ** 2).decode("utf-8", errors="replace")
+                self._stderr_read = file.tell()
+        except OSError:
+            return
+        for marker, name in FATAL_MARKERS.items():
+            if marker in text:
+                self.fatal = name
+                log.warning("Der Umwandlungsprozess meldet einen schweren Fehler: %s", marker)
+                return
 
     def _written(self) -> int:
         """Bytes written so far: the output, or what is staged for it in the temp folder."""
@@ -652,6 +773,33 @@ def _windows_tree_cpu(pid: int) -> float:
         finally:
             kernel32.CloseHandle(handle)
     return total / 1e7
+
+
+def remove_stale_temp_files(max_age: float = STALE_TEMP_AGE) -> int:
+    """Delete what conversions left in the temp folder when they were killed (e.g. by a power cut).
+
+    Only entries named "ifc-converter-*" that were not changed for ``max_age`` seconds, so a
+    conversion running at the same time (in a terminal) keeps its files. Returns how many went.
+    """
+    removed = 0
+    limit = time.time() - max_age
+    try:
+        entries = list(Path(tempfile.gettempdir()).glob("ifc-converter-*"))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            newest = max([entry.stat().st_mtime, *(child.stat().st_mtime for child in entry.rglob("*"))])
+            if newest > limit:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _stderr_file() -> str | None:

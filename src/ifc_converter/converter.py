@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import ifcopenshell
@@ -46,6 +46,8 @@ MIN_HYBRID_TRIANGLES = 1000
 # Representations that never become a body (curves, boxes, points), for _triangle_mesh_only.
 NON_BODY_TYPES = ("Curve", "Curve2D", "Curve3D", "BoundingBox", "Point", "PointCloud")
 _kernel: ContextVar[str | None] = ContextVar("kernel", default=None)
+# Labels of the products of the running conversion that produced no geometry.
+_missing: ContextVar[list | None] = ContextVar("missing", default=None)
 # (position callback, step ids to compute one by one, step ids to skip) of the running conversion.
 _recovery: ContextVar[tuple | None] = ContextVar("recovery", default=None)
 # Number of elements iter_shapes was asked to process during the current conversion.
@@ -81,11 +83,19 @@ PositionCallback = Callable[[str, list, str], None]
 # a model with thousands of levels overflowed the stack: a crash (0xC00000FD), or with a larger main
 # thread stack a conversion that hung at 0 % CPU for good.
 DEEP_NESTING = 100
+# The depth of geometry that contains itself (IfcMappedItem or boolean operands referring back):
+# such products are not computed at all.
+CYCLIC = 10 ** 9
+# More geometry items than this behind one product only come from type geometry that contains itself.
+MAX_VISITED_ITEMS = 1_000_000
 DEEP_STACK = 240 * 1024 ** 2  # Python on Windows accepts less than 256 MB
 
 # Output for a network folder is written to the local temp folder first and copied in one go:
 # openNURBS writes in small pieces, each a round trip over the network. Only if the temp folder has
 # this many times the IFC's size free (a 3dm with polysurfaces was up to 4.6 times the IFC).
+# Seconds to wait before each new attempt to copy output to a network folder (e.g. while the
+# connection comes back after a hiccup or a standby).
+COPY_RETRY_WAITS = (10, 30, 60, 120)
 STAGING_ROOM = 8
 COPY_BLOCK = 16 * 1024 ** 2
 
@@ -127,6 +137,10 @@ class ConversionResult:
     elements: int
     # Elements with a shape representation that produced no geometry (unsupported or broken shapes).
     skipped: int = 0
+    # Those elements as "IfcClass GlobalId „Name“" (as far as the geometry step can tell).
+    no_geometry: list[str] = field(default_factory=list)
+    # Elements left out because the geometry kernel crashed or hung on them (filled in by process).
+    crashed: list[str] = field(default_factory=list)
 
 
 def convert(
@@ -185,6 +199,8 @@ def convert(
     candidates = [0]
     candidates_token = _candidates.set(candidates)
     recovery_token = _recovery.set((position, set(isolate_ids or ()), set(skip_ids or ())))
+    missing: list[str] = []
+    missing_token = _missing.set(missing)
     report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
     if progress:
         progress(0)
@@ -201,6 +217,7 @@ def convert(
             _kernel.reset(token)
             _candidates.reset(candidates_token)
             _recovery.reset(recovery_token)
+            _missing.reset(missing_token)
 
         if elements == 0:
             # An empty file reported as success would look like a finished conversion.
@@ -217,7 +234,9 @@ def convert(
 
     if progress:
         progress(100)
-    return ConversionResult(output=output_path, elements=elements, skipped=max(0, candidates[0] - elements))
+    return ConversionResult(
+        output=output_path, elements=elements, skipped=max(0, candidates[0] - elements), no_geometry=missing,
+    )
 
 
 def size_text(size: int) -> str:
@@ -268,20 +287,80 @@ def is_network_path(path: Path) -> bool:
 
 
 def _deliver(staged: Path, output_path: Path, fmt: str, report: Callable[[str, str], None]) -> None:
-    """Copy the staged output to the network folder in large blocks, reporting the progress."""
+    """Copy the staged output to the network folder in large blocks, reporting the progress.
+
+    Each file is copied to "<name>.part" and renamed when complete, so the folder never holds a
+    half-written file under the real name; a failed copy is tried again COPY_ATTEMPTS times. If it
+    still fails, the staged output is moved to rescue_dir() rather than deleted with the staging
+    folder, and the error says where it is.
+    """
     files = [(source, output_path.with_suffix(source.suffix)) for source in _output_files(staged, fmt)]
     files = [(source, target) for source, target in files if source.exists()]
     total = sum(source.stat().st_size for source, _ in files)
-    copied, last = 0, 0.0
     report("copy", f"Wird ins Zielverzeichnis kopiert ({size_text(total)}) …")
+    done = 0
     for source, target in files:
-        with open(source, "rb") as reader, open(target, "wb") as writer:
+        for attempt, wait in enumerate((*COPY_RETRY_WAITS, None), 1):
+            try:
+                _copy(source, target, done, total, report)
+                break
+            except OSError as exc:
+                if wait is None:
+                    raise _rescue(files, output_path, exc) from exc
+                report("copy", f"Kopieren fehlgeschlagen ({exc.strerror or exc}) – neuer Versuch {attempt + 1} "
+                               f"in {wait} s …")
+                time.sleep(wait)
+        done += source.stat().st_size
+
+
+def _copy(source: Path, target: Path, done: int, total: int, report: Callable[[str, str], None]) -> None:
+    part = target.with_name(target.name + ".part")
+    copied, last = done, 0.0
+    try:
+        with open(source, "rb") as reader, open(part, "wb") as writer:
             while block := reader.read(COPY_BLOCK):
                 writer.write(block)
                 copied += len(block)
                 if time.monotonic() - last >= 1:
                     last = time.monotonic()
                     report("copy", f"Wird ins Zielverzeichnis kopiert … {size_text(copied)} von {size_text(total)}")
+        os.replace(part, target)
+    except OSError:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _rescue(files: list[tuple[Path, Path]], output_path: Path, error: OSError) -> Exception:
+    """Move the staged output to rescue_dir(); returns the error to raise, saying where it went."""
+    from ifc_converter.app import rescue_dir
+
+    folder = rescue_dir()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        kept = []
+        for source, target in files:
+            destination = _free_name(folder / target.name)
+            shutil.move(source, destination)
+            kept.append(destination)
+    except OSError:
+        return OSError(f"Die fertige Datei konnte nicht nach {output_path.parent} kopiert werden ({error}).")
+    return OSError(
+        f"Die fertige Datei konnte nicht nach {output_path.parent} kopiert werden ({error.strerror or error}). "
+        f"Sie liegt hier: {kept[0]} – bitte von Hand kopieren."
+    )
+
+
+def _free_name(path: Path) -> Path:
+    """``path``, or "name (2).ext" etc. if it exists."""
+    number = 2
+    candidate = path
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem} ({number}){path.suffix}")
+        number += 1
+    return candidate
 
 
 def default_threads() -> int:
@@ -377,18 +456,20 @@ def iter_shapes(
 
     Progress is reported from 0 up to ``progress_share`` percent. ``products`` may pass in
     ``shape_products(model, exclude)`` if already known. With ``chunk_ends`` a ChunkEnd follows
-    the shapes of each chunk. Deeply nested products come last, one by one (see DEEP_NESTING);
+    the shapes of each chunk. Deeply nested products come first, one by one (see DEEP_NESTING);
     ``status`` hears about each of them.
     """
     if products is None:
         products = shape_products(model, exclude)
+    position, isolate, skip = _recovery.get() or (None, set(), set())
+    if skip:  # products that crashed or hung the kernel before: left out, reported by the caller
+        products = [product for product in products if product.id() not in skip]
     counter = _candidates.get()
     if counter is not None:
         counter[0] += len(products)
-    position, isolate, skip = _recovery.get() or (None, set(), set())
-    if skip:  # products that crashed or hung the kernel before: left out (counted as skipped)
-        products = [product for product in products if product.id() not in skip]
     total = len(products)
+    candidates = products
+    produced: set[int] = set()
     deep = deep_products(products)
     deep_ids = {product.id() for product, _ in deep}
     deep += [(product, 0) for product in products if product.id() in isolate and product.id() not in deep_ids]
@@ -399,6 +480,37 @@ def iter_shapes(
     library = geometry_library()
     local = not settings.get("use-world-coords")
     size = chunk_size(threads)
+    # Computed first: if one of them crashes or hangs the kernel again, the next attempt starts
+    # after minutes instead of after all the other products.
+    for number, (product, depth) in enumerate(deep, 1):
+        label = product_label(product)
+        if depth >= CYCLIC:
+            if status:
+                status("note", f"Geometrie enthält sich selbst (fehlerhafte Datei), nicht umgewandelt: {label}")
+            continue
+        if position:
+            position("element", [product.id()], label)
+        if status:
+            kind = f"Tief verschachteltes Bauteil ({depth} Ebenen)" if depth else "Bauteil"
+            # One phase for all of them: the log gets the first line, the window each one.
+            status("deep", f"{kind} {number} von {len(deep)} wird einzeln berechnet: {label} …")
+        shape = _deep_shape(settings, product, strategy)
+        if shape is not None:
+            yield _produced(shape, produced)
+        if progress:
+            progress(number * progress_share // total)
+    if deep:
+        if chunk_ends:
+            yield ChunkEnd([product.id() for product, _ in deep])
+        if status:
+            status("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
+
+    def delivered(shape):
+        # Products whose shape is done are no suspects if the kernel crashes or hangs in this chunk.
+        if position:
+            position("delivered", [shape.id], "")
+        return _produced(shape, produced)
+
     for start in range(0, len(products), size):
         chunk = products[start:start + size]
         if position:
@@ -424,7 +536,7 @@ def iter_shapes(
                 if local and not shape.geometry.verts:
                     empty.append(model.by_id(shape.id))
                 else:
-                    yield shape
+                    yield delivered(shape)
         if hybrid:
             # The hybrid kernel gives up on some shapes that OpenCASCADE can still build, and leaves
             # type geometry with openings empty in local coordinates, where OpenCASCADE builds it:
@@ -438,37 +550,39 @@ def iter_shapes(
                     if local and not shape.geometry.verts:
                         empty.append(model.by_id(shape.id))
                     else:
-                        yield shape
+                        yield delivered(shape)
         if empty:
             settings.set("use-world-coords", True)  # iterators copy their settings
             try:
                 world = list(_iterate(model, settings, threads, empty, library))
             finally:
                 settings.set("use-world-coords", False)
-            yield from world
+            for shape in world:
+                yield delivered(shape)
         if chunk_ends:
             yield ChunkEnd([product.id() for product in chunk])
         _release_memory()
         if progress:
-            progress((start + len(chunk)) * progress_share // total)
+            progress((len(deep) + start + len(chunk)) * progress_share // total)
 
-    for number, (product, depth) in enumerate(deep, 1):
-        label = f"{product.is_a()} {product.GlobalId}"
-        if position:
-            position("element", [product.id()], label)
-        if status:
-            kind = f"Tief verschachteltes Bauteil ({depth} Ebenen)" if depth else "Bauteil"
-            # One phase for all of them: the log gets the first line, the window each one.
-            status("deep", f"{kind} {number} von {len(deep)} wird einzeln berechnet: {label} …")
-        shape = _deep_shape(settings, product, strategy)
-        if shape is not None:
-            yield shape
-        if progress:
-            progress((len(products) + number) * progress_share // total)
-    if deep and chunk_ends:
-        yield ChunkEnd([product.id() for product, _ in deep])
+    missing = _missing.get()
+    if missing is not None:
+        missing.extend(product_label(product) for product in candidates if product.id() not in produced)
     if position:  # a crash or hang from here on is not in the kernel
         position("done", [], "")
+
+
+def _produced(shape, produced: set[int]):
+    """``shape``, noted in ``produced`` if it has geometry."""
+    if shape.geometry.verts:
+        produced.add(shape.id)
+    return shape
+
+
+def product_label(product: ifcopenshell.entity_instance) -> str:
+    """How a product is named in messages: class, GlobalId (to search for it) and its name."""
+    name = f" „{product.Name}“" if getattr(product, "Name", None) else ""
+    return f"{product.is_a()} {product.GlobalId}{name}"
 
 
 def deep_products(products: list) -> list[tuple[ifcopenshell.entity_instance, int]]:
@@ -498,20 +612,28 @@ def _nesting_depth(item: ifcopenshell.entity_instance, depths: dict[int, int]) -
     """Levels of IfcMappedItem / IfcBooleanResult / IfcCsgSolid nesting below ``item`` (itself: 1).
 
     Iterative, as the nesting can be far deeper than Python's recursion limit; ``depths`` caches the
-    result per entity, since type geometry and operands are shared.
+    result per entity, since type geometry and operands are shared. Geometry that contains itself
+    (a broken file) is CYCLIC deep: the kernel would recurse into it forever.
     """
     stack = [(item, False)]
+    on_path: set[int] = set()
     while stack:
         entity, expanded = stack.pop()
         key = entity.id()
         if key in depths:
             continue
         children = _nested_children(entity)
-        if expanded or not children:
-            depths[key] = 1 + max((depths.get(child.id(), 0) for child in children), default=0)
-            continue
-        stack.append((entity, True))
-        stack.extend((child, False) for child in children if child.id() not in depths)
+        if expanded:
+            on_path.discard(key)
+            depths[key] = min(CYCLIC, 1 + max((depths.get(child.id(), 0) for child in children), default=0))
+        elif not children:
+            depths[key] = 1
+        elif any(child.id() in on_path or child.id() == key for child in children):
+            depths[key] = CYCLIC
+        else:
+            on_path.add(key)
+            stack.append((entity, True))
+            stack.extend((child, False) for child in children if child.id() not in depths)
     return depths[item.id()]
 
 
@@ -533,7 +655,12 @@ def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, 
     representation = _body_representation(product)
     if representation is None:
         return None
-    libraries = ["opencascade"] if strategy != "hybrid" else ["hybrid", "opencascade"]
+    # The same kernel as in a chunk: under "accurate" the hybrid one only for big triangle meshes
+    # (OpenCASCADE takes over 20 minutes for some terrain), with OpenCASCADE where it gives up.
+    if strategy == "hybrid" or (strategy == "accurate" and _triangle_mesh_only(product)):
+        libraries = ["hybrid", "opencascade"]
+    else:
+        libraries = ["opencascade"]
     for library in libraries:
 
         def compute():
@@ -599,8 +726,12 @@ def _triangle_mesh_only(product: ifcopenshell.entity_instance) -> bool:
         if not representation.is_a("IfcShapeModel") or representation.RepresentationType in NON_BODY_TYPES:
             continue
         items = list(representation.Items)
+        visited = 0
         while items:
             item = items.pop()
+            visited += 1
+            if visited > MAX_VISITED_ITEMS:  # type geometry that contains itself (a broken file)
+                return False
             if item.is_a("IfcMappedItem"):
                 items.extend(item.MappingSource.MappedRepresentation.Items)
             elif item.is_a("IfcTriangulatedFaceSet"):

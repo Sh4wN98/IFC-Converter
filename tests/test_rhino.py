@@ -505,3 +505,39 @@ def test_property_sets_match_get_psets(mixed_ifc):
         ]
         assert quantities == expected[1]
     assert not sets._shared  # shared definitions are dropped after their last use
+
+
+def test_space_layers_start_hidden(tmp_path):
+    rhino_file = rhino3dm.File3dm()
+    layers = rhino._LayerTable(rhino_file)
+    space = layers.get((), "IfcSpace", (10, 20, 30, 40))
+    wall = layers.get((), "IfcWall", (10, 20, 30, 255))
+    assert rhino_file.Layers.FindIndex(space).Visible is False
+    assert rhino_file.Layers.FindIndex(wall).Visible is True
+
+
+def test_lengths_in_user_text_are_in_metres(tmp_path):
+    import ifcopenshell
+    import ifcopenshell.api as api
+
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="mm")
+    length = model.createIfcSIUnit(None, "LENGTHUNIT", "MILLI", "METRE")
+    area = model.createIfcSIUnit(None, "AREAUNIT", None, "SQUARE_METRE")
+    model.createIfcUnitAssignment([length, area])
+    project.UnitsInContext = model.by_type("IfcUnitAssignment")[0]
+    wall = api.run("root.create_entity", model, ifc_class="IfcWall", name="W")
+    qto = api.run("pset.add_qto", model, product=wall, name="Qto_WallBaseQuantities")
+    api.run("pset.edit_qto", model, qto=qto, properties={"Length": 6403.99999999979, "NetSideArea": 22.5})
+    pset = api.run("pset.add_pset", model, product=wall, name="Custom")
+    pset.HasProperties = [
+        model.createIfcPropertySingleValue("Offset", None, model.createIfcLengthMeasure(250.0), None),
+        model.createIfcPropertySingleValue("Count", None, model.createIfcInteger(3), None),
+        model.createIfcPropertySingleValue("Thick", None, model.createIfcLengthMeasure(2.0), model.createIfcSIUnit(None, "LENGTHUNIT", "CENTI", "METRE")),
+    ]
+    strings = rhino._user_strings(wall, rhino._PropertySets(model))
+    assert strings["Qto_WallBaseQuantities.Length"] == "6.404"
+    assert strings["Qto_WallBaseQuantities.NetSideArea"] == "22.5"  # m² already
+    assert strings["Custom.Offset"] == "0.25"
+    assert strings["Custom.Count"] == "3"
+    assert strings["Custom.Thick"] == "0.02"

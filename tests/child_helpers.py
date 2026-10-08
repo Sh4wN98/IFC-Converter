@@ -63,6 +63,15 @@ def report_skipped(input_path, output_path, fmt, threads, progress=None, **optio
     return ConversionResult(output=Path(output_path), elements=1, skipped=3)
 
 
+def _segfault():
+    """Crash with SIGSEGV like native code, but without leaving a core dump on the developer's machine."""
+    if sys.platform != "win32":
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.kill(os.getpid(), signal.SIGSEGV)
+
+
 def _record_attempt(output_path, kernel):
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(Path(output_path).with_suffix(".attempts"), "a") as attempts:
@@ -75,13 +84,13 @@ def segfault_unless_opencascade(input_path, output_path, fmt, threads, progress=
     if kernel != "opencascade":
         progress(0)
         progress(40)
-        os.kill(os.getpid(), signal.SIGSEGV)
+        _segfault()
     return convert(input_path, output_path, fmt, threads, progress, kernel=kernel, **options)
 
 
 def always_segfault(input_path, output_path, fmt, threads, progress=None, kernel=None, **options):
     _record_attempt(output_path, kernel)
-    os.kill(os.getpid(), signal.SIGSEGV)
+    _segfault()
 
 
 def leave_glb_temp_files_and_segfault(input_path, output_path, fmt, threads, progress=None, **options):
@@ -89,7 +98,7 @@ def leave_glb_temp_files_and_segfault(input_path, output_path, fmt, threads, pro
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", ".indices.tmp", ".vertices.tmp"):
         Path(f"{output_path}{suffix}").write_text("partial")
-    os.kill(os.getpid(), signal.SIGSEGV)
+    _segfault()
 
 
 def chatty_native_code(input_path, output_path, fmt, threads, progress=None, **options):
@@ -198,15 +207,18 @@ def _fail_on_named(name, how):
 
     def fail():
         if how == "crash":
-            os.kill(os.getpid(), signal.SIGSEGV)
+            _segfault()
         time.sleep(600)
 
     iterate, deep_shape = converter._iterate, converter._deep_shape
 
     def failing_iterate(model, settings, threads, products, library):
-        if any(product.Name == name for product in products):
+        # Like the real kernel: the other threads finish their products, then it is stuck.
+        others = [product for product in products if product.Name != name]
+        if others:
+            yield from iterate(model, settings, threads, others, library)
+        if len(others) < len(products):
             fail()
-        yield from iterate(model, settings, threads, products, library)
 
     def failing_deep_shape(settings, product, strategy):
         if product.Name == name:
@@ -224,3 +236,10 @@ def hang_on_wall_7(input_path, output_path, fmt, threads, progress=None, **optio
 def crash_on_wall_7(input_path, output_path, fmt, threads, progress=None, **options):
     _fail_on_named("Wall 7", "crash")
     return convert(input_path, output_path, fmt, threads, progress, **options)
+
+
+def overflow_then_wait(input_path, output_path, fmt, threads, progress=None, **options):
+    """Report a stack overflow like faulthandler on Windows, then hang without CPU, as a kernel did there."""
+    progress(0)
+    os.write(2, b"Windows fatal exception: stack overflow\n\nThread 0x1 (most recent call first):\n")
+    time.sleep(600)

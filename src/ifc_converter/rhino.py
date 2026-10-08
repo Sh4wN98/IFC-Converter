@@ -18,6 +18,7 @@ import ifcopenshell
 import ifcopenshell.geom as geom
 import ifcopenshell.ifcopenshell_wrapper as wrapper
 import ifcopenshell.util.element as element_util
+import ifcopenshell.util.unit as unit_util
 import numpy
 import rhino3dm
 
@@ -35,6 +36,20 @@ NO_STOREY = "Ohne Geschoss"
 AXES = "Achsen"
 FILE_VERSION = 7
 MAX_STRING_LENGTH = 1000
+# Classes whose layers start hidden: rooms (IfcSpace) are volumes that fill every storey and would
+# hide the building behind them; one click shows them.
+HIDDEN_CLASSES = {"IfcSpace"}
+# Property values that are lengths, areas or volumes, by their measure (or quantity) type, with
+# the unit type they are in; the user text gives them in m, m² and m³ like the geometry.
+UNIT_DIMENSIONS = {"LENGTHUNIT": 1, "AREAUNIT": 2, "VOLUMEUNIT": 3}
+MEASURE_UNITS = {
+    "IfcLengthMeasure": "LENGTHUNIT",
+    "IfcPositiveLengthMeasure": "LENGTHUNIT",
+    "IfcNonNegativeLengthMeasure": "LENGTHUNIT",
+    "IfcAreaMeasure": "AREAUNIT",
+    "IfcVolumeMeasure": "VOLUMEUNIT",
+}
+QUANTITY_UNITS = {"IfcQuantityLength": "LENGTHUNIT", "IfcQuantityArea": "AREAUNIT", "IfcQuantityVolume": "VOLUMEUNIT"}
 # Share of the progress range used by the geometry iterator; the rest covers writing the file.
 ITERATOR_SHARE = 90
 # Elements with more triangles than this are mostly tessellated organic shapes (sanitary objects,
@@ -957,7 +972,7 @@ def _user_strings(element: ifcopenshell.entity_instance, property_sets: _Propert
             psets = element_util.get_psets(element, psets_only=True)
             quantities = element_util.get_psets(element, qtos_only=True)
         else:
-            psets, quantities = property_sets.of(element)
+            psets, quantities = property_sets.of(element, si=True)
     except Exception:
         psets, quantities = {}, {}
     # Standard quantities (areas, volumes, lengths) are kept. Vendor quantity dumps such as
@@ -968,8 +983,17 @@ def _user_strings(element: ifcopenshell.entity_instance, property_sets: _Propert
         for prop, value in properties.items():
             if prop == "id" or not isinstance(value, (str, int, float, bool)):
                 continue
-            strings[f"{pset}.{prop}"] = str(value)[:MAX_STRING_LENGTH]
+            # 12 significant digits drop float noise ("6403.99999999979" → "6404") and keep 0.01 mm
+            # even in georeferenced coordinates.
+            text = _float_text(value) if isinstance(value, float) else str(value)
+            strings[f"{pset}.{prop}"] = text[:MAX_STRING_LENGTH]
     return strings
+
+
+def _float_text(value: float) -> str:
+    """A property value without float noise, still recognisable as a decimal ("15.0", "6.404")."""
+    text = f"{value:.12g}"
+    return text if any(c in text for c in ".enia") else text + ".0"
 
 
 class _PropertySets:
@@ -982,7 +1006,10 @@ class _PropertySets:
     """
 
     def __init__(self, model: ifcopenshell.file):
-        self._types: dict[int, tuple[dict, dict]] = {}
+        # Factor to SI (m, m², m³) of the project's length, area and volume unit.
+        self._unit_scales = {kind: unit_util.calculate_unit_scale(model, kind) for kind in UNIT_DIMENSIONS}
+        self._factors: dict[int, dict[str, float]] = {}
+        self._types: dict[int, tuple[dict, dict, dict]] = {}
         # Elements left that use each shared definition.
         self._uses: dict[int, int] = {}
         self._shared: dict[int, dict] = {}
@@ -990,37 +1017,84 @@ class _PropertySets:
             for definition in _definitions(relationship):
                 self._uses[definition.id()] = self._uses.get(definition.id(), 0) + len(relationship.RelatedObjects)
 
-    def of(self, element: ifcopenshell.entity_instance) -> tuple[dict, dict]:
-        """``get_psets(element, psets_only=True)`` and ``get_psets(element, qtos_only=True)``."""
+    def of(self, element: ifcopenshell.entity_instance, si: bool = False) -> tuple[dict, dict]:
+        """``get_psets(element, psets_only=True)`` and ``get_psets(element, qtos_only=True)``.
+
+        With ``si`` lengths, areas and volumes are converted from the file's units to m, m² and m³,
+        the units of the Rhino file: a Revit wall's Qto Length of "6403.99999999979" (mm) is 6.404.
+        """
         psets: dict[str, dict] = {}
         quantities: dict[str, dict] = {}
+        factors: dict[str, dict[str, float]] = {}
         element_type = element_util.get_type(element)
         if element_type:
-            type_psets, type_quantities = self._type_sets(element_type)
+            type_psets, type_quantities, type_factors = self._type_sets(element_type)
             psets = {name: dict(values) for name, values in type_psets.items()}
             quantities = {name: dict(values) for name, values in type_quantities.items()}
+            factors = {name: dict(values) for name, values in type_factors.items()}
         for relationship in element.IsDefinedBy or ():
             if relationship.is_a("IfcRelDefinesByProperties"):
                 for definition in _definitions(relationship):
                     sets = _kind(definition, psets, quantities)
                     if sets is not None:
                         sets.setdefault(definition.Name, {}).update(self._properties(definition))
+                        if si:
+                            found = factors.setdefault(definition.Name, {})
+                            found.update(self._factors_of(definition))
+        if si:
+            for name, scale in factors.items():
+                for sets in (psets, quantities):
+                    values = sets.get(name)
+                    for prop, factor in scale.items() if values else ():
+                        value = values.get(prop)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            values[prop] = value * factor
         return psets, quantities
 
-    def _type_sets(self, element_type: ifcopenshell.entity_instance) -> tuple[dict, dict]:
+    def _factors_of(self, definition: ifcopenshell.entity_instance) -> dict[str, float]:
+        """The factors to SI of the length, area and volume values in a property or quantity set."""
+        key = definition.id()
+        if key not in self._factors:
+            factors = {}
+            if definition.is_a("IfcPropertySet"):
+                for prop in definition.HasProperties or ():
+                    if prop.is_a("IfcPropertySingleValue") and prop.NominalValue is not None:
+                        kind = MEASURE_UNITS.get(prop.NominalValue.is_a())
+                        factor = self._scale(kind, prop.Unit) if kind else 1.0
+                        if factor != 1.0:
+                            factors[prop.Name] = factor
+            elif definition.is_a("IfcElementQuantity"):
+                for quantity in definition.Quantities or ():
+                    kind = QUANTITY_UNITS.get(quantity.is_a())
+                    factor = self._scale(kind, quantity.Unit) if kind else 1.0
+                    if factor != 1.0:
+                        factors[quantity.Name] = factor
+            self._factors[key] = factors
+        return self._factors[key]
+
+    def _scale(self, kind: str, unit: ifcopenshell.entity_instance | None) -> float:
+        if unit is None:
+            return self._unit_scales[kind]
+        if unit.is_a("IfcSIUnit"):  # e.g. millimetre on the property itself
+            return unit_util.get_prefix_multiplier(unit.Prefix) ** UNIT_DIMENSIONS[kind] if unit.Prefix else 1.0
+        return 1.0  # imperial units on single properties: left as they are
+
+    def _type_sets(self, element_type: ifcopenshell.entity_instance) -> tuple[dict, dict, dict]:
         key = element_type.id()
         if key not in self._types:
             psets: dict[str, dict] = {}
             quantities: dict[str, dict] = {}
+            factors: dict[str, dict[str, float]] = {}
             if element_type.is_a("IfcTypeObject"):
                 for definition in element_type.HasPropertySets or []:
                     sets = _kind(definition, psets, quantities)
                     if sets is not None:
                         sets.setdefault(definition.Name, {}).update(element_util.get_property_definition(definition))
+                        factors.setdefault(definition.Name, {}).update(self._factors_of(definition))
             else:
                 psets = element_util.get_psets(element_type, psets_only=True, should_inherit=False)
                 quantities = element_util.get_psets(element_type, qtos_only=True, should_inherit=False)
-            self._types[key] = psets, quantities
+            self._types[key] = psets, quantities, factors
         return self._types[key]
 
     def _properties(self, definition: ifcopenshell.entity_instance) -> dict:
@@ -1074,7 +1148,9 @@ class _LayerTable:
             elif root not in self._parents:
                 self._parents[root] = self._add(root, (0, 0, 0, 255), None)
             # The class layer takes the colour of its first element.
-            self._classes[key] = self._add(ifc_class, color[:3] + (255,), self._parents[parent][1])[0]
+            self._classes[key] = self._add(
+                ifc_class, color[:3] + (255,), self._parents[parent][1], visible=ifc_class not in HIDDEN_CLASSES,
+            )[0]
         return self._classes[key]
 
     def spatial(self, path: SpatialPath) -> tuple[int, object]:
@@ -1084,7 +1160,7 @@ class _LayerTable:
             self._parents[key] = self._add(_level_name(path[-1]), (0, 0, 0, 255), parent_id)
         return self._parents[key]
 
-    def _add(self, name: str, color: Color, parent_id) -> tuple[int, object]:
+    def _add(self, name: str, color: Color, parent_id, visible: bool = True) -> tuple[int, object]:
         names = self._names.setdefault(parent_id, set())
         candidate, n = name, 2
         while candidate in names:
@@ -1094,6 +1170,7 @@ class _LayerTable:
         layer = rhino3dm.Layer()
         layer.Name = candidate
         layer.Color = color
+        layer.Visible = visible
         if parent_id is not None:
             layer.ParentLayerId = parent_id
         index = self._rhino.Layers.Add(layer)

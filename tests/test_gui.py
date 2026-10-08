@@ -840,3 +840,55 @@ def test_deep_elements_are_shown_in_the_row(window, wall_ifc, tmp_path):
         assert "Bauteil 3 von 40" in window.status_text(0)
     finally:
         window._worker = None
+
+
+def test_elements_skipped_after_kernel_crashes_are_named(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._on_file_done(0, tmp_path / "wall.3dm", 117137, 3, ["IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag“"])
+    log = window.log_view.toPlainText()
+    assert "(117.137 Bauteile)" in log
+    assert ("⚠ wall.ifc: 1 Bauteil übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb: "
+            "IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag“.") in log
+    assert "⚠ wall.ifc: 3 Bauteile ohne Geometrie" in log
+
+
+def test_crashed_warning_names_ten_and_points_to_the_log():
+    from ifc_converter.interactive import crashed_warning
+
+    assert crashed_warning([]) == ""
+    text = crashed_warning([f"IfcWall {i}" for i in range(12)])
+    assert text.startswith("12 Bauteile übersprungen") and "IfcWall 9" in text and "IfcWall 10" not in text
+    assert "… und 2 weitere (alle in der Logdatei)" in text
+
+
+def test_closing_during_a_conversion_asks_with_no_as_default(window, wall_ifc, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    asked = []
+
+    def question(parent, title, text, buttons, default):
+        asked.append((text, default))
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    window.add_paths([wall_ifc])
+    window._worker = ConversionWorker([], "3dm", tmp_path)
+    window._started_at = time.monotonic() - 125
+    try:
+        window._on_file_started(0, tmp_path / "wall.3dm")
+        window._on_file_progress(0, 42)
+        assert not window.close()  # still open
+    finally:
+        window._worker = None
+    text, default = asked[0]
+    assert default == QMessageBox.StandardButton.No
+    assert "„wall.ifc“ wird umgewandelt, die Umwandlung läuft seit 2 min 5 s (42 %)" in text
+
+
+def test_durations_in_german():
+    from ifc_converter.interactive import duration_text, number_text
+
+    assert duration_text(12.34) == "12,3 s"
+    assert duration_text(3122.3) == "52 min 2 s"
+    assert duration_text(3725) == "1 h 2 min"
+    assert number_text(117137) == "117.137"

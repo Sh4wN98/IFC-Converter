@@ -282,7 +282,7 @@ def test_cli_kernel_flag_opencascade_disables_retry(wall_ifc, tmp_path, monkeypa
     assert main([str(wall_ifc), "-d", str(tmp_path), "--kernel", "opencascade"]) == 1
     captured = capsys.readouterr()
     assert "Absturz im schnellen" not in captured.err
-    assert "Umwandlung abgestürzt (Code -11)" in captured.err
+    assert "Umwandlung abgestürzt: Speicherzugriffsfehler (Code -11)" in captured.err
 
 
 @posix_only
