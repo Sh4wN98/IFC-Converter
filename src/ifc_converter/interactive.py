@@ -237,6 +237,7 @@ def convert_in_terminal(
     label: str = "",
     on_retry: Callable[[str], None] | None = None,
     low_priority: bool = True,
+    blocks: bool = False,
 ) -> ConversionResult:
     """convert() in a child process with a progress line on stdout.
 
@@ -260,7 +261,7 @@ def convert_in_terminal(
     try:
         return convert_in_child(
             source, target, fmt, threads, line.percent, geometry=geometry, on_retry=retrying,
-            low_priority=low_priority, status=line.phase,
+            low_priority=low_priority, status=line.phase, **({"blocks": True} if blocks and fmt == "3dm" else {}),
         )
     except BaseException:
         for path in created:
@@ -287,7 +288,10 @@ def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
     return files, rejected
 
 
-def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep", low_priority: bool = True) -> int:
+def run(
+    fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep", low_priority: bool = True,
+    blocks: bool = False,
+) -> int:
     output_dir = output_dir or desktop_dir()
     print("=" * 60)
     print(f"  {APP_NAME} {__version__}")
@@ -333,7 +337,7 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
             try:
                 result = convert_in_terminal(
                     source, target, fmt, geometry=geometry, label="    ",
-                    on_retry=lambda message: print(f"  ⚠ {message}"), low_priority=low_priority,
+                    on_retry=lambda message: print(f"  ⚠ {message}"), low_priority=low_priority, blocks=blocks,
                 )
             except Exception as exc:
                 print(f"  ✗ Fehler bei {source.name}: {exc}")

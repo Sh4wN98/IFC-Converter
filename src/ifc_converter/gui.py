@@ -265,6 +265,7 @@ class ConversionWorker(QObject):
         geometry: str = DEFAULT_GEOMETRY,
         kernel: str | None = None,
         low_priority: bool = True,
+        blocks: bool = False,
     ):
         super().__init__()
         self.jobs = jobs
@@ -274,6 +275,7 @@ class ConversionWorker(QObject):
         self.threads = threads
         self.kernel = kernel
         self.low_priority = low_priority
+        self.blocks = blocks
         self._cancel = threading.Event()
 
     def cancel(self) -> None:
@@ -315,6 +317,8 @@ class ConversionWorker(QObject):
         try:
             # The geometry mode only exists for Rhino, so GLB/OBJ calls leave it out.
             options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
+            if self.fmt == "3dm" and self.blocks:
+                options["blocks"] = True
             if self.kernel:
                 options["kernel"] = self.kernel
             if self.use_subprocess:
@@ -947,12 +951,13 @@ class MainWindow(QMainWindow):
         label = f"3DM ({GEOMETRY_INFO[geometry][0].split(' (')[0]})" if fmt == "3dm" else fmt.upper()
         prefs = self.preferences
         kernel = "" if prefs.kernel == DEFAULT_KERNEL else f", Geometriekern {KERNEL_INFO[prefs.kernel][0]}"
-        self.log(f"▶ {len(rows)} Datei(en) → {label}, Ziel: {target}{kernel}")
+        blocks = ", gleiche Bauteile als Blöcke" if fmt == "3dm" and prefs.blocks else ""
+        self.log(f"▶ {len(rows)} Datei(en) → {label}{blocks}, Ziel: {target}{kernel}")
 
         jobs = [(row, self.queue[row].path) for row in rows]
         self._worker = ConversionWorker(
             jobs, fmt, out_dir, threads=prefs.effective_threads, geometry=geometry, kernel=prefs.kernel,
-            low_priority=prefs.low_priority,
+            low_priority=prefs.low_priority, blocks=prefs.blocks,
         )
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
