@@ -2,11 +2,14 @@
 
     python packaging/smoke_test.py "dist/IFC Converter"          # CLI conversions
     python packaging/smoke_test.py "dist/IFC Converter" --gui    # and start the program window
+    python packaging/smoke_test.py "<installed folder>" --quick --gui   # one conversion and the window
 
 Runs with a normal Python that has ifcopenshell and rhino3dm (to create the IFC and read the .3dm);
 the conversions themselves run only in the built exe. The wall is 5 x 0.2 x 3 m, and every output
 must have exactly these dimensions. The input lies in a folder with spaces and umlauts, like many
-real project folders.
+real project folders. Conversions must leave nothing in the temp folder, also when they are cancelled
+(Ctrl+Break), and what a killed one leaves is cleared by a later start. With the environment variable
+CI set (GitHub Actions), checks that cannot run on this machine fail instead of being skipped.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -40,6 +44,13 @@ STACK_RESERVE = 256 * 1024 ** 2
 # Time for the control run with a 1 MB stack; the 256 MB exe converts the model in seconds.
 CONTROL_TIMEOUT = 300
 WINDOWS = sys.platform == "win32"
+CI = bool(os.environ.get("CI"))
+# Temp entries of conversions (process.py) start with this.
+TEMP_PREFIX = "ifc-converter-"
+# How long the app leaves temp entries alone (process.STALE_TEMP_AGE), plus a margin.
+STALE_AGE = 25 * 3600
+# The mutex the running app holds for the installer (app.APP_MUTEX, AppMutex in installer.iss).
+APP_MUTEX = "IFCConverter-6F0B8E52-3C1D-4B7A-9E2F-5A8C1D4E7B90"
 
 
 def make_wall(path: Path) -> None:
@@ -171,6 +182,8 @@ def check_network_folder(cli: Path, source: Path, out: Path, log: Path) -> None:
     drive, rest = os.path.splitdrive(str(out.resolve()))
     share = Path(f"\\\\localhost\\{drive[0]}${rest}")
     if not share.is_dir():
+        if CI:
+            raise AssertionError(f"{share} is not reachable, so output to a network folder cannot be checked")
         print(f"  network folder check skipped: {share} is not reachable")
         return
     offset = log.stat().st_size if log.is_file() else 0
@@ -192,6 +205,120 @@ def check_large_model(path: Path, log: Path, log_offset: int) -> None:
     if "Worker processes failed" in written or "Traceback" in written:
         raise AssertionError(f"the worker processes failed:\n{written[-3000:]}")
     print(f"  {path.name}: {WALLS} objects, worker processes ran ✓")
+
+
+def temp_entries() -> set[str]:
+    """Names of the conversions' files and folders in the temp folder."""
+    return {entry.name for entry in Path(tempfile.gettempdir()).glob(f"{TEMP_PREFIX}*")}
+
+
+def check_no_leftovers(before: set[str], what: str) -> None:
+    left = sorted(temp_entries() - before)
+    if left:
+        raise AssertionError(f"{what} left files in {tempfile.gettempdir()}: {left}")
+    print(f"  {what}: nothing left in the temp folder ✓")
+
+
+def mutex_exists() -> bool:
+    """Whether some process holds APP_MUTEX (Windows only)."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    kernel32.OpenMutexW.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_wchar_p)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.OpenMutexW(0x00100000, False, APP_MUTEX)  # SYNCHRONIZE
+    if handle:
+        kernel32.CloseHandle(handle)
+    return bool(handle)
+
+
+def kill_tree(process: subprocess.Popen) -> None:
+    """End ``process`` and its children at once, like the Task Manager or a power cut."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def wait_for_no_processes(image: str, timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while running(image):
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{image} processes still running after {timeout:.0f} s: {running(image)}")
+        time.sleep(0.5)
+
+
+def start_interruptible(cli: Path, source: Path, target: Path, *options: str) -> subprocess.Popen:
+    """Start ifc-convert in a process group of its own; returns once its conversion child runs."""
+    command = [str(cli), str(source), "-o", str(target), *options]
+    print("+", " ".join(command), flush=True)
+    group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8",
+                               errors="replace", **group)
+    deadline = time.monotonic() + 120
+    while len(running(cli.name)) < 2:  # the exe and the conversion child it started
+        if process.poll() is not None:
+            raise AssertionError(f"ifc-convert ended (exit code {process.returncode}) before it could be "
+                                 f"interrupted:\n{process.stdout.read()[-2000:]}")
+        if time.monotonic() > deadline:
+            kill_tree(process)
+            raise AssertionError("ifc-convert started no conversion child within 120 s")
+        time.sleep(0.2)
+    time.sleep(2)  # well inside the conversion, still reading the IFC
+    if WINDOWS and not mutex_exists():
+        kill_tree(process)
+        raise AssertionError(f"ifc-convert does not hold the mutex {APP_MUTEX} for the installer")
+    return process
+
+
+def check_cancel(cli: Path, source: Path, out: Path) -> None:
+    """Ctrl+Break stops a conversion like Ctrl+C: exit code 130, no output, no temp files, no processes."""
+    before = temp_entries()
+    target = out / "cancelled.3dm"
+    process = start_interruptible(cli, source, target, "-f", "3dm")
+    try:
+        if WINDOWS:
+            os.kill(process.pid, signal.CTRL_BREAK_EVENT)  # reaches the process group of the exe
+        else:
+            os.kill(process.pid, signal.SIGTERM)  # only the exe, which then stops its child itself
+        output, _ = process.communicate(timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        kill_tree(process)
+        raise AssertionError(f"ifc-convert could not be cancelled with Ctrl+Break: {exc}") from exc
+    print(f"  exit code {process.returncode}")
+    for line in output.splitlines():
+        print(f"  | {line}")
+    if process.returncode != 130 or "abgebrochen" not in output:
+        raise AssertionError(f"Ctrl+Break: exit code {process.returncode} instead of 130 (cancelled)")
+    if target.exists():
+        raise AssertionError(f"the cancelled conversion left {target.name} behind")
+    wait_for_no_processes(cli.name)
+    check_no_leftovers(before, "a cancelled conversion")
+
+
+def check_killed(cli: Path, source: Path, out: Path, quick_source: Path) -> None:
+    """A killed conversion cannot clean up after itself; a later start removes what it left once it is old."""
+    before = temp_entries()
+    process = start_interruptible(cli, source, out / "killed.3dm", "-f", "3dm")
+    kill_tree(process)
+    process.communicate(timeout=60)
+    wait_for_no_processes(cli.name)
+    left = sorted(temp_entries() - before)
+    print(f"  a killed conversion left {left or 'nothing'} in the temp folder")
+    old = time.time() - STALE_AGE
+    for name in left:
+        entry = Path(tempfile.gettempdir()) / name
+        for path in [*entry.rglob("*"), entry] if entry.is_dir() else [entry]:
+            os.utime(path, (old, old))
+    convert(cli, quick_source, out / "after-kill.glb", "-f", "glb")
+    remaining = sorted(temp_entries() & set(left))
+    if remaining:
+        raise AssertionError(f"the next start did not remove what the killed conversion left: {remaining}")
+    print("  the next start removed it ✓")
 
 
 def check_extent(label: str, minimum, maximum) -> None:
@@ -339,18 +466,26 @@ def check_gui(gui: Path, source: Path) -> None:
         if process.poll() is not None:
             raise AssertionError(f"the program window exited (exit code {process.returncode})")
         print(f"  running, windows: {titles or '(offscreen)'} ✓")
+        if WINDOWS:
+            if not mutex_exists():
+                raise AssertionError(f"the program window does not hold the mutex {APP_MUTEX} for the installer")
+            print("  holds the mutex for the installer ✓")
     finally:
         if WINDOWS:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
         else:
             process.kill()
         process.wait(30)
+    if WINDOWS and mutex_exists():
+        raise AssertionError("the mutex for the installer is still held after the program window ended")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("app_dir", type=Path, help='the built program folder, e.g. "dist/IFC Converter"')
     parser.add_argument("--gui", action="store_true", help="also start the program window")
+    parser.add_argument("--quick", action="store_true",
+                        help="only one conversion (e.g. to check an installed or updated app)")
     args = parser.parse_args()
 
     suffix = ".exe" if WINDOWS else ""
@@ -364,6 +499,7 @@ def main() -> int:
             raise SystemExit(f"{name} is missing from the build")
 
     before = snapshot(args.app_dir)
+    temp_before = temp_entries()
     with tempfile.TemporaryDirectory(prefix="ifc-smoke-") as tmp:
         folder = Path(tmp) / "Projekt Müller – Prüfung"
         folder.mkdir()
@@ -375,6 +511,12 @@ def main() -> int:
 
         convert(cli, source, out / "wall-brep.3dm", "-f", "3dm")
         check_3dm(out / "wall-brep.3dm", rhino3dm.Brep)
+        if args.quick:
+            check_no_leftovers(temp_before, "the conversion")
+            if args.gui:
+                check_gui(gui, source)
+            print("Quick smoke test passed.")
+            return 0
         # The default ("accurate") computes the wall with OpenCASCADE; this exercises the CGAL kernel too.
         convert(cli, source, out / "wall-brep-hybrid.3dm", "-f", "3dm", "--kernel", "hybrid")
         check_3dm(out / "wall-brep-hybrid.3dm", rhino3dm.Brep)
@@ -409,6 +551,10 @@ def main() -> int:
         if leftovers:
             raise AssertionError(f"conversion processes still running: {leftovers}")
         print("  no conversion processes left over ✓")
+        check_no_leftovers(temp_before, "the conversions")
+
+        check_cancel(cli, walls, out)
+        check_killed(cli, walls, out, source)
 
         if args.gui:
             check_gui(gui, source)

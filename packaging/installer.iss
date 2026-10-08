@@ -49,7 +49,11 @@ UninstallDisplayName={#AppName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; A running IFC Converter is closed (after asking) before files are replaced, and not restarted.
+; While IFC Converter runs (the window or ifc-convert, and with them any conversion), Setup and the
+; uninstaller ask to close it first and refuse to go on otherwise: the app holds this mutex
+; (app.APP_MUTEX). Killing it would lose a conversion that may have run for an hour.
+AppMutex=IFCConverter-6F0B8E52-3C1D-4B7A-9E2F-5A8C1D4E7B90
+; Other programs using its files are closed (after asking) before files are replaced, and not restarted.
 CloseApplications=yes
 RestartApplications=no
 ShowLanguageDialog=auto
@@ -94,3 +98,23 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 ; Only what the program itself created inside its own folder. Settings and logs in the user profile
 ; (%APPDATA%\IFC Converter, %LOCALAPPDATA%\IFC Converter) are kept, like most programs do.
 Type: filesandordirs; Name: "{app}\_internal"
+
+[Code]
+const
+  // Where versions before the renaming kept their settings (QSettings of gui.LEGACY_NAME). Later
+  // versions copy them to settings.ini once (and Qt may create the key empty when looking for them).
+  LegacyParentKey = 'Software\IFC File Converter';
+  LegacyKey = 'Software\IFC File Converter\IFC File Converter';
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    // Only that key; its parent only if nothing else is left in it.
+    if RegKeyExists(HKCU, LegacyKey) then
+      if not RegDeleteKeyIncludingSubkeys(HKCU, LegacyKey) then
+        Log('Could not remove HKCU\' + LegacyKey);
+    if RegKeyExists(HKCU, LegacyParentKey) then
+      RegDeleteKeyIfEmpty(HKCU, LegacyParentKey);
+  end;
+end;

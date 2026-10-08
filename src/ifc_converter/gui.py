@@ -11,7 +11,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -48,16 +49,18 @@ from PySide6.QtWidgets import (
 
 from ifc_converter import __version__
 from ifc_converter import app as app_info
-from ifc_converter.app import APP_NAME, enable_crash_log, install_exception_hooks, setup_logging
-from ifc_converter.converter import DEFAULT_KERNEL, FORMATS, convert
+from ifc_converter.app import APP_NAME, enable_crash_log, hold_app_mutex, install_exception_hooks, setup_logging
+from ifc_converter.converter import DEFAULT_KERNEL, FORMATS, ConversionResult, convert
 from ifc_converter.dialogs import (
     KERNEL_INFO,
     AboutDialog,
     ErrorReporter,
     Preferences,
     SettingsDialog,
+    SkippedDialog,
     app_icon,
     open_log,
+    save_anonymized_log,
 )
 from ifc_converter.interactive import (
     SKIPPED_HINT,
@@ -66,8 +69,13 @@ from ifc_converter.interactive import (
     crashed_warning,
     desktop_dir,
     duration_text,
+    error_message,
+    failure_hint,
+    is_internal_error,
     number_text,
     output_files,
+    resource_text,
+    rhino_workers,
     skipped_count,
     skipped_warning,
     unique_path,
@@ -131,6 +139,15 @@ class QueueItem:
     warning: str = ""  # RAM warning for large files, shown as tooltip
     detail: str = ""  # what the conversion is doing in a long final phase (writing, copying)
     phase: str = ""  # the conversion's current phase (see process.convert_in_child)
+    queued: bool = False  # added during a run: converted right after it
+    internal_error: bool = False  # the failure is a fault of the program (see interactive.is_internal_error)
+    crashed: list[str] = field(default_factory=list)  # left out after kernel crashes (labels)
+    no_geometry: list[str] = field(default_factory=list)  # without geometry (labels, as far as known)
+
+    @property
+    def has_details(self) -> bool:
+        """Whether there are skipped elements to list (see SkippedDialog)."""
+        return self.status is Status.DONE and bool(self.crashed or self.no_geometry or self.skipped)
 
     @property
     def status_text(self) -> str:
@@ -147,7 +164,7 @@ class QueueItem:
             return f"Fehler: {self.error}"
         if self.status is Status.CANCELLED:
             return "Abgebrochen"
-        return "Wartend"
+        return "Vorgemerkt – startet danach" if self.queued else "Wartend"
 
 
 @dataclass
@@ -223,6 +240,7 @@ class FileQueue:
         for row in rows:
             item = self.items[row]
             item.status, item.progress, item.error, item.warning = Status.WAITING, 0, "", ""
+            item.queued, item.crashed, item.no_geometry = False, [], []
         return rows
 
 
@@ -251,8 +269,8 @@ class ConversionWorker(QObject):
     file_progress = Signal(int, int)  # row, percent
     file_retrying = Signal(int, str)  # row, message; converting again after a crash or hang
     file_status = Signal(int, str, str)  # row, phase, description (see process.convert_in_child)
-    file_done = Signal(int, object, int, int, list)  # row, output path, elements, without geometry, crashed
-    file_failed = Signal(int, str)  # row, message
+    file_done = Signal(int, object)  # row, ConversionResult
+    file_failed = Signal(int, str, bool)  # row, message, whether it is an internal error
     file_cancelled = Signal(int)
     finished = Signal(bool)  # True if cancelled
 
@@ -340,9 +358,9 @@ class ConversionWorker(QObject):
                 log.exception("Fehler bei %s", source)
             for path in [target, *side_files]:
                 _discard(path)
-            self.file_failed.emit(row, str(exc) or type(exc).__name__)
+            self.file_failed.emit(row, error_message(exc), is_internal_error(exc))
         else:
-            self.file_done.emit(row, result.output, result.elements, result.skipped, list(result.crashed))
+            self.file_done.emit(row, result)
 
 
 # ------------------------------------------------------------------------- widgets
@@ -490,12 +508,17 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.settings = settings or open_settings()
         self.preferences = Preferences.load(self.settings)
+        app_info.set_log_anonymized(self.preferences.anonymize_log)
         self.queue = FileQueue()
         self._thread: QThread | None = None
         self._worker: ConversionWorker | None = None
         self._run_rows: list[int] = []
         self._run_done = 0
         self._run_failed = 0
+        self._pending_rows: list[int] = []  # added during the run, converted after it
+        # Since "Konvertieren" was clicked, over the run and those of files added meanwhile.
+        self._chain_started_at = time.monotonic()
+        self._chain_done = self._chain_failed = 0
         self._last_output_dir: Path | None = None
         self._started_at = time.monotonic()
         self._warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
@@ -570,6 +593,8 @@ class MainWindow(QMainWindow):
         self.table.setItemDelegateForColumn(2, StatusDelegate(self.table))
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.table.cellDoubleClicked.connect(self._open_row_folder)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_row_menu)
         left.addWidget(self.table, stretch=1)
 
         list_buttons = QHBoxLayout()
@@ -577,9 +602,16 @@ class MainWindow(QMainWindow):
         self.remove_button.clicked.connect(self.remove_selected)
         self.clear_button = QPushButton("Liste leeren")
         self.clear_button.clicked.connect(self.clear_list)
+        self.details_button = QPushButton("Übersprungene Bauteile…")
+        self.details_button.setToolTip(
+            "Listet die Bauteile der gewählten Datei, die nicht umgewandelt wurden, mit Klasse, GlobalId und Name "
+            "(auch per Rechtsklick auf die Zeile)."
+        )
+        self.details_button.clicked.connect(lambda: self.show_details())
         self.count_label = _muted(QLabel())
         list_buttons.addWidget(self.remove_button)
         list_buttons.addWidget(self.clear_button)
+        list_buttons.addWidget(self.details_button)
         list_buttons.addStretch()
         list_buttons.addWidget(self.count_label)
         left.addLayout(list_buttons)
@@ -695,6 +727,7 @@ class MainWindow(QMainWindow):
         self.settings_action = action("Einstellungen…", self.show_settings, ["Ctrl+,"])
         self.open_output_action = action("Ausgabeordner öffnen", self.open_output_dir)
         self.open_log_action = action("Logdatei öffnen", open_log)
+        self.save_log_action = action("Anonymisierte Logdatei speichern…", lambda: save_anonymized_log(self))
         self.about_action = action(f"Über {APP_NAME}", self.show_about)
         self.drop_zone.add_button.setToolTip("Strg+O")
         self.remove_button.setToolTip("Entf")
@@ -711,7 +744,7 @@ class MainWindow(QMainWindow):
         tools_menu = menus.addMenu("E&xtras")
         tools_menu.addAction(self.settings_action)
         help_menu = menus.addMenu("&Hilfe")
-        help_menu.addActions([self.open_output_action, self.open_log_action])
+        help_menu.addActions([self.open_output_action, self.open_log_action, self.save_log_action])
         help_menu.addSeparator()
         help_menu.addAction(self.about_action)
 
@@ -818,6 +851,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self.preferences = dialog.preferences()
             self.preferences.save(self.settings)
+            app_info.set_log_anonymized(self.preferences.anonymize_log)
             log.info("Einstellungen: %s", self.preferences)
 
     def show_about(self) -> None:
@@ -831,17 +865,24 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- file list
 
     def add_paths(self, paths: list[str | Path]) -> AddResult:
+        """Add files and folders to the list; during a run they are converted right after it."""
         result = self.queue.add(paths)
         start = self.table.rowCount()
         for offset, _path in enumerate(result.added):
+            if self.is_running:
+                self.queue[start + offset].queued = True
+                self._pending_rows.append(start + offset)
             self._insert_row(start + offset)
         for path in result.rejected:
-            self.log(f"✗ Keine IFC-Datei gefunden: {path}")
+            self.log(f"✗ Keine IFC-Datei gefunden: {path} – nur .ifc-Dateien und Ordner mit .ifc-Dateien")
         if result.duplicates:
             names = ", ".join(p.name for p in result.duplicates[:3])
             more = " …" if len(result.duplicates) > 3 else ""
             self.log(f"• Schon in der Liste: {names}{more}")
-        if result.added:
+        if result.added and self.is_running:
+            self.log(f"+ {len(result.added)} Datei(en) vorgemerkt: Sie werden gleich nach der laufenden "
+                     "Konvertierung mit denselben Einstellungen umgewandelt.")
+        elif result.added:
             self.log(f"+ {len(result.added)} Datei(en) hinzugefügt")
         self._update_actions()
         return result
@@ -900,11 +941,15 @@ class MainWindow(QMainWindow):
         if item.status is Status.DONE:
             cell.setForeground(DONE_COLOR)
             tooltip = str(item.output)
+            if item.crashed:
+                tooltip += f"\n\n⚠ {len(item.crashed)} übersprungen (Geometriekern abgestürzt oder hängen geblieben)"
             if item.skipped > 0:
                 tooltip += f"\n\n⚠ {skipped_count(item.skipped)}: {SKIPPED_HINT}"
+            if item.has_details:
+                tooltip += "\n\nListe zum Kopieren: Rechtsklick → „Übersprungene Bauteile…“"
         elif item.status is Status.FAILED:
             cell.setForeground(ERROR_COLOR)
-            tooltip = item.error
+            tooltip = f"{item.error}\n\n{failure_hint(item.internal_error)}"
         else:
             cell.setData(Qt.ItemDataRole.ForegroundRole, None)
             tooltip = ""
@@ -929,14 +974,21 @@ class MainWindow(QMainWindow):
     def start_conversion(self) -> None:
         if self.is_running or not len(self.queue):
             return
+        self._pending_rows = []
+        self._chain_started_at = time.monotonic()
+        self._chain_done = self._chain_failed = 0
+        if not self._start_run(self.queue.prepare_run()):
+            self._update_actions()
+
+    def _start_run(self, rows: list[int]) -> bool:
+        """Convert ``rows`` (all waiting) in the background; False if the output folder is not usable."""
         out_dir = None if self.beside_check.isChecked() else self.output_dir
         if out_dir is not None:
             try:
                 out_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 QMessageBox.warning(self, APP_NAME, f"Ausgabeordner kann nicht angelegt werden:\n{exc}")
-                return
-        rows = self.queue.prepare_run()
+                return False
         for row in rows:
             self._refresh_row(row)
         self._run_rows, self._run_done, self._run_failed = rows, 0, 0
@@ -948,6 +1000,9 @@ class MainWindow(QMainWindow):
         prefs = self.preferences
         kernel = "" if prefs.kernel == DEFAULT_KERNEL else f", Geometriekern {KERNEL_INFO[prefs.kernel][0]}"
         self.log(f"▶ {len(rows)} Datei(en) → {label}, Ziel: {target}{kernel}")
+        threads = prefs.effective_threads
+        resources = resource_text(threads, prefs.low_priority, rhino_workers(threads) if fmt == "3dm" else 0)
+        self.log(f"• Rechenleistung: {resources}")
 
         jobs = [(row, self.queue[row].path) for row in rows]
         self._worker = ConversionWorker(
@@ -975,6 +1030,7 @@ class MainWindow(QMainWindow):
         self._set_status("Konvertierung läuft …")
         self._started_at = time.monotonic()
         self._thread.start()
+        return True
 
     def cancel_conversion(self) -> None:
         if self._worker is not None and not self._worker.cancelled:
@@ -1042,27 +1098,31 @@ class MainWindow(QMainWindow):
         self._refresh_row(row)
         self._update_overall(percent)
 
-    def _on_file_done(self, row: int, output: Path, elements: int, skipped: int, crashed: list | None = None) -> None:
+    def _on_file_done(self, row: int, result: ConversionResult) -> None:
         item = self.queue[row]
-        item.status, item.progress, item.output, item.elements = Status.DONE, 100, output, elements
-        item.skipped = skipped
+        item.status, item.progress, item.output, item.elements = Status.DONE, 100, result.output, result.elements
+        item.skipped, item.crashed, item.no_geometry = result.skipped, list(result.crashed), list(result.no_geometry)
         self._refresh_row(row)
         self._run_done += 1
-        self._last_output_dir = output.parent
+        self._last_output_dir = result.output.parent
         self._update_overall(0)
-        self.log(f"✓ {item.path.name} → {output}  ({number_text(elements)} Bauteile)")
-        if crashed:
-            self.log(f"⚠ {item.path.name}: {crashed_warning(crashed)}")
-        if skipped > 0:
-            self.log(f"⚠ {item.path.name}: {skipped_warning(skipped)}")
+        self.log(f"✓ {item.path.name} → {result.output}  ({number_text(result.elements)} Bauteile)")
+        if result.crashed:
+            self.log(f"⚠ {item.path.name}: {crashed_warning(result.crashed)}")
+        if result.skipped > 0:
+            self.log(f"⚠ {item.path.name}: {skipped_warning(result.skipped)}")
+        if item.has_details:
+            self.log("   → Liste zum Kopieren: Rechtsklick auf die Datei → „Übersprungene Bauteile…“")
+        self._update_actions()
 
-    def _on_file_failed(self, row: int, message: str) -> None:
+    def _on_file_failed(self, row: int, message: str, internal: bool = False) -> None:
         item = self.queue[row]
-        item.status, item.error = Status.FAILED, message
+        item.status, item.error, item.internal_error = Status.FAILED, message, internal
         self._refresh_row(row)
         self._run_failed += 1
         self._update_overall(0)
         self.log(f"✗ Fehler bei {item.path.name}: {message}")
+        self.log(f"   → {failure_hint(internal)}")
 
     def _on_file_cancelled(self, row: int) -> None:
         item = self.queue[row]
@@ -1088,20 +1148,39 @@ class MainWindow(QMainWindow):
         if not cancelled:
             self.overall_progress.setValue(100)
         self.log(f"■ {summary}")
-        self._notify_finished(cancelled, seconds)
+        self._chain_done += self._run_done
+        self._chain_failed += self._run_failed
+        if self._start_pending(cancelled):
+            return
+        self._notify_finished(cancelled, time.monotonic() - self._chain_started_at)
         self._update_actions()
-        if self.preferences.open_output and not cancelled and self._run_done and self._last_output_dir:
+        if self.preferences.open_output and not cancelled and self._chain_done and self._last_output_dir:
             self.open_output_dir()
         self.conversion_finished.emit(cancelled)
+
+    def _start_pending(self, cancelled: bool) -> bool:
+        """Convert the files added during the run that just ended; False if there are none (or cancelled)."""
+        pending = [row for row in self._pending_rows if self.queue[row].status is Status.WAITING]
+        self._pending_rows = []
+        for row in pending:
+            self.queue[row].queued = False
+            self._refresh_row(row)
+        if not pending:
+            return False
+        if cancelled:
+            self.log(f"• {len(pending)} vorgemerkte Datei(en) nicht umgewandelt – „Konvertieren“ startet sie.")
+            return False
+        self.log(f"▶ Weiter mit {len(pending)} während der Konvertierung hinzugefügten Datei(en)")
+        return self._start_run(pending)
 
     def _notify_finished(self, cancelled: bool, seconds: float) -> None:
         """Say that the batch is over: in the window, its title and, if it is in the background, the taskbar."""
         duration = duration_text(seconds)
         if cancelled:
             text, state, title = f"Abgebrochen nach {duration}", "", "Abgebrochen"
-        elif self._run_failed:
-            done = f"{self._run_done} fertig, " if self._run_done else ""
-            text, state, title = f"✗ {done}{self._run_failed} mit Fehler – nach {duration}", "failed", "Fehler"
+        elif self._chain_failed:
+            done = f"{self._chain_done} fertig, " if self._chain_done else ""
+            text, state, title = f"✗ {done}{self._chain_failed} mit Fehler – nach {duration}", "failed", "Fehler"
         else:
             text, state, title = f"✓ Fertig nach {duration}", "done", "✓ Fertig"
         self._set_status(text, state)
@@ -1146,6 +1225,42 @@ class MainWindow(QMainWindow):
         else:
             self.log(f"✗ Ausgabeordner gibt es (noch) nicht: {folder}")
 
+    def _selected_details_row(self) -> int | None:
+        """The selected row if it is the only one and has skipped elements to list."""
+        rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        if len(rows) == 1:
+            row = rows.pop()
+            if row < len(self.queue) and self.queue[row].has_details:
+                return row
+        return None
+
+    def show_details(self, row: int | None = None) -> SkippedDialog | None:
+        """Open the list of the elements of ``row`` (default: the selected one) that were not converted."""
+        row = self._selected_details_row() if row is None else row
+        if row is None:
+            return None
+        item = self.queue[row]
+        dialog = SkippedDialog(item.path.name, item.crashed, item.no_geometry, item.skipped, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()  # not modal: the list can stay open next to the CAD program
+        return dialog
+
+    def _show_row_menu(self, position) -> None:
+        row = self.table.rowAt(position.y())
+        if row < 0:
+            return
+        item = self.queue[row]
+        menu = QMenu(self)
+        details = menu.addAction("Übersprungene Bauteile…")
+        details.setEnabled(item.has_details)
+        details.triggered.connect(lambda: self.show_details(row))
+        folder = menu.addAction("Ausgabeordner öffnen")
+        folder.setEnabled(item.status is Status.DONE and item.output is not None)
+        folder.triggered.connect(lambda: self._open_row_folder(row, 0))
+        if item.status is Status.FAILED:
+            menu.addAction("Logdatei öffnen").triggered.connect(open_log)
+        menu.popup(self.table.viewport().mapToGlobal(position))
+
     def _open_row_folder(self, row: int, _column: int) -> None:
         item = self.queue[row]
         if item.status is Status.DONE and item.output:
@@ -1167,8 +1282,9 @@ class MainWindow(QMainWindow):
             (self.remove_action, self.remove_button), (self.clear_action, self.clear_button),
         ):
             act.setEnabled(button.isEnabled())
-        for act in (self.add_files_action, self.add_folder_action, self.settings_action):
-            act.setEnabled(not running)
+        # Files added during a run are converted right after it (see add_paths).
+        self.settings_action.setEnabled(not running)
+        self.details_button.setEnabled(self._selected_details_row() is not None)
         for button in self.format_buttons.values():
             button.setEnabled(not running)
         self.geometry_box.setEnabled(not running and self.fmt == "3dm")
@@ -1247,10 +1363,8 @@ class MainWindow(QMainWindow):
         """Files sent by another start of the app (e.g. dropped onto its icon): add them, show the window."""
         log.info("Zweiter Start: %d Pfad(e) übernommen", len(paths))
         if paths:
-            if self.is_running:
-                self.log("• Neue Dateien während der Konvertierung – bitte danach erneut hinzufügen.")
-            else:
-                self.add_paths(paths)
+            # During a run they are converted right after it, like files dropped into the window.
+            self.add_paths(paths)
         if self.isMinimized():
             self.showNormal()
         self.raise_()
@@ -1391,6 +1505,8 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging("GUI")
     enable_crash_log()
+    # While the window is open (and with it any conversion), the installer refuses to update or remove it.
+    hold_app_mutex()
     reporter = ErrorReporter(app)
     install_exception_hooks(reporter.report)
 
