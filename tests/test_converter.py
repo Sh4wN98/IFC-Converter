@@ -524,3 +524,13 @@ def test_deep_nesting_converts_with_a_1_mb_stack(nested_ifc, tmp_path, fmt, geom
     )
     assert result.returncode == 0, result.stderr.decode(errors="replace")[-2000:]
     assert output.stat().st_size > 0
+
+
+def test_the_deep_stack_size_is_accepted_on_this_platform():
+    # Python on Windows rejects thread stacks of 256 MB and more ("size not valid").
+    import threading
+
+    from ifc_converter.converter import DEEP_STACK
+
+    previous = threading.stack_size(DEEP_STACK)
+    threading.stack_size(previous)
