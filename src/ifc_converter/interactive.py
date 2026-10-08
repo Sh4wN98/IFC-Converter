@@ -15,7 +15,7 @@ from urllib.request import url2pathname
 from ifc_converter import __version__
 from ifc_converter.app import APP_NAME
 from ifc_converter.converter import FORMATS, ConversionResult, memory_warning
-from ifc_converter.process import RETRY_MESSAGE, convert_in_child
+from ifc_converter.process import convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
 # where a backslash may escape a space (Linux/macOS terminals).
@@ -166,7 +166,7 @@ class ProgressLine:
 
     def phase(self, phase: str, text: str) -> None:
         """The long final phases (writing, copying) are shown next to the percentage."""
-        self._detail = text if phase in ("write", "copy") else ""
+        self._detail = text if phase in ("write", "copy", "deep") else ""
         if self._percent is not None:
             self.percent(self._percent)
 
@@ -202,7 +202,7 @@ def convert_in_terminal(
     threads: int | None = None,
     geometry: str = "brep",
     label: str = "",
-    on_retry: Callable[[], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
     low_priority: bool = True,
 ) -> ConversionResult:
     """convert() in a child process with a progress line on stdout.
@@ -217,11 +217,11 @@ def convert_in_terminal(
     # convert() reports 0 % only once the IFC file is read, which can take minutes.
     line.show("IFC wird gelesen …")
 
-    def retrying() -> None:
-        # After a crash in the fast kernel the file is read and converted once more.
+    def retrying(message: str) -> None:
+        # After a crash or hang the file is read and converted once more.
         line.clear()
         if on_retry:
-            on_retry()
+            on_retry(message)
         line.show("IFC wird gelesen …")
 
     try:
@@ -300,7 +300,7 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
             try:
                 result = convert_in_terminal(
                     source, target, fmt, geometry=geometry, label="    ",
-                    on_retry=lambda: print(f"  ⚠ {RETRY_MESSAGE}"), low_priority=low_priority,
+                    on_retry=lambda message: print(f"  ⚠ {message}"), low_priority=low_priority,
                 )
             except Exception as exc:
                 print(f"  ✗ Fehler bei {source.name}: {exc}")

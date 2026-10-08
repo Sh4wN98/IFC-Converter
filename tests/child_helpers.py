@@ -173,3 +173,54 @@ def stage_and_wait(input_path, output_path, fmt, threads, progress=None, status=
     Path(f"{output_path}.staging").write_text(str(staging_dir))
     progress(0)
     time.sleep(120)
+
+
+def wait_forever(input_path, output_path, fmt, threads, progress=None, **options):
+    """Hang without using any CPU, like a kernel waiting for a worker thread that died."""
+    progress(0)
+    time.sleep(600)
+
+
+def compute_for_a_while(input_path, output_path, fmt, threads, progress=None, **options):
+    """Use CPU for about 3 seconds without reporting progress, like one slow element, then finish."""
+    progress(0)
+    end = time.monotonic() + 3
+    while time.monotonic() < end:
+        sum(range(10000))
+    Path(output_path).write_text("done")
+    progress(100)
+    return ConversionResult(output=Path(output_path), elements=1)
+
+
+def _fail_on_named(name, how):
+    """Make the kernel hang (or crash) whenever it computes the product called ``name``."""
+    from ifc_converter import converter
+
+    def fail():
+        if how == "crash":
+            os.kill(os.getpid(), signal.SIGSEGV)
+        time.sleep(600)
+
+    iterate, deep_shape = converter._iterate, converter._deep_shape
+
+    def failing_iterate(model, settings, threads, products, library):
+        if any(product.Name == name for product in products):
+            fail()
+        yield from iterate(model, settings, threads, products, library)
+
+    def failing_deep_shape(settings, product, strategy):
+        if product.Name == name:
+            fail()
+        return deep_shape(settings, product, strategy)
+
+    converter._iterate, converter._deep_shape = failing_iterate, failing_deep_shape
+
+
+def hang_on_wall_7(input_path, output_path, fmt, threads, progress=None, **options):
+    _fail_on_named("Wall 7", "hang")
+    return convert(input_path, output_path, fmt, threads, progress, **options)
+
+
+def crash_on_wall_7(input_path, output_path, fmt, threads, progress=None, **options):
+    _fail_on_named("Wall 7", "crash")
+    return convert(input_path, output_path, fmt, threads, progress, **options)

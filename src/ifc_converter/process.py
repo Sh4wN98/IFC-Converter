@@ -38,10 +38,20 @@ _CONTEXT = multiprocessing.get_context("spawn")
 POLL_INTERVAL = 0.1
 # Seconds between "still running" lines in the log, so a long phase shows where the time goes.
 HEARTBEAT = 60
+# A conversion whose processes together use less than STALL_CPU seconds of CPU for STALL_TIMEOUT
+# seconds is stuck (seen when a kernel thread died of a stack overflow and the others waited for it
+# forever): it is ended and reported. Slow but working conversions keep using CPU. Sampled every
+# CPU_SAMPLE seconds.
+STALL_TIMEOUT = 10 * 60
+STALL_CPU = 1.0
+CPU_SAMPLE = 30
 
 MEMORY_MESSAGE = "Der Arbeitsspeicher hat nicht gereicht (Prozess wurde vom System beendet)"
 # Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
 RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE …"
+# Recovery attempts after crashes or hangs in the kernel: computing the affected chunk one product at
+# a time, then leaving out a product that still fails (each step needs a new attempt).
+MAX_RECOVERIES = 6
 # Windows' STATUS_NO_MEMORY, the closest it has to being killed for lack of memory.
 _STATUS_NO_MEMORY = 0xC0000017
 # From <linux/prctl.h>.
@@ -78,6 +88,16 @@ class ConversionCrashed(Exception):
         self.exitcode = exitcode
 
 
+class ConversionStalled(Exception):
+    """The child's processes used no CPU for STALL_TIMEOUT: they wait for something that never comes."""
+
+    def __init__(self, seconds: float):
+        super().__init__(
+            f"Die Umwandlung hat {seconds / 60:.0f} Minuten lang nicht mehr gerechnet und wurde abgebrochen "
+            "(sie hing fest). Bitte die Logdatei an den Entwickler schicken."
+        )
+
+
 def cpu_count() -> int:
     """Logical CPUs this process may use."""
     count = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
@@ -112,6 +132,30 @@ def _retry_with_opencascade(exitcode: int | None, options: dict) -> bool:
     """
     kernel = options.get("kernel") or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL
     return kernel.lower() in ("accurate", "hybrid") and exitcode not in (None, 0) and not _out_of_memory(exitcode)
+
+
+def _recover(failure: Exception, options: dict, isolate: set[int], skipped: dict[int, str]) -> str | None:
+    """Plan the next attempt after a crash or hang; returns the message for it, or None to give up.
+
+    ``failure.position`` is where the child was: ("chunk", ids, "") or ("element", [id], label).
+    """
+    what = "hängt fest" if isinstance(failure, ConversionStalled) else "ist abgestürzt"
+    if isinstance(failure, ConversionCrashed) and _out_of_memory(failure.exitcode):
+        return None
+    kind, ids, label = getattr(failure, "position", None) or (None, [], "")
+    if kind == "element" and ids and ids[0] not in skipped:
+        skipped[ids[0]] = label or f"#{ids[0]}"
+        return (f"Die Umwandlung {what} bei {skipped[ids[0]]} – dieses Bauteil wird übersprungen, "
+                "neuer Versuch …")
+    if kind == "chunk" and ids and not set(ids) <= isolate:
+        isolate.update(ids)
+        return (f"Die Umwandlung {what} in einem Paket von {len(ids)} Bauteilen – diese werden einzeln "
+                "berechnet, neuer Versuch …")
+    if isinstance(failure, ConversionCrashed) and _retry_with_opencascade(failure.exitcode, options) \
+            and options.get("kernel") != "opencascade":
+        options["kernel"] = "opencascade"
+        return RETRY_MESSAGE
+    return None
 
 
 def _die_with_parent(parent_pid: int) -> None:
@@ -268,8 +312,11 @@ def _child_main(
     def status(phase: str, text: str) -> None:
         conn.send(("status", phase, text))
 
+    def position(kind: str, ids: list, label: str) -> None:
+        conn.send(("position", kind, ids, label))
+
     try:
-        result = func(*args, progress=progress, status=status, **kwargs)
+        result = func(*args, progress=progress, status=status, position=position, **kwargs)
     except Exception as exc:  # exception objects may not unpickle in the parent, so send plain text
         conn.send(("error", type(exc).__name__, str(exc), traceback.format_exc()))
     else:
@@ -286,7 +333,7 @@ def convert_in_child(
     progress: ProgressCallback | None = None,
     cancelled: Callable[[], bool] = lambda: False,
     func: Callable[..., ConversionResult] = convert,
-    on_retry: Callable[[], None] | None = None,
+    on_retry: Callable[[str], None] | None = None,
     low_priority: bool = True,
     status: Callable[[str, str], None] | None = None,
     **options,
@@ -298,8 +345,11 @@ def convert_in_child(
     A Python exception in the child raises ConversionFailed, a child that dies without a result
     ConversionCrashed. ``func`` stands in for convert() and must be picklable, i.e. a top-level function.
 
-    If the child crashes with a strategy that uses the hybrid geometry kernel, the file is converted
-    once more with kernel="opencascade"; ``on_retry`` is called before that, and progress starts again from reading.
+    If the child crashes or hangs (no CPU activity for STALL_TIMEOUT), the file is converted again:
+    the products of the chunk where it happened one by one (in a thread with a large stack), then
+    without a single product that still fails, which is then reported as skipped; a crash with a
+    strategy that uses the hybrid kernel, where no chunk was running, is retried with OpenCASCADE.
+    ``on_retry`` gets a German message before each new attempt, and progress starts again from reading.
 
     ``threads`` defaults to auto_threads(); ``low_priority`` runs the child below normal priority.
     ``status`` gets the current phase ("read", "geometry", "write", "copy") and a German description
@@ -314,18 +364,29 @@ def convert_in_child(
         "" if low_priority else ", normale Priorität",
     )
     started = time.monotonic()
+    isolate: set[int] = set()
+    skipped: dict[int, str] = {}
     try:
-        try:
-            result = _run_child(func, args, options, progress, cancelled, low_priority, status, started)
-        except ConversionCrashed as crash:
-            if not _retry_with_opencascade(crash.exitcode, options):
-                raise
-            log.warning("%s (Exit-Code %s) – neuer Versuch mit OpenCASCADE", crash, crash.exitcode)
-            if on_retry:
-                on_retry()
-            result = _run_child(
-                func, args, {**options, "kernel": "opencascade"}, progress, cancelled, low_priority, status, started,
-            )
+        for attempt in range(MAX_RECOVERIES + 1):
+            attempt_options = dict(options)
+            if isolate:
+                attempt_options["isolate_ids"] = sorted(isolate)
+            if skipped:
+                attempt_options["skip_ids"] = sorted(skipped)
+            try:
+                result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started)
+                break
+            except (ConversionCrashed, ConversionStalled) as failure:
+                message = _recover(failure, options, isolate, skipped)
+                if message is None or attempt == MAX_RECOVERIES:
+                    raise
+                code = f" (Exit-Code {failure.exitcode})" if isinstance(failure, ConversionCrashed) else ""
+                log.warning("%s%s – %s", failure, code, message)
+                if on_retry:
+                    on_retry(message)
+        if skipped:
+            log.warning("Übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb: %s",
+                        "; ".join(skipped.values()))
     except Cancelled:
         log.info("Abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
         raise
@@ -336,6 +397,9 @@ def convert_in_child(
     except ConversionCrashed as exc:
         log.error("Absturz nach %.1f s bei %s: %s (Exit-Code %s)", time.monotonic() - started, input_path,
                   exc, exc.exitcode)
+        raise
+    except ConversionStalled:
+        log.error("Hing fest, abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
         raise
     except Exception:
         log.exception("Umwandlung von %s fehlgeschlagen", input_path)
@@ -378,6 +442,7 @@ def _run_child(
     outcome = None
     try:
         process.start()
+        watch.pid = process.pid
         writer.close()  # the child has its own copy; ours would only hide the child's end of the pipe
         while outcome is None:
             if cancelled():
@@ -396,6 +461,8 @@ def _run_child(
                         progress(message[1])
                 elif message[0] == "status":
                     watch.enter(message[1], message[2])
+                elif message[0] == "position":
+                    watch.position = tuple(message[1:])
                 else:
                     outcome = message
             elif process.sentinel in ready:
@@ -405,7 +472,9 @@ def _run_child(
                         message = reader.recv()
                     except EOFError:
                         break
-                    if message[0] not in ("progress", "status"):
+                    if message[0] == "position":
+                        watch.position = tuple(message[1:])
+                    elif message[0] not in ("progress", "status"):
                         outcome = message
                 break
     finally:
@@ -417,7 +486,9 @@ def _run_child(
             shutil.rmtree(staging, ignore_errors=True)
 
     if outcome is None:
-        raise ConversionCrashed(exitcode)
+        crash = ConversionCrashed(exitcode)
+        crash.position = watch.position
+        raise crash
     if outcome[0] == "error":
         raise ConversionFailed(*outcome[1:])
     return outcome[1]
@@ -446,6 +517,10 @@ class _Phases:
         self.phase = self.text = ""
         self.percent = 0
         self._shown = self._logged = time.monotonic()
+        self.pid: int | None = None
+        self.position: tuple | None = None  # where the child is: ("chunk"|"element", ids, label)
+        self._sampled = self._active = time.monotonic()
+        self._active_cpu: float | None = None
 
     def enter(self, phase: str, text: str) -> None:
         if phase != self.phase:
@@ -455,11 +530,30 @@ class _Phases:
 
     def tick(self) -> None:
         now = time.monotonic()
+        if self.pid and now - self._sampled >= CPU_SAMPLE:
+            self._sampled = now
+            self._check_stall(now)
         if now - self._logged >= HEARTBEAT:
             self._logged = now
             log.info("Läuft seit %.0f s, %d %%: %s", now - self.started, self.percent, self.text or "…")
         if self.phase == "write" and now - self._shown >= 1:
             self._show(f"{self.text.removesuffix(' …')}: {size_text(self._written())} geschrieben …")
+
+    def _check_stall(self, now: float) -> None:
+        if self.phase == "copy":  # copying to a slow network folder needs hardly any CPU
+            self._active, self._active_cpu = now, None
+            return
+        cpu = tree_cpu_seconds(self.pid)
+        if cpu is None:  # not measurable here: no watchdog
+            return
+        if self._active_cpu is None or cpu - self._active_cpu >= STALL_CPU:
+            self._active, self._active_cpu = now, cpu
+        elif now - self._active >= STALL_TIMEOUT:
+            log.error("Keine Rechenaktivität seit %.0f s (CPU %.1f s), %d %%: %s",
+                      now - self._active, cpu, self.percent, self.text or "…")
+            stalled = ConversionStalled(now - self._active)
+            stalled.position = self.position
+            raise stalled
 
     def _written(self) -> int:
         """Bytes written so far: the output, or what is staged for it in the temp folder."""
@@ -479,6 +573,85 @@ class _Phases:
         self._shown = time.monotonic()
         if self.status:
             self.status(self.phase, text)
+
+
+def tree_cpu_seconds(pid: int) -> float | None:
+    """CPU seconds used so far by process ``pid`` and all its descendants (workers), or None."""
+    try:
+        if sys.platform == "win32":
+            return _windows_tree_cpu(pid)
+        if sys.platform.startswith("linux"):
+            return _linux_tree_cpu(pid)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _descendants(pid: int, parents: dict[int, int]) -> set[int]:
+    family, added = {pid}, True
+    while added:
+        children = {child for child, parent in parents.items() if parent in family} - family
+        family |= children
+        added = bool(children)
+    return family
+
+
+def _linux_tree_cpu(pid: int) -> float:
+    stats = {}
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/stat") as file:
+                    fields = file.read().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            # After the command name: state, ppid, …, utime (field 14) and stime (15).
+            stats[int(entry)] = (int(fields[1]), int(fields[11]) + int(fields[12]))
+    ticks = os.sysconf("SC_CLK_TCK")
+    family = _descendants(pid, {child: parent for child, (parent, _) in stats.items()})
+    return sum(stats[member][1] for member in family if member in stats) / ticks
+
+
+def _windows_tree_cpu(pid: int) -> float:
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot in (None, wintypes.HANDLE(-1).value):
+        raise OSError("no process snapshot")
+    parents = {}
+    try:
+        entry = ProcessEntry(dwSize=ctypes.sizeof(ProcessEntry))
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            parents[entry.th32ProcessID] = entry.th32ParentProcessID
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    total = 0
+    for member in _descendants(pid, parents):
+        handle = kernel32.OpenProcess(0x1000, False, member)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            continue
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if kernel32.GetProcessTimes(handle, *(ctypes.byref(time_) for time_ in times)):
+                for time_ in times[2:]:  # kernel and user time, in 100 ns
+                    total += (time_.dwHighDateTime << 32) | time_.dwLowDateTime
+        finally:
+            kernel32.CloseHandle(handle)
+    return total / 1e7
 
 
 def _stderr_file() -> str | None:

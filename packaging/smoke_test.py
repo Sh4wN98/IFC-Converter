@@ -38,7 +38,7 @@ WALLS = 600
 NESTING = 5000
 STACK_RESERVE = 256 * 1024 ** 2
 # Time for the control run with a 1 MB stack; the 256 MB exe converts the model in seconds.
-CONTROL_TIMEOUT = 120
+CONTROL_TIMEOUT = 300
 WINDOWS = sys.platform == "win32"
 
 
@@ -136,8 +136,8 @@ def check_stacks(app_dir: Path, cli: Path, source: Path, out: Path) -> None:
     if len(objects) != 1:
         raise AssertionError(f"nested.3dm: {len(objects)} objects instead of 1")
     print(f"  {NESTING} nested levels converted ✓")
-    # Control: the same exe with Windows' default 1 MB stack must fail on this model, otherwise the
-    # check above proves nothing.
+    # The converter computes deeply nested elements in a thread with a stack of its own: even the
+    # same exe with Windows' default 1 MB stack converts this model (up to 0.2.2 it crashed or hung).
     small = cli.with_name("ifc-convert-1mb.exe")
     shutil.copy2(cli, small)
     try:
@@ -147,19 +147,16 @@ def check_stacks(app_dir: Path, cli: Path, source: Path, out: Path) -> None:
             result = subprocess.run(command, capture_output=True, timeout=CONTROL_TIMEOUT, encoding="utf-8",
                                     errors="replace")
         except subprocess.TimeoutExpired:
-            # An overflow in one of the kernel's threads can leave the others waiting for it forever
-            # (seen on the CI runner); either way the model cannot be converted with 1 MB.
-            print(f"  control: with a 1 MB stack the conversion hangs (stopped after {CONTROL_TIMEOUT} s) ✓")
-        else:
-            output = result.stdout + result.stderr
-            if result.returncode == 0:
-                raise AssertionError(f"with a 1 MB stack the nested model converted, so the test proves "
-                                     f"nothing:\n{output[-2000:]}")
-            if "0xC00000FD" not in output:
-                raise AssertionError(f"with a 1 MB stack it failed, but not with a stack overflow:\n{output[-2000:]}")
-            print("  control: with a 1 MB stack it overflows and is reported as a crash (0xC00000FD) ✓")
+            raise AssertionError(f"with a 1 MB stack the nested model hangs (stopped after {CONTROL_TIMEOUT} s)")
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            raise AssertionError(f"with a 1 MB stack the nested model failed:\n{output[-2000:]}")
+        objects = rhino3dm.File3dm.Read(str(out / "nested-1mb.3dm")).Objects
+        if len(objects) != 1:
+            raise AssertionError(f"nested-1mb.3dm: {len(objects)} objects instead of 1")
+        print("  with a 1 MB default stack the nested model converts as well ✓")
     finally:
-        # A hung control leaves processes behind that lock the copy; end them before deleting it.
+        # A hung run leaves processes behind that lock the copy; end them before deleting it.
         subprocess.run(["taskkill", "/F", "/T", "/IM", small.name], capture_output=True)
         for _ in range(20):
             try:
