@@ -13,9 +13,9 @@ from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from ifc_converter import __version__
-from ifc_converter.app import APP_NAME
+from ifc_converter.app import APP_NAME, log_path
 from ifc_converter.converter import FORMATS, ConversionResult, memory_warning
-from ifc_converter.process import convert_in_child
+from ifc_converter.process import auto_threads, convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
 # where a backslash may escape a space (Linux/macOS terminals).
@@ -139,6 +139,93 @@ def crashed_warning(crashed: list[str]) -> str:
         f"{count} {'Bauteil' if count == 1 else 'Bauteile'} übersprungen, weil der Geometriekern daran "
         f"abstürzte oder hängen blieb: {names}{more}. Im CAD-Programm lassen sie sich über die GlobalId finden."
     )
+
+
+_LABEL = re.compile(r"^(Ifc\w+) (\S+)(?: „(.*)“)?$", re.DOTALL)
+
+
+def split_label(label: str) -> tuple[str, str, str]:
+    """(class, GlobalId, name) of an element label "IfcWall 2O2Fr… „Name“" (see converter.product_label).
+
+    A label without class and GlobalId (e.g. "#123", a step id) comes back as the GlobalId.
+    """
+    match = _LABEL.match(label)
+    if not match:
+        return "", label, ""
+    return match.group(1), match.group(2), match.group(3) or ""
+
+
+# Exceptions about the input, the output folder or the computer, not about the program: their text
+# is shown as it is (the converter's own ones are German). Everything else is an internal error.
+FILE_ERRORS = {
+    "OSError", "FileNotFoundError", "PermissionError", "FileExistsError", "IsADirectoryError",
+    "NotADirectoryError", "TimeoutError", "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
+    "BrokenPipeError", "InterruptedError",
+}
+# How the window's menu opens the log file.
+LOG_MENU = "Hilfe → Logdatei öffnen"
+
+
+def _error_type(exc: BaseException) -> str:
+    # A ConversionFailed carries the type of the exception in the child process.
+    return getattr(exc, "type_name", None) or type(exc).__name__
+
+
+def is_internal_error(exc: BaseException) -> bool:
+    """Whether a failed conversion is a fault of the program (worth reporting), not of the file or PC."""
+    from ifc_converter.process import ConversionCrashed, ConversionFailed, ConversionStalled
+
+    if isinstance(exc, (ConversionCrashed, ConversionStalled)):
+        return False
+    if not isinstance(exc, ConversionFailed) and type(exc).__module__.startswith("ifc_converter"):
+        return False
+    return _error_type(exc) not in (FILE_ERRORS | {"ValueError", "MemoryError", "Error"})
+
+
+def error_message(exc: BaseException) -> str:
+    """A failed conversion in German, for the window and the terminal."""
+    name = _error_type(exc)
+    text = str(exc)
+    if text == name:  # no message of its own
+        text = ""
+    if name == "MemoryError":
+        return "Der Arbeitsspeicher hat nicht gereicht"
+    if name == "Error":  # ifcopenshell.Error: the file could not be parsed
+        return f"Die Datei ließ sich nicht als IFC lesen (beschädigt oder keine IFC-Datei){f': {text}' if text else ''}"
+    if name in FILE_ERRORS and ("[Errno" in text or "[WinError" in text):
+        return f"Datei- oder Netzwerkfehler: {text}"
+    if is_internal_error(exc):
+        return f"Interner Fehler ({name}){f': {text}' if text else ''}"
+    return text or name
+
+
+def failure_hint(internal: bool, log: str = LOG_MENU) -> str:
+    """Where the details of a failure are (see is_internal_error); ``log`` says how to find the log file."""
+    if internal:
+        return f"Bitte die Logdatei ({log}) mitschicken, wenn Sie den Fehler melden."
+    return f"Details in der Logdatei ({log})."
+
+
+def resource_text(threads: int, low_priority: bool, workers: int = 0) -> str:
+    """What a conversion takes of the PC, e.g. "bis zu 6 von 32 logischen Kernen, niedrige Priorität"."""
+    from ifc_converter.process import cpu_count
+
+    text = f"bis zu {threads} {'Thread' if threads == 1 else 'Threads'} (von {cpu_count()} logischen Kernen)"
+    if workers:
+        text += f", bei großen 3DM-Modellen dazu bis zu {workers} Hilfsprozesse für die Rhino-Geometrie"
+    if low_priority:
+        return f"{text}, niedrige Priorität – andere Programme haben Vorrang"
+    return f"{text}, normale Priorität"
+
+
+def rhino_workers(threads: int) -> int:
+    """How many worker processes a large Rhino export may start besides the geometry threads, or 0."""
+    try:
+        from ifc_converter import rhino
+
+        return max(0, int(rhino._worker_count(threads, rhino.MIN_PARALLEL_ELEMENTS)))
+    except Exception:  # noqa: BLE001 - only informative; rhino.py may change
+        return 0
 
 
 def duration_text(seconds: float) -> str:
@@ -295,6 +382,8 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
     print("  IFC-Datei(en) oder Ordner hier ins Fenster ziehen, dann Enter.")
     print(f"  Fertige Dateien landen in: {output_dir}")
     print("  Format wechseln: 'glb', 'obj' oder '3dm' eingeben.  Beenden: 'q'")
+    print("  Abbrechen einer laufenden Umwandlung: Strg+C")
+    print(f"  Rechenleistung: {resource_text(auto_threads(), low_priority)}")
     print()
 
     while True:
@@ -324,7 +413,7 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
             except OSError as exc:
                 print(f"  ✗ Ausgabeordner kann nicht angelegt werden: {exc}")
                 continue
-        for source in files:
+        for number, source in enumerate(files):
             target = unique_path(output_dir / f"{source.stem}.{fmt}")
             warning = check_memory(source)
             if warning:
@@ -335,8 +424,13 @@ def run(fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep"
                     source, target, fmt, geometry=geometry, label="    ",
                     on_retry=lambda message: print(f"  ⚠ {message}"), low_priority=low_priority,
                 )
+            except KeyboardInterrupt:
+                rest = len(files) - number - 1
+                print(f"  ■ Abgebrochen: {source.name}" + (f" ({rest} weitere nicht umgewandelt)" if rest else ""))
+                break
             except Exception as exc:
-                print(f"  ✗ Fehler bei {source.name}: {exc}")
+                print(f"  ✗ Fehler bei {source.name}: {error_message(exc)}")
+                print(f"    {failure_hint(is_internal_error(exc), str(log_path()))}")
                 continue
             skipped = f", {result.skipped} ohne Geometrie" if result.skipped > 0 else ""
             print(f"  ✓ Fertig: {result.output}  ({number_text(result.elements)} Bauteile{skipped})")

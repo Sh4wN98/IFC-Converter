@@ -1,6 +1,11 @@
 import io
+import os
 import re
+import signal
+import subprocess
 import sys
+import tempfile
+import time
 from functools import partial
 from pathlib import Path
 
@@ -362,10 +367,14 @@ def test_cli_logs_only_when_run_from_the_command_line(wall_ifc, tmp_path, monkey
     assert not log.exists()
 
     monkeypatch.setattr(sys, "argv", ["ifc-convert", str(wall_ifc), "-d", str(tmp_path / "b")])
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # main() clears out stale temp files
+    handlers = {name: signal.getsignal(getattr(signal, name)) for name in ("SIGTERM", "SIGBREAK") if hasattr(signal, name)}
     try:
         assert main() == 0
     finally:
         app.stop_logging()
+        for name, handler in handlers.items():
+            signal.signal(getattr(signal, name), handler)
     assert "gestartet (CLI)" in log.read_text(encoding="utf-8")
 
 
@@ -409,3 +418,147 @@ def test_session_creates_the_output_folder_only_for_a_conversion(wall_ifc, tmp_p
     monkeypatch.setattr("builtins.input", fake_input)
     assert interactive.run("glb", out) == 0
     assert (out / "wall.glb").exists()
+
+
+def test_element_labels_are_split_into_class_globalid_and_name():
+    from ifc_converter.interactive import split_label
+
+    assert split_label("IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag 2 cm“") == (
+        "IfcCovering", "2ZLyRk6BAL6bNsO1TmDoEc", "Belag 2 cm")
+    assert split_label("IfcWall 1hqIFTRjfV6AWq_bMtnZwI") == ("IfcWall", "1hqIFTRjfV6AWq_bMtnZwI", "")
+    assert split_label("#4711") == ("", "#4711", "")
+
+
+def test_error_messages_are_german_and_internal_errors_marked():
+    from ifc_converter.interactive import error_message, failure_hint, is_internal_error
+
+    internal = process.ConversionFailed("KeyError", "'Name'")
+    assert error_message(internal) == "Interner Fehler (KeyError): 'Name'"
+    assert is_internal_error(internal)
+    assert error_message(process.ConversionFailed("KeyError", "")) == "Interner Fehler (KeyError)"
+    assert failure_hint(True) == "Bitte die Logdatei (Hilfe → Logdatei öffnen) mitschicken, wenn Sie den Fehler melden."
+
+    user = process.ConversionFailed("ValueError", "Die Datei enthält keine Bauteile mit Geometrie.")
+    assert error_message(user) == "Die Datei enthält keine Bauteile mit Geometrie."
+    assert not is_internal_error(user)
+    assert failure_hint(False, "C:\\log.txt") == "Details in der Logdatei (C:\\log.txt)."
+
+    broken = process.ConversionFailed("Error", "Unable to parse IFC SPF header")
+    assert error_message(broken).startswith("Die Datei ließ sich nicht als IFC lesen (beschädigt oder keine IFC-Datei)")
+    assert not is_internal_error(broken)
+    disk = process.ConversionFailed("PermissionError", "[Errno 13] Permission denied: 'x.3dm'")
+    assert error_message(disk) == "Datei- oder Netzwerkfehler: [Errno 13] Permission denied: 'x.3dm'"
+    assert error_message(process.ConversionFailed("MemoryError", "")) == "Der Arbeitsspeicher hat nicht gereicht"
+    crash = process.ConversionCrashed(3)
+    assert error_message(crash) == str(crash) and not is_internal_error(crash)
+    assert error_message(ValueError("Nicht unterstütztes Format")) == "Nicht unterstütztes Format"
+    assert is_internal_error(TypeError("x"))
+
+
+def test_converter_errors_are_german(tmp_path):
+    from ifc_converter.converter import convert
+
+    with pytest.raises(FileNotFoundError, match="^IFC-Datei nicht gefunden: "):
+        convert(tmp_path / "fehlt.ifc")
+    with pytest.raises(ValueError, match="^Nicht unterstütztes Format „stl“, möglich sind: glb, obj, 3dm$"):
+        convert(tmp_path / "fehlt.ifc", fmt="stl")
+    with pytest.raises(ValueError, match="^Nicht unterstützte Geometrieart „nurbs“"):
+        convert(tmp_path / "fehlt.ifc", geometry="nurbs")
+    with pytest.raises(ValueError, match="^Unbekannter Geometriekern „cgal“"):
+        convert(tmp_path / "fehlt.ifc", kernel="cgal")
+
+
+def test_cli_marks_internal_errors_and_says_where_the_log_is(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    child_helpers.isolate_user_dirs(monkeypatch, tmp_path)
+    use_child_func(monkeypatch, child_helpers.raise_bare_error)
+    assert main([str(wall_ifc), "-d", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert f"✗ {wall_ifc}: Interner Fehler (KeyError)" in err
+    assert f"Bitte die Logdatei ({tmp_path / 'logs' / 'ifc-converter.log'}) mitschicken" in err
+
+
+def test_resource_text():
+    from ifc_converter.interactive import resource_text
+
+    cores = process.cpu_count()
+    assert resource_text(1, True) == (
+        f"bis zu 1 Thread (von {cores} logischen Kernen), niedrige Priorität – andere Programme haben Vorrang")
+    assert resource_text(6, False, workers=3) == (
+        f"bis zu 6 Threads (von {cores} logischen Kernen), bei großen 3DM-Modellen dazu bis zu 3 Hilfsprozesse "
+        "für die Rhino-Geometrie, normale Priorität")
+
+
+def test_session_cancels_the_running_file_on_ctrl_c(wall_ifc, tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def interrupted(source, target, fmt, *args, **kwargs):
+        calls.append(source)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(interactive, "convert_in_child", interrupted)
+    lines = iter([f"'{wall_ifc}' '{wall_ifc.parent}'", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert interactive.run(output_dir=tmp_path / "out") == 0
+    out = capsys.readouterr().out
+    assert "■ Abgebrochen: wall.ifc (1 weitere nicht umgewandelt)" in out
+    assert len(calls) == 1  # the other file was not started, and the session went on to "q"
+    assert "Rechenleistung: bis zu" in out
+
+
+def _child_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_cli_cancelled_by_signal_cleans_up(wall_ifc, tmp_path):
+    """SIGTERM (Ctrl+Break on Windows) stops the conversion and leaves no temp files or partial output."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    target = tmp_path / "out" / "wall.glb"
+    target.parent.mkdir()
+    code = (
+        "import sys; from functools import partial; import child_helpers; "
+        "from ifc_converter import cli, interactive, process; "
+        "interactive.convert_in_child = partial(process.convert_in_child, func=child_helpers.sleep_while_reading); "
+        "sys.argv = ['ifc-convert', sys.argv[1], '-o', sys.argv[2], '-f', 'glb']; sys.exit(cli.main())"
+    )
+    env = {
+        **os.environ, "TMPDIR": str(temp), "TEMP": str(temp), "TMP": str(temp),
+        "XDG_STATE_HOME": str(tmp_path / "state"), "LOCALAPPDATA": str(tmp_path / "local"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"), "APPDATA": str(tmp_path / "roaming"),
+        "PYTHONPATH": os.pathsep.join([str(Path(__file__).parent), *sys.path]),
+    }
+    windows = sys.platform == "win32"
+    command = [sys.executable, "-c", code, str(wall_ifc), str(target)]
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if windows else 0
+    cli_process = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                   creationflags=flags)
+    pid_file = target.with_suffix(".pid")
+    deadline = time.monotonic() + 60
+    while not pid_file.exists() and time.monotonic() < deadline and cli_process.poll() is None:
+        time.sleep(0.05)
+    assert pid_file.exists(), "the conversion child did not start"
+    time.sleep(0.3)
+    assert list(temp.glob("ifc-converter-*")), "the conversion made no temp files"
+    cli_process.send_signal(signal.CTRL_BREAK_EVENT if windows else signal.SIGTERM)
+    try:
+        _, err = cli_process.communicate(timeout=30)
+    finally:
+        cli_process.kill()
+    assert cli_process.returncode == 130, err
+    assert f"■ {wall_ifc}: abgebrochen" in err
+    assert not target.exists()
+    assert not list(temp.glob("ifc-converter-*"))
+    if not windows:
+        child = int(pid_file.read_text())
+        deadline = time.monotonic() + 10
+        while _child_alive(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _child_alive(child)
