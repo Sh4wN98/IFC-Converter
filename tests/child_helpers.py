@@ -368,3 +368,29 @@ def abandon_iteration(path, how, chunk=600, threads=2):
     runs = sum(thread.name == "geometry-run" for thread in threading.enumerate())
     print(runs, max(0, native_threads() - before), flush=True)
     time.sleep(2)  # a kernel thread left behind would crash meanwhile
+
+
+def crash_late_on_wall_450(input_path, output_path, fmt, threads, progress=None, **options):
+    """Chunks of 100 products; crash when the kernel reaches "Wall 450", after chunks 0–3 are done.
+    Writes the number of products the kernel was asked for to <output>.computed (one line per attempt)."""
+    from ifc_converter import converter
+
+    converter.chunk_size = lambda threads: 100
+    _fail_on_named("Wall 450", "crash")
+    iterate, deep_shape = converter._iterate, converter._deep_shape
+    asked = []
+
+    def counting_iterate(model, settings, threads, products, library):
+        asked.extend(products)
+        return iterate(model, settings, threads, products, library)
+
+    def counting_deep_shape(settings, product, strategy):
+        asked.append(product)
+        return deep_shape(settings, product, strategy)
+
+    converter._iterate, converter._deep_shape = counting_iterate, counting_deep_shape
+    try:
+        return convert(input_path, output_path, fmt, threads, progress, **options)
+    finally:
+        with open(f"{output_path}.computed", "a") as file:
+            file.write(f"{len(asked)}\n")

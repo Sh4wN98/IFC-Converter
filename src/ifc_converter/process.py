@@ -72,6 +72,9 @@ MEMORY_LIMIT_MESSAGE = (
 )
 # Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
 RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE …"
+# A checkpoint (see checkpoint.py) is only kept with this many times the IFC size free in the
+# temp folder: the kernel's geometry of a model takes about as much as the 3dm, 1–2x the IFC.
+CHECKPOINT_ROOM = 3
 # How many of the elements without geometry the log lists by name.
 NO_GEOMETRY_LOG_LIMIT = 2000
 # Recovery attempts after crashes or hangs in the kernel: computing the affected chunk one product at
@@ -492,6 +495,7 @@ def convert_in_child(
     if skipped:
         log.warning("Bekannt aus früheren Umwandlungen dieser Datei, wird übersprungen (der Geometriekern "
                     "stürzte daran ab oder blieb hängen) (%d):\n  %s", len(skipped), "\n  ".join(skipped.values()))
+    checkpoint = _checkpoint_dir(input_path) if fmt == "3dm" else None
     try:
         with keep_awake():
             for attempt in range(MAX_RECOVERIES + 1):
@@ -500,16 +504,23 @@ def convert_in_child(
                     attempt_options["isolate_ids"] = sorted(isolate)
                 if skipped:
                     attempt_options["skip_ids"] = sorted(skipped)
+                if checkpoint:
+                    attempt_options["checkpoint_dir"] = checkpoint
                 try:
                     result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started)
                     break
                 except (ConversionCrashed, ConversionStalled) as failure:
                     known = len(skipped)
+                    kernel_before = options.get("kernel")
                     message = _recover(failure, options, isolate, skipped, attempt + 2)
                     if len(skipped) > known:
                         save_quarantine(quarantine, skipped)
                     if message is None or attempt == MAX_RECOVERIES:
                         raise
+                    if checkpoint and options.get("kernel") != kernel_before:
+                        _clear(checkpoint)  # computed with the other kernel: everything again
+                    elif checkpoint and any(Path(checkpoint).glob("chunk-*.bin")):
+                        message = message.removesuffix(" …") + ", bereits berechnete Bauteile werden übernommen …"
                     code = f" (Exit-Code {failure.exitcode})" if isinstance(failure, ConversionCrashed) else ""
                     log.warning("%s%s. %s", failure, code, message.split(". ", 1)[-1])
                     if on_retry:
@@ -534,6 +545,9 @@ def convert_in_child(
     except Exception:
         log.exception("Umwandlung von %s fehlgeschlagen", input_path)
         raise
+    finally:
+        if checkpoint:
+            shutil.rmtree(checkpoint, ignore_errors=True)
     log.info("Fertig nach %.1f s: %s -> %s, %d Bauteile, %d ohne Geometrie, %d übersprungen",
              time.monotonic() - started, input_path, result.output, result.elements, result.skipped,
              len(result.crashed))
@@ -546,6 +560,27 @@ def convert_in_child(
         log.info("Ohne Geometrie (%d):\n  %s%s", len(result.no_geometry), "\n  ".join(shown),
                  f"\n  … und {more} weitere" if more else "")
     return result
+
+
+def _checkpoint_dir(input_path: str | Path) -> str | None:
+    """A new folder in the local temp folder for the checkpoint of a 3dm conversion, or None if
+    there is not CHECKPOINT_ROOM times the IFC size free there (then a restart computes everything)."""
+    try:
+        base = tempfile.gettempdir()
+        if shutil.disk_usage(base).free < CHECKPOINT_ROOM * os.path.getsize(input_path) + 1024 ** 3:
+            log.info("Zu wenig Platz im Temp-Ordner für einen Zwischenstand; nach einem Absturz wird neu gerechnet")
+            return None
+        return tempfile.mkdtemp(prefix="ifc-converter-checkpoint-")
+    except OSError:
+        return None
+
+
+def _clear(folder: str) -> None:
+    for path in Path(folder).iterdir():
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def _size_text(path: str | Path) -> str:

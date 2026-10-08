@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import child_helpers
+import ifcopenshell
 import pytest
 
 from ifc_converter import process
@@ -787,3 +788,114 @@ def test_a_broken_pipe_is_a_crash_not_an_error_of_the_app(wall_ifc, tmp_path, mo
     monkeypatch.setattr(process, "_CONTEXT", Context())
     with pytest.raises(ConversionCrashed, match=r"Code 3\)$"):
         convert_in_child(wall_ifc, tmp_path / "x.glb", func=child_helpers.exit_hard)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="crashes with POSIX signals")
+@pytest.mark.parametrize("options", [{"geometry": "mesh"}, {"geometry": "brep"}, {"geometry": "brep", "blocks": True}])
+def test_a_restart_takes_over_the_chunks_finished_before_the_crash(many_walls_ifc, tmp_path, caplog, options):
+    import rhino3dm
+
+    target = tmp_path / "resumed.3dm"
+    messages = []
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        result = convert_in_child(
+            many_walls_ifc, target, "3dm", threads=2, on_retry=messages.append,
+            func=child_helpers.crash_late_on_wall_450, **options,
+        )
+    assert (result.elements, len(result.crashed)) == (599, 1) and "Wall 450" in result.crashed[0]
+    assert any("bereits berechnete Bauteile werden übernommen" in message for message in messages)
+    # The last attempt read the chunks finished before the crash back and computed only the rest
+    # (the crashed attempts cannot count: a crash ends their process at once).
+    taken = re.findall(r"(\d+) Bauteile aus dem vorigen Versuch übernommen, (\d+) werden berechnet", caplog.text)
+    taken = taken[-1]  # of the last attempt, which leaves "Wall 450" out
+    assert int(taken[0]) >= 200 and int(taken[0]) + int(taken[1]) == 599
+    computed = [int(line) for line in Path(f"{target}.computed").read_text().split()]
+    assert computed == [int(taken[1])]
+    assert not list(Path(tempfile.gettempdir()).glob("ifc-converter-checkpoint-*"))  # removed again
+
+    # The same objects as without any crash, down to the vertices (the file's quarantine leaves
+    # "Wall 450" out of this conversion right away).
+    reference = convert_in_child(many_walls_ifc, tmp_path / "plain.3dm", "3dm", threads=2, **options)
+    assert (reference.elements, reference.crashed) == (599, result.crashed)
+
+    def objects(path):
+        found = {}
+        for obj in rhino3dm.File3dm.Read(str(path)).Objects:
+            guid = obj.Attributes.GetUserString("IfcGlobalId")
+            if not guid:  # a block definition's geometry
+                continue
+            geometry = obj.Geometry
+            if isinstance(geometry, rhino3dm.InstanceReference):
+                place = tuple(round(value, 9) for value in geometry.Xform.ToFloatArray(True))
+            else:
+                box = geometry.GetBoundingBox()
+                place = tuple(round(value, 9) for point in (box.Min, box.Max) for value in (point.X, point.Y, point.Z))
+            found[guid] = (type(geometry).__name__, place)
+        return found
+
+    resumed, plain = objects(target), objects(tmp_path / "plain.3dm")
+    assert len(resumed) == 599 and set(resumed) == set(plain)
+    assert all(resumed[guid][1] == plain[guid][1] for guid in resumed)
+
+
+def test_checkpoints_hold_plain_data_only(tmp_path):
+    import pickle
+
+    from ifc_converter.checkpoint import Checkpoint
+
+    (tmp_path / "chunk-000000.bin").write_bytes(pickle.dumps(([1], [(object,)])))
+    assert list(Checkpoint(tmp_path).replay()) == []  # refused, not executed
+
+
+def test_a_checkpoint_that_cannot_be_written_does_not_stop_the_conversion(tmp_path, caplog):
+    from ifc_converter.checkpoint import Checkpoint
+
+    checkpoint = Checkpoint(tmp_path / "missing" / "folder")
+    checkpoint._records.append((1, "Body", b"", "g", b"", b"", b"", b"", [], b""))
+    with caplog.at_level(logging.WARNING, logger="ifc_converter.checkpoint"):
+        checkpoint.chunk_done([1])  # no exception
+    assert "Zwischenstand kann nicht gespeichert werden" in caplog.text
+    assert checkpoint.written == 0 and list(checkpoint.replay()) == []
+
+
+def test_no_checkpoint_without_room_or_for_glb(wall_ifc, tmp_path, monkeypatch):
+    import shutil as shutil_module
+
+    real = shutil_module.disk_usage
+    monkeypatch.setattr(shutil_module, "disk_usage", lambda path: real(path)._replace(free=10))
+    assert process._checkpoint_dir(wall_ifc) is None
+    monkeypatch.setattr(shutil_module, "disk_usage", real)
+    folder = process._checkpoint_dir(wall_ifc)
+    assert folder and Path(folder).name.startswith("ifc-converter-checkpoint-")
+    Path(folder).rmdir()
+
+    made = []
+    monkeypatch.setattr(process, "_checkpoint_dir", lambda path: made.append(path) or str(tmp_path))
+    convert_in_child(wall_ifc, tmp_path / "wall.glb", "glb")
+    assert made == []  # GLB/OBJ need the kernel's own shapes, so no checkpoint
+
+
+def test_shapes_read_back_from_a_checkpoint_equal_the_kernels(alignment_ifc, tmp_path):
+    # Every attribute the Rhino export reads, for solids and for the line-only shapes of alignments.
+    from ifc_converter import converter, rhino
+    from ifc_converter.checkpoint import Checkpoint
+
+    model = ifcopenshell.open(str(alignment_ifc))
+    checkpoint = Checkpoint(tmp_path)
+    shapes = [s for s in converter.iter_shapes(model, rhino._settings(), 2, rhino.EXCLUDED_CLASSES)]
+    for shape in shapes:
+        checkpoint.record(shape)
+    checkpoint.chunk_done([shape.id for shape in shapes])
+    [(ids, replayed)] = list(Checkpoint(tmp_path).replay())
+    assert ids == [shape.id for shape in shapes] and len(replayed) == len(shapes)
+    for real, copy in zip(shapes, replayed):
+        a, b = real.geometry, copy.geometry
+        assert (copy.id, copy.context, bytes(copy.transformation_buffer)) == (real.id, real.context, bytes(real.transformation_buffer))
+        assert (b.id, b.verts_buffer, b.faces_buffer, b.item_ids_buffer, b.material_ids_buffer) == (
+            a.id, bytes(a.verts_buffer), bytes(a.faces_buffer), bytes(a.item_ids_buffer), bytes(a.material_ids_buffer))
+        assert bool(b.verts) == bool(a.verts)
+        if not a.faces:
+            assert b.edges == tuple(a.edges) and b.edges
+        # repr: a missing transparency is NaN, which never equals itself
+        assert [repr((m.name, m.diffuse.r(), m.diffuse.g(), m.diffuse.b(), m.transparency)) for m in b.materials] == [
+            repr((m.name, m.diffuse.r(), m.diffuse.g(), m.diffuse.b(), m.transparency)) for m in a.materials]
