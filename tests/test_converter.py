@@ -1,5 +1,6 @@
 import math
 import os
+from pathlib import Path
 
 import ifcopenshell
 import ifcopenshell.util.unit
@@ -429,3 +430,62 @@ def test_triangle_mesh_only(routing_ifc):
     model = ifcopenshell.open(str(routing_ifc))
     routed = {p.Name: converter._triangle_mesh_only(p) for p in converter.shape_products(model, converter.EXCLUDED_CLASSES)}
     assert routed == {"Terrain": True, "Small terrain": False, "Cut terrain": False, "Brep wall": False}
+
+
+@pytest.mark.parametrize("fmt", ["3dm", "glb", "obj"])
+def test_phases_are_reported(wall_ifc, fmt):
+    calls = []
+    convert(wall_ifc, fmt=fmt, status=lambda phase, text: calls.append((phase, text)))
+    phases = [phase for phase, _ in calls]
+    assert phases[:2] == ["read", "geometry"]
+    assert "IFC-Datei wird gelesen" in calls[0][1]
+    if fmt != "obj":  # OBJ is written while the geometry is computed
+        assert phases[-1] == "write"
+    assert "copy" not in phases  # a local folder is written directly
+
+
+@pytest.mark.parametrize("fmt", ["3dm", "glb", "obj"])
+def test_output_for_a_network_folder_is_staged_locally_and_copied(wall_ifc, tmp_path, monkeypatch, fmt):
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "is_network_path", lambda path: True)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    target = tmp_path / "share" / f"wall.{fmt}"
+    calls = []
+    result = convert(wall_ifc, target, fmt, status=lambda phase, text: calls.append((phase, text)), staging_dir=staging)
+    assert result.output == target and target.stat().st_size > 0
+    if fmt == "obj":
+        assert target.with_suffix(".mtl").is_file()
+    assert [phase for phase, _ in calls][-1] == "copy"
+    assert not list(staging.iterdir())  # the staged copy is gone
+
+
+def test_staging_is_skipped_without_room(wall_ifc, tmp_path, monkeypatch):
+    import shutil
+
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "is_network_path", lambda path: True)
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(10, 10, 0))
+    calls = []
+    result = convert(wall_ifc, tmp_path / "wall.glb", "glb", status=lambda phase, text: calls.append((phase, text)))
+    assert result.output.is_file()
+    assert "copy" not in [phase for phase, _ in calls]  # written over the "network" directly
+
+
+def test_network_paths_are_recognised(monkeypatch):
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter.sys, "platform", "win32")
+    assert converter.is_network_path(Path(r"\\srvbf001\Users$\bwestrich\Desktop\IFC Test\a.3dm"))
+    assert converter.is_network_path(Path("//server/share/a.3dm"))
+    monkeypatch.setattr(converter.sys, "platform", "linux")
+    assert not converter.is_network_path(Path("/home/user/a.3dm"))
+
+
+def test_size_text():
+    from ifc_converter.converter import size_text
+
+    assert size_text(345 * 1024 ** 2) == "345 MB"
+    assert size_text(int(1.25 * 1024 ** 3)) == "1,2 GB"

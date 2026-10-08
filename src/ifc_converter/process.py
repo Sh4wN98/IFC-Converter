@@ -16,6 +16,7 @@ import multiprocessing
 import os
 import signal
 import sys
+import shutil
 import tempfile
 import threading
 import time
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from ifc_converter.converter import (
     DEFAULT_KERNEL, MAX_DEFAULT_THREADS, SPARE_CORES, ConversionResult, ProgressCallback, convert,
-    default_threads,
+    default_threads, size_text,
 )
 
 # "spawn" starts a fresh interpreter on every platform: no forked copy of the GUI's threads and
@@ -35,6 +36,8 @@ _CONTEXT = multiprocessing.get_context("spawn")
 
 # How often the waiting thread checks for a cancel, in seconds.
 POLL_INTERVAL = 0.1
+# Seconds between "still running" lines in the log, so a long phase shows where the time goes.
+HEARTBEAT = 60
 
 MEMORY_MESSAGE = "Der Arbeitsspeicher hat nicht gereicht (Prozess wurde vom System beendet)"
 # Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
@@ -244,8 +247,11 @@ def _child_main(
     def progress(percent: int) -> None:
         conn.send(("progress", percent))
 
+    def status(phase: str, text: str) -> None:
+        conn.send(("status", phase, text))
+
     try:
-        result = func(*args, progress=progress, **kwargs)
+        result = func(*args, progress=progress, status=status, **kwargs)
     except Exception as exc:  # exception objects may not unpickle in the parent, so send plain text
         conn.send(("error", type(exc).__name__, str(exc), traceback.format_exc()))
     else:
@@ -264,6 +270,7 @@ def convert_in_child(
     func: Callable[..., ConversionResult] = convert,
     on_retry: Callable[[], None] | None = None,
     low_priority: bool = True,
+    status: Callable[[str, str], None] | None = None,
     **options,
 ) -> ConversionResult:
     """Like convert(), but in a child process; blocks until it is done.
@@ -277,7 +284,9 @@ def convert_in_child(
     once more with kernel="opencascade"; ``on_retry`` is called before that, and progress starts again from reading.
 
     ``threads`` defaults to auto_threads(); ``low_priority`` runs the child below normal priority.
-    Start, outcome and duration of the conversion are logged.
+    ``status`` gets the current phase ("read", "geometry", "write", "copy") and a German description
+    (while writing with the size written so far). Start, phases, a heartbeat every minute, outcome and
+    duration of the conversion are logged.
     """
     threads = threads or auto_threads()
     args = (input_path, output_path, fmt, threads)
@@ -289,14 +298,16 @@ def convert_in_child(
     started = time.monotonic()
     try:
         try:
-            result = _run_child(func, args, options, progress, cancelled, low_priority)
+            result = _run_child(func, args, options, progress, cancelled, low_priority, status, started)
         except ConversionCrashed as crash:
             if not _retry_with_opencascade(crash.exitcode, options):
                 raise
             log.warning("%s (Exit-Code %s) – neuer Versuch mit OpenCASCADE", crash, crash.exitcode)
             if on_retry:
                 on_retry()
-            result = _run_child(func, args, {**options, "kernel": "opencascade"}, progress, cancelled, low_priority)
+            result = _run_child(
+                func, args, {**options, "kernel": "opencascade"}, progress, cancelled, low_priority, status, started,
+            )
     except Cancelled:
         log.info("Abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
         raise
@@ -330,13 +341,17 @@ def _run_child(
     progress: ProgressCallback | None,
     cancelled: Callable[[], bool],
     low_priority: bool = True,
+    status: Callable[[str, str], None] | None = None,
+    started: float | None = None,
 ) -> ConversionResult:
     """One attempt of convert_in_child()."""
     stderr_path = _stderr_file()
+    staging = _staging_dir()
+    watch = _Phases(args[1] or Path(args[0]).with_suffix(f".{args[2]}"), staging, status, started)
     reader, writer = _CONTEXT.Pipe(duplex=False)
     process = _CONTEXT.Process(
         target=_child_main,
-        args=(writer, func, args, options, os.getpid(), stderr_path, low_priority),
+        args=(writer, func, args, {**options, "staging_dir": staging}, os.getpid(), stderr_path, low_priority),
         name="ifc-convert",
         # Not a daemon: daemonic processes may not start processes, and the child starts the worker
         # processes of a large Rhino export. _die_with_parent() ends it with its parent instead.
@@ -350,6 +365,7 @@ def _run_child(
             if cancelled():
                 raise Cancelled
             ready = wait([reader, process.sentinel], POLL_INTERVAL)
+            watch.tick()
             if reader in ready:
                 try:
                     message = reader.recv()
@@ -357,8 +373,11 @@ def _run_child(
                     process.join(5)
                     break
                 if message[0] == "progress":
+                    watch.percent = message[1]
                     if progress:
                         progress(message[1])
+                elif message[0] == "status":
+                    watch.enter(message[1], message[2])
                 else:
                     outcome = message
             elif process.sentinel in ready:
@@ -368,7 +387,7 @@ def _run_child(
                         message = reader.recv()
                     except EOFError:
                         break
-                    if message[0] != "progress":
+                    if message[0] not in ("progress", "status"):
                         outcome = message
                 break
     finally:
@@ -376,12 +395,72 @@ def _run_child(
         exitcode = _stop(process, grace=5 if outcome else 0)
         reader.close()
         _log_stderr(stderr_path, failed=outcome is None or outcome[0] == "error")
+        if staging:
+            shutil.rmtree(staging, ignore_errors=True)
 
     if outcome is None:
         raise ConversionCrashed(exitcode)
     if outcome[0] == "error":
         raise ConversionFailed(*outcome[1:])
     return outcome[1]
+
+
+def _staging_dir() -> str | None:
+    """A new temp folder in which the child stages output for a network folder (see converter)."""
+    try:
+        return tempfile.mkdtemp(prefix="ifc-converter-")
+    except OSError:
+        return None
+
+
+class _Phases:
+    """Follows the child's phases: passes them on, logs them, and measures the file being written.
+
+    rhino3dm holds the child's interpreter lock while it writes a 3dm, so the child cannot report
+    on that itself; the size of the growing file shows that it is not stuck.
+    """
+
+    def __init__(self, output: Path, staging: str | None, status, started: float | None):
+        self.output = Path(output)
+        self.staging = Path(staging) if staging else None
+        self.status = status
+        self.started = started or time.monotonic()
+        self.phase = self.text = ""
+        self.percent = 0
+        self._shown = self._logged = time.monotonic()
+
+    def enter(self, phase: str, text: str) -> None:
+        if phase != self.phase:
+            log.info("%s (nach %.0f s)", text, time.monotonic() - self.started)
+        self.phase, self.text = phase, text
+        self._show(text)
+
+    def tick(self) -> None:
+        now = time.monotonic()
+        if now - self._logged >= HEARTBEAT:
+            self._logged = now
+            log.info("Läuft seit %.0f s, %d %%: %s", now - self.started, self.percent, self.text or "…")
+        if self.phase == "write" and now - self._shown >= 1:
+            self._show(f"{self.text.removesuffix(' …')}: {size_text(self._written())} geschrieben …")
+
+    def _written(self) -> int:
+        """Bytes written so far: the output, or what is staged for it in the temp folder."""
+        paths = [self.output]
+        if self.staging and self.staging.is_dir():
+            paths += self.staging.rglob("*")
+        total = 0
+        for path in paths:
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:  # being created or removed right now
+                pass
+        return total
+
+    def _show(self, text: str) -> None:
+        self._shown = time.monotonic()
+        if self.status:
+            self.status(self.phase, text)
 
 
 def _stderr_file() -> str | None:

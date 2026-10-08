@@ -147,6 +147,8 @@ class ProgressLine:
             self.enabled = False
         self._text: str | None = None
         self._width = 0
+        self._percent: int | None = None
+        self._detail = ""
 
     def show(self, text: str) -> None:
         if not self.enabled or text == self._text:
@@ -159,13 +161,21 @@ class ProgressLine:
         self._width = max(self._width, len(line))
 
     def percent(self, value: int) -> None:
-        self.show(f"{value} %")
+        self._percent = value
+        self.show(f"{value} %" + (f" – {self._detail}" if self._detail else ""))
+
+    def phase(self, phase: str, text: str) -> None:
+        """The long final phases (writing, copying) are shown next to the percentage."""
+        self._detail = text if phase in ("write", "copy") else ""
+        if self._percent is not None:
+            self.percent(self._percent)
 
     def clear(self) -> None:
         if self._width:
             self.stream.write("\r" + " " * self._width + "\r")
             self.stream.flush()
             self._width, self._text = 0, None
+        self._percent, self._detail = None, ""
 
 
 def output_files(target: Path, fmt: str) -> list[Path]:
@@ -217,7 +227,7 @@ def convert_in_terminal(
     try:
         return convert_in_child(
             source, target, fmt, threads, line.percent, geometry=geometry, on_retry=retrying,
-            low_priority=low_priority,
+            low_priority=low_priority, status=line.phase,
         )
     except BaseException:
         for path in created:

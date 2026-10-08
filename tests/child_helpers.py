@@ -152,3 +152,24 @@ def convert_counting_workers(input_path, output_path, fmt, threads, progress=Non
     result = convert(input_path, output_path, fmt, threads, progress, **options)
     Path(f"{output_path}.workers").write_text(str(max(running, default=0)))
     return result
+
+
+def write_slowly(input_path, output_path, fmt, threads, progress=None, status=None, **options):
+    """Enter the "write" phase and let the output grow for about two seconds, like rhino3dm's Write()."""
+    progress(0)
+    status("write", "Rhino-Datei wird geschrieben (1 Objekte) …")
+    with open(output_path, "wb") as file:
+        for _ in range(5):
+            file.write(b"\0" * 1024 ** 2)
+            file.flush()
+            time.sleep(0.5)
+    progress(100)
+    return ConversionResult(output=Path(output_path), elements=1)
+
+
+def stage_and_wait(input_path, output_path, fmt, threads, progress=None, status=None, staging_dir=None, **options):
+    """Put a file into the staging folder, tell the test where it is, then wait to be cancelled."""
+    (Path(staging_dir) / "staged.3dm").write_bytes(b"\0" * 1024)
+    Path(f"{output_path}.staging").write_text(str(staging_dir))
+    progress(0)
+    time.sleep(120)

@@ -578,9 +578,12 @@ def child_calls(monkeypatch):
     """Replace convert_in_child() in the GUI module and record its arguments."""
     calls = []
 
-    def fake(source, target, fmt, threads, progress, cancelled, on_retry=None, low_priority=True, **options):
+    def fake(source, target, fmt, threads, progress, cancelled, on_retry=None, low_priority=True, status=None,
+             **options):
+        assert callable(status)  # the phases reach the window
         calls.append({"threads": threads, "low_priority": low_priority, **options})
         progress(0)
+        status("write", "Rhino-Datei wird geschrieben …")
         target.write_text("fake")
         progress(100)
         return ConversionResult(output=target, elements=1)
@@ -810,3 +813,18 @@ def test_error_in_a_slot_shows_the_error_dialog(app, monkeypatch):
     assert "KeyError: 'fehlt'" in reporter.dialog.details
     reporter.dialog.accept()
     app.processEvents()
+
+
+def test_long_final_phases_are_shown_in_the_row_and_status_line(window, wall_ifc):
+    window.add_paths([wall_ifc])
+    item = window.queue[0]
+    window._worker = gui.ConversionWorker([], "3dm", None)  # a running batch, so the status line follows
+    window._on_file_started(0, wall_ifc.with_suffix(".3dm"))
+    window._on_file_progress(0, 90)
+    window._on_file_status(0, "geometry", "Geometrie wird berechnet (16 Threads) …")
+    assert item.status_text == "Läuft … 90 %"  # the percentage tells enough there
+    window._on_file_status(0, "write", "Rhino-Datei wird geschrieben (600 Objekte): 1,2 GB geschrieben …")
+    assert item.status_text == "Läuft … 90 % – Rhino-Datei wird geschrieben (600 Objekte): 1,2 GB geschrieben …"
+    assert "1,2 GB geschrieben" in window.status_label.text()
+    assert "Rhino-Datei wird geschrieben" in window.log_view.toPlainText()
+    window._worker = None
