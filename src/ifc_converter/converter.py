@@ -627,9 +627,16 @@ def iter_shapes(
     finally:
         pipeline.close()
 
+    without = [product for product in candidates if product.id() not in produced]
+    # An aggregate whose parts became geometry (e.g. a curtain wall of plates and members, whose own
+    # body ArchiCAD leaves empty) misses nothing: it is neither reported nor counted as without.
+    covered = [product for product in without if _parts_produced(product, produced)]
+    if covered and counter is not None:
+        counter[0] -= len(covered)
     missing = _missing.get()
     if missing is not None:
-        missing.extend(product_label(product) for product in candidates if product.id() not in produced)
+        covered_ids = {product.id() for product in covered}
+        missing.extend(product_label(product) for product in without if product.id() not in covered_ids)
     if position:  # a crash or hang from here on is not in the kernel
         position("done", [], "")
 
@@ -850,6 +857,20 @@ class _Pipeline:
             run.computed.add(shape.id)
             if self._position:
                 self._position("delivered", [shape.id], "")
+
+
+def _parts_produced(product: ifcopenshell.entity_instance, produced: set[int]) -> bool:
+    """Whether any part that ``product`` is decomposed into (IfcRelAggregates, at any depth) became geometry."""
+    stack, seen = [product], {product.id()}
+    while stack:
+        for relation in getattr(stack.pop(), "IsDecomposedBy", None) or ():
+            for part in relation.RelatedObjects:
+                if part.id() in produced:
+                    return True
+                if part.id() not in seen:
+                    seen.add(part.id())
+                    stack.append(part)
+    return False
 
 
 def _produced(shape, produced: set[int]):

@@ -783,3 +783,48 @@ def test_leaving_early_waits_only_so_long_for_a_slow_element(many_walls_ifc, mon
     for thread in runs:
         thread.join(30)
     assert not any(thread.is_alive() for thread in runs)
+
+
+def test_aggregates_whose_parts_became_geometry_are_not_reported_without(tmp_path):
+    # ArchiCAD curtain walls: the IfcCurtainWall's own body comes out empty, its plates are the
+    # geometry. Only an aggregate without any converted part is reported as without geometry.
+    import ifcopenshell.api as api
+
+    model = api.run("project.create_file", version="IFC4")
+    project = api.run("root.create_entity", model, ifc_class="IfcProject", name="Test")
+    api.run("unit.assign_unit", model)
+    context = api.run("context.add_context", model, context_type="Model")
+    body = api.run(
+        "context.add_context", model,
+        context_type="Model", context_identifier="Body", target_view="MODEL_VIEW", parent=context,
+    )
+    site = api.run("root.create_entity", model, ifc_class="IfcSite", name="Site")
+    api.run("aggregate.assign_object", model, relating_object=project, products=[site])
+
+    def element(ifc_class, name, x, length=2.0):
+        product = api.run("root.create_entity", model, ifc_class=ifc_class, name=name)
+        shape = api.run("geometry.add_wall_representation", model, context=body, length=length, height=3, thickness=0.2)
+        api.run("geometry.assign_representation", model, product=product, representation=shape)
+        matrix = numpy.eye(4)
+        matrix[:3, 3] = (x, 0.0, 0.0)
+        api.run("geometry.edit_object_placement", model, product=product, matrix=matrix)
+        api.run("spatial.assign_container", model, relating_structure=site, products=[product])
+        return product
+
+    def empty_body(product):  # an extrusion of a profile without area: no geometry from the kernel
+        profile = model.createIfcRectangleProfileDef("AREA", None, None, 0.0, 0.2)
+        solid = model.createIfcExtrudedAreaSolid(profile, None, model.createIfcDirection((0.0, 0.0, 1.0)), 3.0)
+        product.Representation.Representations[0].Items = [solid]
+
+    with_parts = element("IfcCurtainWall", "with plates", 0)
+    empty_body(with_parts)
+    plate = element("IfcPlate", "plate", 0, length=1.0)
+    api.run("aggregate.assign_object", model, relating_object=with_parts, products=[plate])
+    alone = element("IfcCurtainWall", "alone", 10)
+    empty_body(alone)
+    path = tmp_path / "curtain.ifc"
+    model.write(str(path))
+
+    result = convert(path, tmp_path / "curtain.glb", "glb")
+    assert result.elements == 1  # the plate
+    assert result.skipped == 1 and result.no_geometry == [f"IfcCurtainWall {alone.GlobalId} „alone“"]

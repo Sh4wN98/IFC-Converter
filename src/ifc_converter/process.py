@@ -874,14 +874,18 @@ def quarantine_path() -> Path:
 
 
 def _quarantine_key(input_path: str | Path, kernel: str) -> str | None:
-    """What identifies an unchanged file and the way it is converted, or None if it cannot be read."""
-    from ifc_converter import __version__
+    """What identifies an unchanged file and the way it is converted, or None if it cannot be read.
+
+    The version of IfcOpenShell (the geometry kernel) belongs to it, not the converter's: an update
+    of the converter alone does not make the kernel get past these elements.
+    """
+    import ifcopenshell
 
     try:
         stat = os.stat(input_path)
     except OSError:
         return None
-    return f"{Path(input_path).name}|{stat.st_size}|{stat.st_mtime_ns}|{kernel}|{__version__}"
+    return f"{Path(input_path).name}|{stat.st_size}|{stat.st_mtime_ns}|{kernel}|ifcopenshell {ifcopenshell.version}"
 
 
 def _read_quarantine() -> dict:
