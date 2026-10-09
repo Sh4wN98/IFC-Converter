@@ -589,6 +589,10 @@ def test_the_quarantine_key_belongs_to_one_unchanged_file(wall_ifc, tmp_path):
     os.utime(wall_ifc, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
     assert process._quarantine_key(wall_ifc, "accurate") != key
     assert process._quarantine_key(tmp_path / "missing.ifc", "accurate") is None
+    # Bound to the geometry kernel's version, not the converter's.
+    import ifcopenshell
+
+    assert key.endswith(f"|accurate|ifcopenshell {ifcopenshell.version}")
 
 
 def test_the_quarantine_survives_a_broken_file_and_stays_small(own_quarantine):
