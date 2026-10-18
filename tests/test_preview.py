@@ -238,7 +238,8 @@ def test_the_cache_key_follows_the_file(wall_ifc, own_cache, monkeypatch):
     path = preview.preview_path(wall_ifc)
     assert path.parent == own_cache != wall_ifc.parent and path.suffix == ".npz"
     assert preview.preview_path(wall_ifc) == path
-    assert preview.preview_path(Path(os.path.relpath(wall_ifc))) == path
+    monkeypatch.chdir(wall_ifc.parent)  # a relative path (relpath fails across Windows drives)
+    assert preview.preview_path(Path(wall_ifc.name)) == path
     stat = wall_ifc.stat()
     os.utime(wall_ifc, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     changed = preview.preview_path(wall_ifc)
