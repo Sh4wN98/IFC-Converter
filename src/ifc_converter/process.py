@@ -191,12 +191,12 @@ def _retry_with_opencascade(exitcode: int | None, options: dict) -> bool:
     The hybrid kernel segfaults on some models that OpenCASCADE converts fine; the strategies
     "hybrid" and "accurate" (triangle meshes) use it. Running out of memory is no such crash.
     """
-    kernel = options.get("kernel") or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL
-    return kernel.lower() in ("accurate", "hybrid") and exitcode not in (None, 0) and not _out_of_memory(exitcode)
+    return _uses_hybrid(options) and exitcode not in (None, 0) and not _out_of_memory(exitcode)
 
 
 def _recover(
-    failure: Exception, options: dict, isolate: set[int], skipped: dict[int, str], attempt: int = 2
+    failure: Exception, options: dict, isolate: set[int], skipped: dict[int, str], attempt: int = 2,
+    opencascade_first: bool = False,
 ) -> str | None:
     """Plan attempt number ``attempt`` after a crash or hang; returns the message for it, or None to give up.
 
@@ -204,7 +204,9 @@ def _recover(
     yet, ("element", [id], label), or ("curves", ids, labels one per line) for the Rhino export's
     alignment and grid axes, which are left out then. A crash with a strategy using the hybrid kernel
     is retried with OpenCASCADE alone only if it happened while the kernel computed products and
-    nothing narrower is left to try; a crash while reading or writing would only come again.
+    nothing narrower is left to try; a crash while reading or writing would only come again. With
+    ``opencascade_first`` a crash or hang in the kernel under such a strategy goes to OpenCASCADE at
+    once, before narrowing it down.
     """
     if isinstance(failure, ConversionCrashed) and (failure.memory_limit or _out_of_memory(failure.exitcode)):
         return None
@@ -214,6 +216,9 @@ def _recover(
         what = "Absturz im Geometriekern"
     again = f"Neuer Versuch ({attempt}. von höchstens {MAX_RECOVERIES + 1})"
     kind, ids, label = getattr(failure, "position", None) or (None, [], "")
+    if opencascade_first and kind in ("chunk", "element") and _uses_hybrid(options):
+        options["kernel"] = "opencascade"
+        return RETRY_MESSAGE
     if kind == "curves" and ids and not set(ids) <= skipped.keys():
         labels = label.split("\n") if label else []
         for number, id_ in enumerate(ids):
@@ -233,6 +238,12 @@ def _recover(
         options["kernel"] = "opencascade"
         return RETRY_MESSAGE
     return None
+
+
+def _uses_hybrid(options: dict) -> bool:
+    """Whether the kernel strategy of ``options`` uses the hybrid kernel ("hybrid", "accurate")."""
+    kernel = options.get("kernel") or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL
+    return kernel.lower() in ("accurate", "hybrid")
 
 
 def _die_with_parent(parent_pid: int) -> None:
@@ -460,6 +471,7 @@ def convert_in_child(
     on_retry: Callable[[str], None] | None = None,
     low_priority: bool = True,
     status: Callable[[str, str], None] | None = None,
+    opencascade_first: bool = False,
     **options,
 ) -> ConversionResult:
     """Like convert(), but in a child process; blocks until it is done.
@@ -474,6 +486,9 @@ def convert_in_child(
     without a single product that still fails, which is then reported as skipped; a crash with a
     strategy that uses the hybrid kernel, where no chunk was running, is retried with OpenCASCADE.
     ``on_retry`` gets a German message before each new attempt, and progress starts again from reading.
+    With ``opencascade_first`` (the preview) a crash or hang in the hybrid kernel is retried with
+    OpenCASCADE right away: where the hybrid kernel crashes on one element of a model it often does on
+    many alike (all beams of a bridge), and each step of narrowing it down reads the file again.
 
     ``threads`` defaults to auto_threads(); ``low_priority`` runs the child below normal priority.
     ``status`` gets the current phase ("read", "geometry", "write", "copy") and a German description
@@ -512,7 +527,7 @@ def convert_in_child(
                 except (ConversionCrashed, ConversionStalled) as failure:
                     known = len(skipped)
                     kernel_before = options.get("kernel")
-                    message = _recover(failure, options, isolate, skipped, attempt + 2)
+                    message = _recover(failure, options, isolate, skipped, attempt + 2, opencascade_first)
                     if len(skipped) > known:
                         save_quarantine(quarantine, skipped)
                     if message is None or attempt == MAX_RECOVERIES:
