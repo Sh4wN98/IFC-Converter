@@ -49,6 +49,9 @@ CI = bool(os.environ.get("CI"))
 TEMP_PREFIX = "ifc-converter-"
 # How long the app leaves temp entries alone (process.STALE_TEMP_AGE), plus a margin.
 STALE_AGE = 25 * 3600
+# What the 3D preview needs in the build (searched below _internal): QtOpenGL for the OpenGL renderer and,
+# on Windows, Qt's software OpenGL for machines without a usable graphics driver.
+PREVIEW_FILES = ["Qt6OpenGL.dll", "Qt6OpenGLWidgets.dll", "QtOpenGL.pyd", "QtOpenGLWidgets.pyd", "opengl32sw.dll"]
 # The mutex the running app holds for the installer (app.APP_MUTEX, AppMutex in installer.iss).
 APP_MUTEX = "IFCConverter-6F0B8E52-3C1D-4B7A-9E2F-5A8C1D4E7B90"
 
@@ -434,6 +437,15 @@ def window_titles(pid: int) -> list[str]:
     return titles
 
 
+def check_preview_files(app_dir: Path) -> None:
+    """The libraries of the 3D preview must be in the build (a spec once left out opengl32sw.dll)."""
+    present = {path.name.lower() for path in (app_dir / "_internal").rglob("*") if path.is_file()}
+    missing = [name for name in PREVIEW_FILES if name.lower() not in present]
+    if missing:
+        raise SystemExit(f"missing from the build (3D preview): {', '.join(missing)}")
+    print(f"  3D preview libraries present: {', '.join(PREVIEW_FILES)} ✓")
+
+
 def check_gui(gui: Path, source: Path) -> None:
     """Start the program window with a file argument; it must show its main window and keep running.
 
@@ -497,6 +509,8 @@ def main() -> int:
     for name in ("THIRD-PARTY-NOTICES.txt", "licenses/LGPL-3.0.txt"):
         if not (args.app_dir / "_internal" / name).is_file():
             raise SystemExit(f"{name} is missing from the build")
+    if WINDOWS:
+        check_preview_files(args.app_dir)
 
     before = snapshot(args.app_dir)
     temp_before = temp_entries()
