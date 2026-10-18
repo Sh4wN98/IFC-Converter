@@ -50,6 +50,12 @@ MIN_HYBRID_TRIANGLES = 1000
 NON_BODY_TYPES = ("Curve", "Curve2D", "Curve3D", "BoundingBox", "Point", "PointCloud")
 log = logging.getLogger(__name__)
 _kernel: ContextVar[str | None] = ContextVar("kernel", default=None)
+# Products the iterator gives no geometry get a second attempt each (see _second_attempts), with this
+# tolerance, for at most RESCUE_SECONDS per conversion: a model whose elements are mostly empty
+# (e.g. fully cut away) is not held up.
+RESCUE_PRECISION = 1e-6
+RESCUE_SECONDS = 120
+
 # The checkpoint of the running conversion (3dm only), see checkpoint.py.
 _checkpoint: ContextVar = ContextVar("checkpoint", default=None)
 # Labels of the products of the running conversion that produced no geometry.
@@ -419,6 +425,16 @@ def chunk_size(threads: int) -> int:
     return min(max(CHUNK_SIZE, CHUNK_PER_THREAD * threads), MAX_CHUNK_SIZE)
 
 
+# The SI unit of each unit type (IfcSIUnitName), for SI units written without a name.
+SI_UNIT_NAMES = {
+    "LENGTHUNIT": "METRE", "AREAUNIT": "SQUARE_METRE", "VOLUMEUNIT": "CUBIC_METRE",
+    "PLANEANGLEUNIT": "RADIAN", "SOLIDANGLEUNIT": "STERADIAN", "MASSUNIT": "GRAM", "TIMEUNIT": "SECOND",
+    "THERMODYNAMICTEMPERATUREUNIT": "DEGREE_CELSIUS", "FORCEUNIT": "NEWTON", "PRESSUREUNIT": "PASCAL",
+    "ENERGYUNIT": "JOULE", "POWERUNIT": "WATT", "FREQUENCYUNIT": "HERTZ", "ELECTRICCURRENTUNIT": "AMPERE",
+    "ELECTRICVOLTAGEUNIT": "VOLT", "LUMINOUSINTENSITYUNIT": "CANDELA", "AMOUNTOFSUBSTANCEUNIT": "MOLE",
+}
+
+
 def repair_units(model: ifcopenshell.file) -> None:
     """Repair conversion-based units that IfcOpenShell cannot read, in memory.
 
@@ -426,6 +442,12 @@ def repair_units(model: ifcopenshell.file) -> None:
     and declares its square and cubic feet as length units. IfcOpenShell then ignores all units and
     reads the model as metres: a model in US survey feet came out 3.28x too large.
     """
+    # Some exporters write the SI unit without its name, e.g. IfcSIUnit(*,.LENGTHUNIT.,.MILLI.,$) for
+    # millimetres (bridges of the Zenodo "AutoGen" set): IfcOpenShell then reads the model as metres,
+    # 1000x too large. The unit type tells the name.
+    for unit in model.by_type("IfcSIUnit"):
+        if unit.Name is None and unit.UnitType in SI_UNIT_NAMES:
+            unit.Name = SI_UNIT_NAMES[unit.UnitType]
     for unit in model.by_type("IfcConversionBasedUnit"):
         factor = unit.ConversionFactor
         if factor is None:
@@ -582,6 +604,7 @@ def iter_shapes(
         if status:
             status("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
 
+    rescue, rescued = [RESCUE_SECONDS], 0  # time left for second attempts, products saved by them
     chunks = [products[start:start + size] for start in range(0, len(products), size)]
     pipeline = _Pipeline(model, settings, threads, position, chunks, strategy, library)
     finished += len(deep)
@@ -619,6 +642,12 @@ def iter_shapes(
             if empty:
                 for shape in pipeline.shapes(pipeline.start(index, empty, library, world=True), index):
                     yield keep(shape)
+            failed = [product for product in chunk if product.id() not in produced]
+            if failed and rescue[0] > 0:
+                for shape in _second_attempts(settings, failed, position, rescue):
+                    rescued += 1
+                    yield keep(shape)
+                pipeline.report_position()
             yield from chunk_end([product.id() for product in chunk])
             _release_memory()
             finished += len(chunk)
@@ -627,6 +656,11 @@ def iter_shapes(
     finally:
         pipeline.close()
 
+    if rescued and status:
+        status("note", f"{rescued} Bauteile erst im zweiten Versuch berechnet (feinere Toleranz bzw. anderer Kern)")
+    if rescue[0] <= 0 and status:
+        status("note", f"Zweite Versuche nach {RESCUE_SECONDS} s beendet; weitere Bauteile ohne Geometrie "
+                       "wurden nicht mehr einzeln versucht")
     without = [product for product in candidates if product.id() not in produced]
     # An aggregate whose parts became geometry (e.g. a curtain wall of plates and members, whose own
     # body ArchiCAD leaves empty) misses nothing: it is neither reported nor counted as without.
@@ -765,12 +799,7 @@ class _Pipeline:
         """Start a run for ``products`` of chunk ``index`` right away (in world coordinates if ``world``)."""
         run = _Run(index, products, library, _kernel_threads(self.threads), self.model, self.settings)
         self._alive.append(run)
-        if self._position:
-            with self._lock:
-                self._position("chunk", [id_ for alive in self._alive for id_ in alive.ids], "")
-                computed = [id_ for alive in self._alive for id_ in alive.computed]
-                if computed:
-                    self._position("delivered", computed, "")
+        self.report_position()
         if world:
             self.settings.set("use-world-coords", True)  # iterators copy their settings
         try:
@@ -785,6 +814,15 @@ class _Pipeline:
         thread.start()
         self._threads.append(thread)
         return run
+
+    def report_position(self) -> None:
+        """Tell ``position`` the products of the runs alive: all as a "chunk", the computed as "delivered"."""
+        if self._position:
+            with self._lock:
+                self._position("chunk", [id_ for alive in self._alive for id_ in alive.ids], "")
+                computed = [id_ for alive in self._alive for id_ in alive.computed]
+                if computed:
+                    self._position("delivered", computed, "")
 
     def shapes(self, run: _Run, index: int) -> Iterator:
         """The shapes of ``run`` as the kernel delivers them; meanwhile idle threads get more work."""
@@ -982,6 +1020,33 @@ def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, 
         finally:
             settings.set("use-world-coords", False)
     return None
+
+
+def _second_attempts(settings: geom.settings, products: list, position, budget: list[float]) -> Iterator:
+    """Second attempts for ``products`` that the iterator gave no geometry, one by one, as long as
+    ``budget[0]`` seconds are left: OpenCASCADE with RESCUE_PRECISION, then the hybrid kernel.
+
+    OpenCASCADE gives up on some faceted solids at its default tolerance of 0.01 mm that it builds
+    at 0.001 mm (beams of millimetre bridges, which came out right only while the file's unit was
+    misread as metres and everything was 1000x larger).
+    """
+    for product in products:
+        if budget[0] <= 0:
+            return
+        if position:
+            position("element", [product.id()], product_label(product))
+        started = time.monotonic()
+        previous = settings.get("precision")
+        settings.set("precision", RESCUE_PRECISION)
+        try:
+            shape = _deep_shape(settings, product, "opencascade")
+        finally:
+            settings.set("precision", previous)
+        if shape is None or not shape.geometry.verts:
+            shape = _deep_shape(settings, product, "hybrid")
+        budget[0] -= time.monotonic() - started
+        if shape is not None and shape.geometry.verts:
+            yield shape
 
 
 def _body_representation(product: ifcopenshell.entity_instance):

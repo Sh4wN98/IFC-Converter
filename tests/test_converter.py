@@ -828,3 +828,50 @@ def test_aggregates_whose_parts_became_geometry_are_not_reported_without(tmp_pat
     result = convert(path, tmp_path / "curtain.glb", "glb")
     assert result.elements == 1  # the plate
     assert result.skipped == 1 and result.no_geometry == [f"IfcCurtainWall {alone.GlobalId} „alone“"]
+
+
+def test_si_units_without_a_name_are_repaired(wall_ifc, tmp_path):
+    # IfcSIUnit(*,.LENGTHUNIT.,.MILLI.,$): read as metres before, every length 1000x too large.
+    import ifcopenshell.util.unit as unit_util
+
+    from ifc_converter.converter import repair_units
+
+    model = ifcopenshell.open(str(wall_ifc))  # in millimetres
+    length = next(u for u in model.by_type("IfcSIUnit") if u.UnitType == "LENGTHUNIT")
+    assert (length.Prefix, length.Name) == ("MILLI", "METRE")
+    length.Name = None
+    path = tmp_path / "nameless.ifc"
+    model.write(str(path))
+    repaired = ifcopenshell.open(str(path))
+    repair_units(repaired)
+    assert unit_util.calculate_unit_scale(repaired) == pytest.approx(0.001)
+
+    def extent(obj):
+        points = [list(map(float, line.split()[1:4])) for line in obj.read_text().splitlines() if line.startswith("v ")]
+        return [max(p[i] for p in points) - min(p[i] for p in points) for i in range(3)]
+
+    convert(wall_ifc, tmp_path / "intact.obj", "obj")
+    convert(path, tmp_path / "nameless.obj", "obj")
+    assert extent(tmp_path / "nameless.obj") == pytest.approx(extent(tmp_path / "intact.obj"))
+
+
+def test_products_without_geometry_get_a_second_attempt(many_walls_ifc, tmp_path, monkeypatch):
+    # As if the iterator gave nothing for "Wall 7" (OpenCASCADE gives up on some solids at its
+    # default tolerance): a second attempt one by one builds it.
+    from ifc_converter import converter
+
+    iterate = converter._iterate
+
+    def losing(model, settings, threads, products, library):
+        return iterate(model, settings, threads, [p for p in products if p.Name != "Wall 7"], library)
+
+    monkeypatch.setattr(converter, "_iterate", losing)
+    notes = []
+    result = convert(many_walls_ifc, tmp_path / "walls.glb", "glb", threads=2,
+                     status=lambda phase, text: notes.append(text) if phase == "note" else None)
+    assert (result.elements, result.skipped) == (600, 0)
+    assert any(note.startswith("1 Bauteile erst im zweiten Versuch") for note in notes)
+
+    monkeypatch.setattr(converter, "RESCUE_SECONDS", 0)  # no time left for second attempts
+    result = convert(many_walls_ifc, tmp_path / "walls2.glb", "glb", threads=2)
+    assert (result.elements, result.skipped) == (599, 1)

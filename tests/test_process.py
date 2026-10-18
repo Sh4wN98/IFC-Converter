@@ -801,6 +801,7 @@ def test_a_restart_takes_over_the_chunks_finished_before_the_crash(many_walls_if
 
     target = tmp_path / "resumed.3dm"
     messages = []
+    before = set(Path(tempfile.gettempdir()).glob("ifc-converter-checkpoint-*"))  # e.g. of parallel runs
     with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
         result = convert_in_child(
             many_walls_ifc, target, "3dm", threads=2, on_retry=messages.append,
@@ -815,7 +816,7 @@ def test_a_restart_takes_over_the_chunks_finished_before_the_crash(many_walls_if
     assert int(taken[0]) >= 200 and int(taken[0]) + int(taken[1]) == 599
     computed = [int(line) for line in Path(f"{target}.computed").read_text().split()]
     assert computed == [int(taken[1])]
-    assert not list(Path(tempfile.gettempdir()).glob("ifc-converter-checkpoint-*"))  # removed again
+    assert set(Path(tempfile.gettempdir()).glob("ifc-converter-checkpoint-*")) <= before  # removed again
 
     # The same objects as without any crash, down to the vertices (the file's quarantine leaves
     # "Wall 450" out of this conversion right away).
