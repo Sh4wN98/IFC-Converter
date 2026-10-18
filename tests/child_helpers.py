@@ -278,6 +278,14 @@ def crash_on_wall_7(input_path, output_path, fmt, threads, progress=None, **opti
     return convert(input_path, output_path, fmt, threads, progress, **options)
 
 
+def crash_on_wall_7_unless_opencascade(input_path, output_path, fmt, threads, progress=None, kernel=None, **options):
+    """Crash the kernel at "Wall 7" like the hybrid kernel on some models; OpenCASCADE computes it."""
+    _record_attempt(output_path, kernel)
+    if kernel != "opencascade":
+        _fail_on_named("Wall 7", "crash")
+    return convert(input_path, output_path, fmt, threads, progress, kernel=kernel, **options)
+
+
 def overflow_then_wait(input_path, output_path, fmt, threads, progress=None, **options):
     """Report a stack overflow like faulthandler on Windows, then hang without CPU, as a kernel did there."""
     progress(0)
