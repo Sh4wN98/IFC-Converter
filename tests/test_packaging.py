@@ -89,3 +89,17 @@ def test_app_holds_the_mutex_for_the_installer():
 @pytest.mark.skipif(sys.platform == "win32", reason="elsewhere than on Windows")
 def test_no_mutex_outside_windows():
     assert app.hold_app_mutex() is False
+
+
+def test_build_keeps_what_the_3d_preview_needs():
+    spec = (PACKAGING / "ifc_converter.spec").read_text(encoding="utf-8")
+    unneeded = re.search(r"^UNNEEDED_BINARIES = (.*)$", spec, re.MULTILINE).group(1)
+    assert "opengl32sw.dll" not in unneeded  # Qt's software OpenGL, for machines without a usable driver
+    modules = re.search(r"^PREVIEW_MODULES = (.*)$", spec, re.MULTILINE).group(1)
+    for module in ("ifc_converter.viewer", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets"):
+        assert f'"{module}"' in modules
+    assert spec.count("PREVIEW_MODULES") == 3  # defined, and bundled with both exes
+    assert "opengl32sw.dll" in smoke_test.PREVIEW_FILES and "QtOpenGLWidgets.pyd" in smoke_test.PREVIEW_FILES
+    from ifc_converter import viewer
+
+    assert viewer.RENDERER_ENV in (ROOT / "README.md").read_text(encoding="utf-8")
