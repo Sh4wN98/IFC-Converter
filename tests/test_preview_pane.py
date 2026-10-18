@@ -164,6 +164,15 @@ def test_a_failed_preview_says_why(app, tmp_path, previews):
     pane.show_file(ifc(tmp_path))
     assert wait_until(app, lambda: pane.view.message.startswith("Keine Vorschau möglich"))
     assert "keine Bauteile mit Geometrie" in pane.view.message and not pane.compute_button.isHidden()
+    assert pane.compute_button.text() == "Erneut versuchen"
+    calls, *_ = previews
+    pane.show_file(None)
+    pane.show_file(tmp_path / "a.ifc")  # remembered: not computed again unasked
+    app.processEvents()
+    assert len(calls) == 1 and pane.view.message.startswith("Keine Vorschau möglich")
+    behaviour["mode"] = "ok"
+    pane.compute_button.click()
+    assert wait_until(app, lambda: pane.view.mesh is not None) and len(calls) == 2
     pane.shutdown()
 
 

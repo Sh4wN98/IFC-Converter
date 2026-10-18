@@ -632,8 +632,10 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(files)
         self.splitter.addWidget(self.preview)
+        # The preview gets twice the room of the list (a few files need little); the user can drag it.
         self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setSizes([200, 400])
         left.addWidget(self.splitter, stretch=1)
         self.table.itemSelectionChanged.connect(self._update_preview)
 
