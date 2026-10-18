@@ -39,6 +39,12 @@ Der Converter wird wie ein normales Windows-Programm installiert, Python ist daf
 
 ### 3D-Vorschau
 
+Unter der Dateiliste zeigt eine Vorschau die ausgewählte Datei – eine ins Fenster gezogene Datei wird gleich ausgewählt. Ein- und ausblenden: **Ansicht → Vorschau** (F3); die Trennlinie zur Liste lässt sich verschieben.
+
+- Dateien bis 150 MB werden sofort berechnet (wenige Sekunden), größere erst nach Klick auf „Vorschau berechnen“ (das Einlesen allein dauert Minuten). Während einer Umwandlung wird keine Vorschau von selbst berechnet, damit sie nicht gebremst wird.
+- Eine berechnete Vorschau wird gemerkt und erscheint beim nächsten Mal sofort, auch nach einem Neustart des Programms (solange die Datei unverändert ist).
+- Wechselt man zu einer anderen Datei, wird eine von selbst gestartete Berechnung abgebrochen; eine per Klick gestartete läuft weiter und steht danach bereit.
+
 Die Vorschau zeigt das Modell zum Drehen und Anschauen, zu Beginn schräg von Südwesten oben, ganz im Bild. Z ist oben.
 
 | Aktion | Maus / Taste |

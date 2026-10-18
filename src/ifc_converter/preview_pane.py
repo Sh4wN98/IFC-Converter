@@ -115,6 +115,8 @@ class PreviewPane(QWidget):
         self._task_path: Path | None = None  # the file the running task is for
         self._task_requested = False  # started by the user (not cancelled when another file is selected)
         self._mesh = None
+        self._failed: dict[Path, str] = {}  # files whose preview failed: not computed again unasked
+        self._renderer_logged = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -171,6 +173,9 @@ class PreviewPane(QWidget):
         if cached is not None:
             self._load(cached)
             return
+        if path in self._failed:
+            self._show_state(f"Keine Vorschau möglich: {self._failed[path]}", can_compute=True)
+            return
         try:
             size = path.stat().st_size
         except OSError:
@@ -210,6 +215,7 @@ class PreviewPane(QWidget):
             compute_preview(source, target, progress=progress, status=status, cancelled=cancelled)
             return target
 
+        self._failed.pop(source, None)
         self._task_path, self._task_requested = source, requested
         self._start(_Task(work), self._computed)
         self._show_state("Vorschau wird berechnet: IFC-Datei wird gelesen …", running=True)
@@ -261,6 +267,7 @@ class PreviewPane(QWidget):
             self.show_file(self.path) if self.path else None
             return
         if error:
+            self._failed[source] = error
             self._show_state(f"Keine Vorschau möglich: {error}", can_compute=True)
         elif target is None:
             self._show_state("Vorschau abgebrochen.", can_compute=True)
@@ -281,6 +288,10 @@ class PreviewPane(QWidget):
         else:
             self._mesh = mesh
             self.view.set_mesh(mesh)
+            if not self._renderer_logged:
+                self._renderer_logged = True
+                log.info("Vorschau-Darstellung: %s (%s)", getattr(self.view, "renderer_name", "–"),
+                         getattr(self.view, "renderer_detail", ""))
             self._show_buttons(reset=True)
             self.info.setText(self._info_text(mesh))
 
@@ -303,6 +314,7 @@ class PreviewPane(QWidget):
         self.view.set_mesh(None)
         self.view.set_message(text)
         self.info.setText("")
+        self.compute_button.setText("Erneut versuchen" if self.path in self._failed else "Vorschau berechnen")
         self._show_buttons(compute=can_compute, cancel=running)
 
     def _show_buttons(self, compute: bool = False, cancel: bool = False, reset: bool = False) -> None:
