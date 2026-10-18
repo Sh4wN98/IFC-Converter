@@ -397,12 +397,13 @@ def hover(view, inside=True):
 
 
 def test_view_buttons_show_while_the_mouse_is_over_the_model(make_view):
-    view = make_view(300, 250, two_boxes())
+    # Wide enough for the buttons with this platform's font (Segoe UI on Windows is wider).
+    view = make_view(400, 250, two_boxes())
     hover(view, False)
     assert not view._buttons.isVisible()
     hover(view)
     assert view._buttons.isVisible()
-    assert view._buttons.width() <= 240 and view._buttons.height() <= 30  # leave room for the model
+    assert view._buttons.width() <= 320 and view._buttons.height() <= 32  # leave room for the model
     hover(view, False)
     assert not view._buttons.isVisible()
     hover(view)
@@ -411,7 +412,7 @@ def test_view_buttons_show_while_the_mouse_is_over_the_model(make_view):
 
 
 def test_view_works_small_and_large(make_view):
-    small = make_view(300, 250, two_boxes())
+    small = make_view(400, 250, two_boxes())
     hover(small)
     assert small._buttons.isVisible()
     tiny = make_view(150, 120, two_boxes())
