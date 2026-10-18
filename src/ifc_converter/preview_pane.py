@@ -1,0 +1,319 @@
+"""The preview pane of the main window: a small 3D view of the selected IFC file.
+
+Previews are computed in a child process like conversions (preview.compute_preview) and cached, so
+a file shows at once the next time. Small files get their preview as soon as they are selected;
+large ones (reading alone takes minutes) and files selected while a conversion runs only on request,
+so the preview never slows down a conversion or the user's other programs unasked.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Callable
+from pathlib import Path
+
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+
+from ifc_converter.converter import size_text
+
+log = logging.getLogger(__name__)
+
+# Files up to this size get their preview as soon as they are selected (reading a 150 MB IFC takes
+# about 10 s); larger ones on request.
+AUTO_PREVIEW_SIZE = 150 * 1024 ** 2
+
+NO_FILE = "Eine Datei in der Liste auswählen – ihre Vorschau erscheint hier."
+
+
+def _number(value) -> str:
+    return f"{int(value):,}".replace(",", ".") if isinstance(value, (int, float)) else str(value)
+
+
+class _Task(QObject):
+    """Runs ``work(progress, status, cancelled)`` in its own thread and reports the outcome."""
+
+    progress = Signal(int)
+    status = Signal(str)
+    finished = Signal(object, str)  # result (None if failed or cancelled), error text ("" if cancelled)
+
+    def __init__(self, work: Callable):
+        super().__init__()
+        self._work = work
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel.is_set()
+
+    @Slot()
+    def run(self) -> None:
+        from ifc_converter.interactive import error_message
+        from ifc_converter.process import Cancelled
+
+        try:
+            result = self._work(self.progress.emit, lambda phase, text: self.status.emit(text), self._cancel.is_set)
+        except Cancelled:
+            self.finished.emit(None, "")
+        except Exception as exc:  # shown in the pane; the conversion log has the details
+            log.warning("Vorschau fehlgeschlagen: %s", exc, exc_info=not isinstance(exc, OSError))
+            self.finished.emit(None, error_message(exc))
+        else:
+            self.finished.emit(None if self._cancel.is_set() else result, "")
+
+
+class _MessageView(QLabel):
+    """Stands in for the 3D view where the viewer cannot be loaded at all."""
+
+    element_clicked = Signal(str)
+    renderer_name = "–"
+
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setWordWrap(True)
+
+    def set_mesh(self, mesh) -> None:
+        if mesh is not None:
+            self.setText("Die 3D-Ansicht ist auf diesem PC nicht verfügbar.")
+
+    def set_message(self, text: str) -> None:
+        self.setText(text)
+
+    def reset_view(self) -> None:
+        pass
+
+
+def _make_view() -> QWidget:
+    try:
+        from ifc_converter.viewer import PreviewView
+
+        return PreviewView()
+    except Exception:  # never let the preview break the window
+        log.exception("3D-Ansicht nicht verfügbar")
+        return _MessageView()
+
+
+class PreviewPane(QWidget):
+    """Shows the preview of one file at a time (see show_file)."""
+
+    def __init__(
+        self,
+        busy: Callable[[], bool] = lambda: False,
+        view_factory: Callable[[], QWidget] = _make_view,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._busy = busy  # whether a conversion is running
+        self.path: Path | None = None
+        self._task: _Task | None = None
+        self._thread: QThread | None = None
+        self._task_path: Path | None = None  # the file the running task is for
+        self._task_requested = False  # started by the user (not cancelled when another file is selected)
+        self._mesh = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        header = QHBoxLayout()
+        self.title = QLabel("Vorschau")
+        self.title.setObjectName("PreviewTitle")
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.compute_button = QPushButton("Vorschau berechnen")
+        self.compute_button.clicked.connect(self.compute)
+        self.cancel_button = QPushButton("Abbrechen")
+        self.cancel_button.clicked.connect(self.cancel)
+        self.reset_button = QPushButton("Ansicht zurücksetzen")
+        self.reset_button.setToolTip("Ganzes Modell zeigen (auch Doppelklick in die Ansicht)")
+        header.addWidget(self.title, stretch=1)
+        for button in (self.compute_button, self.cancel_button, self.reset_button):
+            header.addWidget(button)
+        layout.addLayout(header)
+
+        self.view = view_factory()
+        self.view.setMinimumHeight(160)
+        self.view.element_clicked.connect(self._element_clicked)
+        self.reset_button.clicked.connect(self.view.reset_view)
+        layout.addWidget(self.view, stretch=1)
+
+        self.info = QLabel()
+        self.info.setObjectName("PreviewInfo")
+        self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self.info)
+        self._show_state(NO_FILE)
+
+    # ------------------------------------------------------------------ API
+
+    def show_file(self, path: Path | None) -> None:
+        """Show the preview of ``path`` (None: nothing selected): from the cache, computed, or on request."""
+        path = Path(path) if path else None
+        if path == self.path and (self._mesh is not None or self._task is not None):
+            return
+        self.path, self._mesh = path, None
+        if self._task is not None and not self._task_requested and self._task_path != path:
+            self._task.cancel()  # computed for a file no longer selected, unasked
+        if path is None:
+            self.title.setText("Vorschau")
+            self._show_state(NO_FILE)
+            return
+        self.title.setText(f"Vorschau – {path.name}")
+        if self._task is not None and self._task_path == path:
+            self._show_state("Vorschau wird berechnet …", running=True)
+            return
+        from ifc_converter.preview import cached_preview
+
+        cached = cached_preview(path)
+        if cached is not None:
+            self._load(cached)
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            self._show_state("Die Datei ist nicht (mehr) erreichbar.")
+            return
+        if self._busy():
+            self._show_state(
+                "Während einer Umwandlung wird keine Vorschau berechnet, damit sie nicht gebremst wird.",
+                can_compute=True,
+            )
+        elif size > AUTO_PREVIEW_SIZE:
+            self._show_state(
+                f"Große Datei ({size_text(size)}): Die Vorschau braucht einige Minuten. "
+                "Sie läuft mit niedriger Priorität und wird danach gemerkt.",
+                can_compute=True,
+            )
+        elif self._task is not None:
+            self._show_state("Wartet, bis die laufende Vorschau fertig ist …", can_compute=True)
+        else:
+            self.compute(requested=False)
+
+    def compute(self, requested: bool = True) -> None:
+        """Compute the preview of the shown file (``requested``: by the user, so it keeps running)."""
+        if self.path is None:
+            return
+        if self._task is not None:
+            if self._task_path == self.path:
+                self._task_requested |= requested
+                return
+            self._task.cancel()
+            self._wait()
+        from ifc_converter.preview import compute_preview, preview_path
+
+        source, target = self.path, preview_path(self.path)
+
+        def work(progress, status, cancelled):
+            compute_preview(source, target, progress=progress, status=status, cancelled=cancelled)
+            return target
+
+        self._task_path, self._task_requested = source, requested
+        self._start(_Task(work), self._computed)
+        self._show_state("Vorschau wird berechnet: IFC-Datei wird gelesen …", running=True)
+
+    def cancel(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+
+    def shutdown(self) -> None:
+        """Stop a running preview (the window is closing)."""
+        self.cancel()
+        self._wait()
+
+    @property
+    def is_computing(self) -> bool:
+        return self._task is not None
+
+    # -------------------------------------------------------------- internals
+
+    def _start(self, task: _Task, done: Callable) -> None:
+        thread = QThread(self)
+        task.moveToThread(thread)
+        thread.started.connect(task.run)
+        task.progress.connect(self._progress)
+        task.status.connect(self._status)
+        task.finished.connect(done)
+        task.finished.connect(thread.quit)
+        self._task, self._thread = task, thread
+        thread.start()
+
+    def _wait(self) -> None:
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait()
+        self._task = self._thread = None
+
+    def _load(self, path: Path) -> None:
+        from ifc_converter.preview import load_preview
+
+        self._task_path, self._task_requested = self.path, False
+        self._start(_Task(lambda progress, status, cancelled: load_preview(path)), self._loaded)
+        self._show_state("Vorschau wird geladen …")
+
+    @Slot(object, str)
+    def _computed(self, target, error: str) -> None:
+        source = self._task_path
+        self._wait()
+        if source != self.path:  # finished for a file no longer shown: it is cached now
+            self.show_file(self.path) if self.path else None
+            return
+        if error:
+            self._show_state(f"Keine Vorschau möglich: {error}", can_compute=True)
+        elif target is None:
+            self._show_state("Vorschau abgebrochen.", can_compute=True)
+        else:
+            self._load(target)
+
+    @Slot(object, str)
+    def _loaded(self, mesh, error: str) -> None:
+        source = self._task_path
+        self._wait()
+        if source != self.path:
+            self.show_file(self.path) if self.path else None
+            return
+        if mesh is None:
+            self._show_state("Die Vorschau ließ sich nicht laden.", can_compute=True)
+        elif not mesh.triangle_count:
+            self._show_state("Die Datei enthält keine darstellbare Geometrie.")
+        else:
+            self._mesh = mesh
+            self.view.set_mesh(mesh)
+            self._show_buttons(reset=True)
+            self.info.setText(self._info_text(mesh))
+
+    @Slot(int)
+    def _progress(self, percent: int) -> None:
+        if self._task is not None and self._task_path == self.path and self._mesh is None:
+            self.view.set_message(f"Vorschau wird berechnet … {max(percent, 0)} %")
+
+    @Slot(str)
+    def _status(self, text: str) -> None:
+        if self._task is not None and self._task_path == self.path and self._mesh is None and text:
+            self.view.set_message(f"Vorschau: {text}")
+
+    @Slot(str)
+    def _element_clicked(self, label: str) -> None:
+        if self._mesh is not None:
+            self.info.setText(f"{label}" if label else self._info_text(self._mesh))
+
+    def _show_state(self, text: str, can_compute: bool = False, running: bool = False) -> None:
+        self.view.set_mesh(None)
+        self.view.set_message(text)
+        self.info.setText("")
+        self._show_buttons(compute=can_compute, cancel=running)
+
+    def _show_buttons(self, compute: bool = False, cancel: bool = False, reset: bool = False) -> None:
+        self.compute_button.setVisible(compute)
+        self.cancel_button.setVisible(cancel)
+        self.reset_button.setVisible(reset)
+
+    def _info_text(self, mesh) -> str:
+        info = mesh.info
+        parts = [f"{_number(info.get('elements', len(mesh.elements)))} Bauteile"]
+        if info.get("left_out"):
+            parts.append(f"{_number(info['left_out'])} kleine Bauteile ausgelassen")
+        parts.append(f"Darstellung: {getattr(self.view, 'renderer_name', '–')}")
+        return " · ".join(parts) + " – Klick auf ein Bauteil zeigt seinen Namen"

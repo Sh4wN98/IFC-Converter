@@ -644,7 +644,7 @@ def test_convert_and_remove_actions(window, wall_ifc, tmp_path, child_calls):
 
 def test_help_menu_has_log_output_and_about(window):
     menus = {action.text(): action.menu() for action in window.menuBar().actions()}
-    assert list(menus) == ["&Datei", "&Bearbeiten", "E&xtras", "&Hilfe"]
+    assert list(menus) == ["&Datei", "&Bearbeiten", "&Ansicht", "E&xtras", "&Hilfe"]
     help_items = [action.text() for action in menus["&Hilfe"].actions() if not action.isSeparator()]
     assert help_items == [
         "Ausgabeordner öffnen", "Logdatei öffnen", "Anonymisierte Logdatei speichern…", "Über IFC Converter",

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSplitter,
     QSizePolicy,
     QStyle,
     QStyledItemDelegate,
@@ -80,6 +81,7 @@ from ifc_converter.interactive import (
     skipped_warning,
     unique_path,
 )
+from ifc_converter.preview_pane import PreviewPane
 from ifc_converter.process import RETRY_MESSAGE, Cancelled, convert_in_child, remove_stale_temp_files
 
 # The app's name before it was renamed; its settings are taken over once (see open_settings()).
@@ -531,7 +533,7 @@ class MainWindow(QMainWindow):
         self._set_title()
         self.setMinimumSize(860, 600)
         available = self.screen().availableGeometry()
-        self.resize(min(1000, available.width() - 40), min(720, available.height() - 40))
+        self.resize(min(1100, available.width() - 40), min(860, available.height() - 40))
         self.setAcceptDrops(True)
         self.setStyleSheet(STYLESHEET)
 
@@ -599,7 +601,11 @@ class MainWindow(QMainWindow):
         self.table.cellDoubleClicked.connect(self._open_row_folder)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_row_menu)
-        left.addWidget(self.table, stretch=1)
+        files = QWidget()
+        files_layout = QVBoxLayout(files)
+        files_layout.setContentsMargins(0, 0, 0, 0)
+        files_layout.setSpacing(8)
+        files_layout.addWidget(self.table, stretch=1)
 
         list_buttons = QHBoxLayout()
         self.remove_button = QPushButton("Entfernen")
@@ -618,7 +624,18 @@ class MainWindow(QMainWindow):
         list_buttons.addWidget(self.details_button)
         list_buttons.addStretch()
         list_buttons.addWidget(self.count_label)
-        left.addLayout(list_buttons)
+        files_layout.addLayout(list_buttons)
+
+        # Below the list: a 3D preview of the selected file (Ansicht → Vorschau).
+        self.preview = PreviewPane(busy=lambda: self.is_running)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(files)
+        self.splitter.addWidget(self.preview)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        left.addWidget(self.splitter, stretch=1)
+        self.table.itemSelectionChanged.connect(self._update_preview)
 
         # Right: format and output settings.
         right = QVBoxLayout()
@@ -733,6 +750,8 @@ class MainWindow(QMainWindow):
         self.open_log_action = action("Logdatei öffnen", open_log)
         self.save_log_action = action("Anonymisierte Logdatei speichern…", lambda: save_anonymized_log(self))
         self.about_action = action(f"Über {APP_NAME}", self.show_about)
+        self.preview_action = action("Vorschau", self.set_preview_visible, ["F3"])
+        self.preview_action.setCheckable(True)
         self.drop_zone.add_button.setToolTip("Strg+O")
         self.remove_button.setToolTip("Entf")
 
@@ -745,6 +764,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.quit_action)
         edit_menu = menus.addMenu("&Bearbeiten")
         edit_menu.addActions([self.remove_action, self.clear_action])
+        view_menu = menus.addMenu("&Ansicht")
+        view_menu.addAction(self.preview_action)
         tools_menu = menus.addMenu("E&xtras")
         tools_menu.addAction(self.settings_action)
         help_menu = menus.addMenu("&Hilfe")
@@ -794,6 +815,12 @@ class MainWindow(QMainWindow):
         header = self.settings.value("table_header")
         if header is not None:
             self.table.horizontalHeader().restoreState(header)
+        splitter = self.settings.value("preview_splitter")
+        if splitter is not None:
+            self.splitter.restoreState(splitter)
+        visible = self.settings.value("preview_visible", True, type=bool)
+        self.preview_action.setChecked(visible)
+        self.preview.setVisible(visible)
 
     @property
     def fmt(self) -> str:
@@ -888,6 +915,8 @@ class MainWindow(QMainWindow):
                      "Konvertierung mit denselben Einstellungen umgewandelt.")
         elif result.added:
             self.log(f"+ {len(result.added)} Datei(en) hinzugefügt")
+        if result.added and not self.table.selectionModel().selectedRows():
+            self.table.selectRow(start)  # its preview shows right away
         self._update_actions()
         return result
 
@@ -1359,10 +1388,31 @@ class MainWindow(QMainWindow):
             if self._thread is not None:
                 self._thread.quit()
                 self._thread.wait()
+        self.preview.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("table_header", self.table.horizontalHeader().saveState())
+        self.settings.setValue("preview_splitter", self.splitter.saveState())
         self.settings.sync()
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_preview()
+
+    def set_preview_visible(self, visible: bool) -> None:
+        self.preview.setVisible(visible)
+        self.preview_action.setChecked(visible)
+        self.settings.setValue("preview_visible", visible)
+        self._update_preview()
+
+    def _update_preview(self) -> None:
+        """Show the preview of the selected file (the current one of several), if the pane is shown."""
+        if not self.isVisible() or not self.preview_action.isChecked():
+            return
+        rows = sorted(index.row() for index in self.table.selectionModel().selectedRows())
+        current = self.table.currentRow()
+        row = current if current in rows else (rows[0] if rows else None)
+        self.preview.show_file(self.queue[row].path if row is not None and row < len(self.queue) else None)
 
     def receive_paths(self, paths: list[str]) -> None:
         """Files sent by another start of the app (e.g. dropped onto its icon): add them, show the window."""
