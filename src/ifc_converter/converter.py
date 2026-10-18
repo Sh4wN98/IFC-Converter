@@ -21,6 +21,9 @@ import ifcopenshell.util.element
 import ifcopenshell.util.unit
 
 FORMATS = ("glb", "obj", "3dm")
+# Targets of convert() that are not offered as output formats: "preview" is the light mesh of the
+# model shown in the window (.npz, see preview.py), computed like a conversion in the child process.
+INTERNAL_FORMATS = ("preview",)
 # How the Rhino export represents elements: joined planar polysurfaces (with meshes for elements
 # too detailed for that), or meshes only. GLB and OBJ are always meshes.
 GEOMETRIES = ("brep", "mesh")
@@ -186,6 +189,9 @@ def convert(
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl) or Rhino 3DM and return what was written.
 
+    ``fmt="preview"`` (not offered to users, see INTERNAL_FORMATS) writes the preview (.npz) of
+    preview.write_preview instead; the app calls it through preview.compute_preview.
+
     ``geometry`` ("brep" or "mesh") and ``blocks`` (type geometry placed several times as Rhino
     blocks) only affect the Rhino export. ``kernel`` picks the geometry
     kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL. ``status`` gets the
@@ -194,7 +200,7 @@ def convert(
     recover from a crash or hang in the kernel: products are computed one by one or left out.
     """
     fmt = fmt.lower()
-    if fmt not in FORMATS:
+    if fmt not in FORMATS + INTERNAL_FORMATS:
         raise ValueError(f"Nicht unterstütztes Format „{fmt}“, möglich sind: {', '.join(FORMATS)}")
     geometry = geometry.lower()
     if geometry not in GEOMETRIES:
@@ -207,7 +213,8 @@ def convert(
     input_path = Path(input_path)
     if not input_path.is_file():
         raise FileNotFoundError(f"IFC-Datei nicht gefunden: {input_path}")
-    output_path = Path(output_path) if output_path else input_path.with_suffix(f".{fmt}")
+    suffix = ".npz" if fmt == "preview" else f".{fmt}"
+    output_path = Path(output_path) if output_path else input_path.with_suffix(suffix)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     def report(phase: str, text: str) -> None:
@@ -215,6 +222,7 @@ def convert(
             status(phase, text)
 
     report("read", f"IFC-Datei wird gelesen ({size_text(input_path.stat().st_size)}) …")
+    read_started = time.monotonic()
     try:
         model = ifcopenshell.open(str(input_path))
     except ifcopenshell.SchemaError as exc:
@@ -222,6 +230,7 @@ def convert(
         raise ValueError(f"IFC-Version wird nicht unterstützt ({exc}). Unterstützt werden: {supported}.") from exc
     repair_units(model)
     merge_projects(model)
+    read_seconds = time.monotonic() - read_started
     threads = threads or default_threads()
     token = _kernel.set(kernel)
     candidates = [0]
@@ -245,6 +254,10 @@ def convert(
                 from ifc_converter.rhino import write_3dm
 
                 elements = write_3dm(model, target, threads, progress, geometry, report, blocks, input_path)
+            elif fmt == "preview":
+                from ifc_converter.preview import write_preview
+
+                elements = write_preview(model, target, threads, progress, report, input_path, read_seconds)
             else:
                 elements = _serialize(model, target, fmt, threads, progress, report)
         finally:
