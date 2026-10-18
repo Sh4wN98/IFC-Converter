@@ -37,6 +37,23 @@ Der Converter wird wie ein normales Windows-Programm installiert, Python ist daf
 - **Rechenleistung:** Zu Beginn steht im Protokoll, wie viele Threads die Umwandlung höchstens nutzt und dass sie mit niedriger Priorität läuft. Unter Extras → Einstellungen → Leistung lässt sich die Zahl der Threads verringern, damit andere rechenintensive Programme mehr Luft haben; „Automatisch“ lässt einige Kerne frei und nimmt bei wenig freiem RAM weniger.
 - **Fehler:** Schlägt eine Datei fehl, steht im Protokoll darunter, wo die Details sind (Hilfe → Logdatei öffnen). „Interner Fehler (…)“ bedeutet einen Fehler im Programm selbst: dann bitte die Logdatei mitschicken (siehe „Logdatei und Datenschutz“).
 
+### 3D-Vorschau
+
+Die Vorschau zeigt das Modell zum Drehen und Anschauen, zu Beginn schräg von Südwesten oben, ganz im Bild. Z ist oben.
+
+| Aktion | Maus / Taste |
+|---|---|
+| Drehen | linke Maustaste ziehen (dreht um den angeklickten Punkt, neben dem Modell um die Bildmitte) |
+| Verschieben | mittlere oder rechte Maustaste ziehen, oder Umschalt + linke Maustaste |
+| Zoomen | Mausrad, zum Mauszeiger hin |
+| Ganzes Modell | Doppelklick, Taste `F` oder „Alles“ |
+| Ansichten | Knöpfe oben links oder Tasten `1` Iso, `2` Oben (Norden oben), `3` Vorne (von Süden), `4` Seite (von Osten); `Pos1` = Startansicht |
+| Bauteil anklicken | Klick (ohne Ziehen) auf ein Bauteil zeigt Klasse, GlobalId und Name |
+
+- Gezeichnet wird mit der Grafikkarte (OpenGL 3.3), auch Modelle mit mehreren Millionen Dreiecken bleiben flüssig. Gezeichnet wird nur, wenn sich etwas ändert: eine ruhende Vorschau kostet keine Rechenzeit.
+- Ohne brauchbaren Grafiktreiber (Remotedesktop, virtuelle Maschine) nimmt Qt automatisch das mitgelieferte Software-OpenGL (`opengl32sw.dll`, rechnet auf dem Prozessor). Geht auch das nicht, zeichnet die Vorschau selbst: dann nur die größten Bauteile (je nach Rechnerleistung bis 200 000 Dreiecke), beim Drehen gröber. Meldet die Grafik einen Fehler, wechselt die Vorschau ebenfalls auf die eigene Darstellung, statt das Programm zu beenden; der Grund steht in der Logdatei.
+- Macht ein Grafiktreiber Probleme, erzwingt die Umgebungsvariable `IFC_CONVERTER_PREVIEW_RENDERER=software` die eigene Darstellung.
+
 ### Rhino-Export (.3dm)
 
 - **Geometrie „Polyflächen“ (Standard):**
@@ -197,7 +214,7 @@ Die Windows-App ist ein mit [PyInstaller](https://pyinstaller.org) gebauter Prog
 
 1. Tests unter Linux und Windows.
 2. Build der App, der portablen ZIP und des Installers unter Windows.
-3. Test der gebauten exe (`packaging/smoke_test.py`): eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben. Dazu: Ausgabe auf ein Netzlaufwerk (UNC), tief verschachtelte Geometrie, eine mit Strg+Untbr abgebrochene und eine hart beendete Umwandlung; im Temp-Ordner darf nichts liegen bleiben (Reste einer hart beendeten räumt ein späterer Start weg). Außerdem muss das Programmfenster starten.
+3. Test der gebauten exe (`packaging/smoke_test.py`): eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben. Dazu: Ausgabe auf ein Netzlaufwerk (UNC), tief verschachtelte Geometrie, eine mit Strg+Untbr abgebrochene und eine hart beendete Umwandlung; im Temp-Ordner darf nichts liegen bleiben (Reste einer hart beendeten räumt ein späterer Start weg). Außerdem muss das Programmfenster starten, und die Bibliotheken der 3D-Vorschau (QtOpenGL, `opengl32sw.dll`) müssen im Build sein.
 4. Test des Installers (`packaging/installer_test.py`): Update von der letzten veröffentlichten Version (Einstellungen bleiben, das Programm läuft), stille Neuinstallation mit Umwandlung durch das installierte Programm, Installer und Deinstallation verweigern sich bei laufendem Programm, Installation mit „Öffnen mit“-Eintrag; jede Deinstallation muss Programm, Verknüpfung und Registry-Einträge entfernen.
 5. Installer und ZIP liegen 7 Tage als Artefakt „IFC-Converter-windows“ am Workflow-Lauf.
 

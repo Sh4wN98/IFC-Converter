@@ -38,8 +38,12 @@ EXCLUDES = [
     "tkinter", "_tkinter", "PyQt5", "PyQt6", "OCC", "matplotlib", "IPython", "pytest", "_pytest",
     "ifcopenshell.geom.app",  # IfcOpenShell's own PyQt5 viewer
 ]
-# Big Qt DLLs a widgets app does not need: software OpenGL and the Direct3D shader compiler.
-UNNEEDED_BINARIES = {"opengl32sw.dll", "d3dcompiler_47.dll"}
+# A big Qt DLL the app does not need: the Direct3D shader compiler. opengl32sw.dll (Mesa, ~20 MB) stays:
+# Qt falls back to it where the graphics driver offers no usable OpenGL (remote desktop, virtual machines),
+# so the 3D preview (viewer.py) still draws with OpenGL there.
+UNNEEDED_BINARIES = {"d3dcompiler_47.dll"}
+# The 3D preview imports QtOpenGL/QtOpenGLWidgets only when it draws; listed so they are always bundled.
+PREVIEW_MODULES = ["ifc_converter.viewer", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets"]
 
 
 def analysis(script: str, hiddenimports: list[str] = ()) -> Analysis:
@@ -84,11 +88,11 @@ def version_info(filename: str):
     )
 
 
-gui = analysis("gui_entry.py")
+gui = analysis("gui_entry.py", hiddenimports=PREVIEW_MODULES)
 # Both exes share one _internal folder, but each has its own archive of Python modules. A module the
 # CLI imports only dynamically (e.g. Qt for the version list in the log) would be found there as a
 # half-broken namespace package; bundling everything the GUI uses in the CLI too rules that out.
-cli = analysis("cli_entry.py", hiddenimports=["ifc_converter.gui"])
+cli = analysis("cli_entry.py", hiddenimports=["ifc_converter.gui", *PREVIEW_MODULES])
 
 gui_exe = EXE(
     PYZ(gui.pure),
