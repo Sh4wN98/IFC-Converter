@@ -54,6 +54,16 @@ Die Vorschau zeigt das Modell zum Drehen und Anschauen, zu Beginn schräg von S�
 - Ohne brauchbaren Grafiktreiber (Remotedesktop, virtuelle Maschine) nimmt Qt automatisch das mitgelieferte Software-OpenGL (`opengl32sw.dll`, rechnet auf dem Prozessor). Geht auch das nicht, zeichnet die Vorschau selbst: dann nur die größten Bauteile (je nach Rechnerleistung bis 200 000 Dreiecke), beim Drehen gröber. Meldet die Grafik einen Fehler, wechselt die Vorschau ebenfalls auf die eigene Darstellung, statt das Programm zu beenden; der Grund steht in der Logdatei.
 - Macht ein Grafiktreiber Probleme, erzwingt die Umgebungsvariable `IFC_CONVERTER_PREVIEW_RENDERER=software` die eigene Darstellung.
 
+### Vorschau: wie sie berechnet wird
+
+- **Wie eine Umwandlung, nur leichter:** Die Vorschau entsteht im selben eigenen Prozess wie eine Umwandlung, mit niedriger Priorität, unter Windows im Job-Objekt mit Speichergrenze, und endet mit dem Programm. Stürzt der Geometriekern ab oder hängt er, wird wie bei der Umwandlung neu gestartet (siehe „Absturz oder Hänger bei einzelnen Bauteilen“); ein Absturz des schnellen Kerns führt dabei gleich zu einem Versuch nur mit OpenCASCADE, weil er meist viele gleichartige Bauteile trifft (alle Träger einer Brücke).
+- **Schnell statt genau:** Kern „Schnell“ (Hybrid), Rundungen gröber facettiert (Sehnen bis 1 cm statt 0,5 mm; auf den Testmodellen nur 1–3 % weniger Dreiecke, weil Revit & Co. ohnehin Dreiecke speichern), höchstens 4 Threads (auf kleinen PCs weniger), damit eine Vorschau neben einer Umwandlung und anderen Programmen Platz hat. Öffnungen werden ausgeschnitten; Räume (`IfcSpace`), Öffnungskörper, Zonen, Annotationen, virtuelle Elemente sowie Achsen und Raster fehlen.
+- **Farben** wie in Rhino aus Material/Oberflächenstil der IFC, Glas durchsichtig; Bauteile ohne Farbe grau. Jedes Dreieck kennt sein Bauteil („IfcWall 2O2Fr… „Name““).
+- **Höchstens 3 Millionen Dreiecke:** Bei größeren Modellen fallen zuerst die kleinsten Bauteile weg (nach der Größe ihres umschließenden Quaders: Schrauben, Armaturen, Kleinteile); die Vorschau nennt, wie viele. Clinic Plumbing (56 MB, Revit-TGA) erreicht die Grenze.
+- **Koordinaten:** In Metern, Lage wie in der IFC; gespeichert relativ zur Modellmitte, sodass auch georeferenzierte Modelle (Hunderte km vom Ursprung) auf unter 1 mm genau bleiben.
+- **Zwischenspeicher:** Fertige Vorschauen liegen in `%LOCALAPPDATA%\IFC Converter\previews` (Linux: `~/.local/state/ifc-converter/previews`), nie neben der IFC-Datei. Wird dieselbe, unveränderte Datei wieder gewählt, erscheint die Vorschau sofort. Ändert sich die Datei (Größe oder Änderungszeit), kommt eine neue IfcOpenShell-Version oder ändern sich die Vorschau-Einstellungen, wird neu gerechnet. Der Ordner wird höchstens ca. 2 GB groß; darüber werden die am längsten nicht benutzten Vorschauen gelöscht. Er kann jederzeit von Hand geleert werden.
+- **Dauer** (Laptop, 3 Threads, Vorschau gegenüber `.3dm` Netze mit dem Standardkern): duplex (2 MB) 1,2 statt 2,8 s, Clinic Architectural (13 MB) 4,5 statt 15 s, Schependomlaan (49 MB) 6,5 statt 33 s.
+
 ### Rhino-Export (.3dm)
 
 - **Geometrie „Polyflächen“ (Standard):**
