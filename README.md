@@ -25,6 +25,26 @@ Der Converter wird wie ein normales Windows-Programm installiert, Python ist daf
 - **Deinstallation:** Windows-Einstellungen → Apps → „IFC Converter“ → Deinstallieren (ebenfalls erst, wenn der Converter beendet ist). Einstellungen und Logdateien (`%APPDATA%\IFC Converter`, `%LOCALAPPDATA%\IFC Converter`) bleiben liegen und können bei Bedarf von Hand gelöscht werden; entfernt werden der „Öffnen mit“-Eintrag und die alten Einstellungen in der Registry (`HKCU\Software\IFC File Converter\IFC File Converter`, aus der Zeit vor der Umbenennung). Die portable Version wird einfach gelöscht.
 - **Kommandozeile:** Neben `IFC Converter.exe` liegt `ifc-convert.exe` mit denselben Optionen wie unten beschrieben, z. B. `"%LOCALAPPDATA%\Programs\IFC Converter\ifc-convert.exe" haus.ifc -f 3dm`. Ohne Argumente (Doppelklick) startet der Terminal-Modus.
 
+## Installation unter Linux
+
+Für Linux (x86_64, jede aktuelle Distribution mit Desktop) gibt es `IFC-Converter-<Version>-linux-x86_64.tar.gz` aus den [Releases](https://github.com/Sh4wN98/IFC-Converter/releases); Python ist nicht nötig.
+
+```bash
+tar xzf IFC-Converter-<Version>-linux-x86_64.tar.gz
+cd IFC-Converter-<Version>-linux-x86_64
+./install.sh
+```
+
+- **Ohne Root, nur für den angemeldeten Benutzer:** `install.sh` kopiert das Programm nach `~/.local/opt/ifc-converter`, legt die Befehle `~/.local/bin/ifc-converter` (Fenster) und `~/.local/bin/ifc-convert` (Kommandozeile) an, einen Eintrag „IFC Converter“ im Anwendungsmenü mit Symbol und einen „Öffnen mit“-Eintrag für `.ifc`-Dateien (MIME-Typ `application/x-ifc`). Das Standardprogramm für IFC-Dateien wird nicht geändert. Anderer Ort: `IFC_CONVERTER_PREFIX=/pfad ./install.sh`.
+- **Ohne Installation:** im entpackten Ordner direkt `ifc-converter/ifc-converter` (Fenster) bzw. `ifc-converter/ifc-convert haus.ifc -f 3dm` starten. Nichts wird installiert.
+- **Update:** `install.sh` der neuen Version ausführen; der Programmordner wird in einem Zug ersetzt, Einstellungen bleiben. Läuft der Converter noch (auch eine Umwandlung im Terminal), bricht `install.sh` ab, ohne etwas zu ändern.
+- **Deinstallation:** `~/.local/opt/ifc-converter/uninstall.sh` (liegt auch im entpackten Ordner). Entfernt Programm, Befehle, Menüeintrag, Symbol und MIME-Typ; verweigert sich ebenfalls bei laufendem Programm. Einstellungen und Logdateien bleiben liegen (siehe unten).
+- **Wayland / X11:** Qt wählt die Anzeige selbst (Wayland-Sitzung → Wayland, sonst X11); beide Plugins sind dabei. Macht eine davon Probleme (kein Fenster, Vorschau schwarz), die andere erzwingen: `QT_QPA_PLATFORM=xcb ifc-converter` bzw. `QT_QPA_PLATFORM=wayland ifc-converter`. Die 3D-Vorschau zeichnet mit OpenGL 3.3 (Mesa reicht, auch in einer VM); geht das nicht, nimmt sie die eigene Darstellung wie unter Windows.
+- **Systembibliotheken:** Mitgeliefert werden Qt, IfcOpenShell, rhino3dm, NumPy und ihre Abhängigkeiten; vom System braucht das Programm nur OpenGL/EGL, xcb, die Wayland-Client-Bibliotheken, fontconfig, D-Bus und GLib, die auf jedem Desktop-Linux vorhanden sind. `install.sh` meldet, was fehlt (Ubuntu/Debian z. B. `sudo apt install libxcb-cursor0 libgl1 libegl1`).
+- **Wo was liegt:** Einstellungen `~/.config/ifc-converter/settings.ini`; Logdatei `~/.local/state/ifc-converter/logs/ifc-converter.log` (Hilfe → Logdatei öffnen); gemerkte Problem-Bauteile `~/.local/state/ifc-converter/quarantine.json`; Vorschau-Zwischenspeicher `~/.local/state/ifc-converter/previews`; nicht kopierbare Ausgabe `~/.local/state/ifc-converter/rescued`. (`XDG_CONFIG_HOME`/`XDG_STATE_HOME` werden beachtet.) Zwischendateien liegen im Temp-Ordner (`/tmp`).
+- **Prüfsummen:** `SHA256SUMS.txt` im Release enthält die Prüfsummen aller Dateien (Setup.exe, portable ZIP, tar.gz): `sha256sum -c SHA256SUMS.txt` im Download-Ordner.
+- Nicht mitgeliefert: Speichergrenze (Job-Objekt) und Standby-Sperre gibt es nur unter Windows; niedrige Priorität, eigener Umwandlungsprozess und Neustart nach Absturz gelten auch unter Linux.
+
 ## Schnellstart (Programmfenster)
 
 1. **Installiert:** „IFC Converter“ im Startmenü öffnen. **Aus dem Quellcode:** unter Windows `start.bat` doppelklicken, unter Linux/macOS `./start.sh` ausführen.
@@ -165,7 +185,7 @@ Voraussetzung: Python 3.10 oder neuer ([python.org](https://www.python.org/downl
 
 ## Logdatei und Datenschutz
 
-- Der Converter schreibt ein Protokoll nach `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (höchstens ca. 4 MB, ältere Teile werden überschrieben); Hilfe → Logdatei öffnen. Es bleibt auf diesem PC: Der Converter versendet nichts, er braucht keine Internetverbindung.
+- Der Converter schreibt ein Protokoll nach `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (Linux: `~/.local/state/ifc-converter/logs/ifc-converter.log`; höchstens ca. 4 MB, ältere Teile werden überschrieben); Hilfe → Logdatei öffnen. Es bleibt auf diesem PC: Der Converter versendet nichts, er braucht keine Internetverbindung.
 - Das Protokoll enthält Dateipfade (mit Benutzer- und Servernamen), Datei- und Bauteilnamen. **Zum Verschicken** Hilfe → „Anonymisierte Logdatei speichern…“ wählen (auch im Fehlerdialog und unter Einstellungen): Das speichert eine Kopie des ganzen Protokolls, standardmäßig als `ifc-converter-log-anonym.txt` auf dem Desktop. Darin sind Benutzer- und Rechnername durch `<Benutzer>`/`<Rechner>` ersetzt, Server und Freigaben von Netzlaufwerken durch `<Server>`/`<Freigabe>`, Ordner durch `<Ordner>` und Dateinamen durch `Datei-1.ifc`, `Datei-1.3dm` … (gleicher Name, gleiche Nummer); Bauteilnamen fallen weg. Erhalten bleiben IFC-Klasse und GlobalId, Zeiten, Größen, Versionen und Fehlermeldungen. Vor dem Versenden kurz durchsehen.
 - Mit Extras → Einstellungen → „Logdatei anonymisieren“ wird das Protokoll schon beim Schreiben anonymisiert (ab dann; ältere Einträge bleiben, wie sie sind). Die Nummern der Dateien beginnen dabei mit jedem Programmstart neu.
 
@@ -222,17 +242,18 @@ print(result.output, result.elements)
 pytest
 ```
 
-## Windows-App bauen und veröffentlichen
+## Windows- und Linux-App bauen und veröffentlichen
 
-Die Windows-App ist ein mit [PyInstaller](https://pyinstaller.org) gebauter Programmordner (`IFC Converter.exe` ohne Konsole, `ifc-convert.exe` für die Kommandozeile, Bibliotheken in `_internal`), daraus entstehen die portable ZIP und mit [Inno Setup](https://jrsoftware.org/isinfo.php) der Installer. Alles dazu liegt in `packaging/`.
+Die Apps sind mit [PyInstaller](https://pyinstaller.org) gebaute Programmordner aus derselben Spec (`packaging/ifc_converter.spec`): unter Windows `IFC Converter.exe` ohne Konsole und `ifc-convert.exe` für die Kommandozeile, unter Linux `ifc-converter` und `ifc-convert`, Bibliotheken jeweils in `_internal`. Daraus entstehen unter Windows die portable ZIP und mit [Inno Setup](https://jrsoftware.org/isinfo.php) der Installer, unter Linux das tar.gz mit `.desktop`-Datei, Symbol, MIME-Typ, `install.sh` und `uninstall.sh` (`packaging/linux/`). Alles dazu liegt in `packaging/`.
 
 **Automatisch (GitHub Actions, `.github/workflows/build.yml`)** bei jedem Push:
 
 1. Tests unter Linux und Windows.
-2. Build der App, der portablen ZIP und des Installers unter Windows.
+2. Build der App, der portablen ZIP und des Installers unter Windows; parallel dazu Build der Linux-App und des tar.gz unter Ubuntu.
 3. Test der gebauten exe (`packaging/smoke_test.py`): eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben. Dazu: Ausgabe auf ein Netzlaufwerk (UNC), tief verschachtelte Geometrie, eine mit Strg+Untbr abgebrochene und eine hart beendete Umwandlung; im Temp-Ordner darf nichts liegen bleiben (Reste einer hart beendeten räumt ein späterer Start weg). Außerdem muss das Programmfenster starten, und die Bibliotheken der 3D-Vorschau (QtOpenGL, `opengl32sw.dll`) müssen im Build sein.
 4. Test des Installers (`packaging/installer_test.py`): Update von der letzten veröffentlichten Version (Einstellungen bleiben, das Programm läuft), stille Neuinstallation mit Umwandlung durch das installierte Programm, Installer und Deinstallation verweigern sich bei laufendem Programm, Installation mit „Öffnen mit“-Eintrag; jede Deinstallation muss Programm, Verknüpfung und Registry-Einträge entfernen.
-5. Installer und ZIP liegen 7 Tage als Artefakt „IFC-Converter-windows“ am Workflow-Lauf.
+5. Test der Linux-App (`packaging/smoke_test_linux.py`, ohne Display mit `QT_QPA_PLATFORM=offscreen`): dieselben Umwandlungen der Wand in allen Formaten mit Maßprüfung, das 600-Wände-Modell mit Hilfsprozessen, das 5000-fach verschachtelte Modell, abgebrochene (SIGTERM) und hart beendete Umwandlung ohne Reste im Temp-Ordner, Start des Programmfensters; dazu ein `ldd`-Durchlauf über alle Bibliotheken des Builds (keine darf fehlen), die Qt-Plattform-Plugins xcb, Wayland und offscreen sowie QtOpenGL müssen dabei sein. Das tar.gz wird entpackt und in einem Test-HOME installiert, aktualisiert, bei laufendem Programm verweigert und deinstalliert; die installierte Kopie muss umwandeln.
+6. Installer und ZIP liegen 7 Tage als Artefakt „IFC-Converter-windows“ am Workflow-Lauf, das tar.gz als „IFC-Converter-linux“.
 
 **Neue Version veröffentlichen:** `version` in `pyproject.toml` erhöhen, committen und pushen, dann ein Tag setzen:
 
@@ -241,7 +262,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Der Workflow baut und testet wie oben und legt danach ein GitHub-Release mit Installer, ZIP und `SHA256SUMS.txt` an. Passt das Tag nicht zur Version in `pyproject.toml`, bricht der Build ab.
+Der Workflow baut und testet wie oben und legt danach ein GitHub-Release mit Installer, portabler ZIP, Linux-tar.gz und einer `SHA256SUMS.txt` über alle drei an (die Prüfsummen der einzelnen Builds werden vorher kontrolliert). Der Release-Text ist der oberste Abschnitt von `CHANGELOG.md` (`packaging/release_notes.py`), der diese Version nennen und ausgefüllt sein muss, plus eine Download-Zeile. Passt das Tag nicht zur Version in `pyproject.toml` oder zum Changelog, bricht der Build bzw. das Release ab.
 
 **Lokal unter Windows bauen** (Python 3.13 und [Inno Setup 6](https://jrsoftware.org/isdl.php) installiert):
 
@@ -253,6 +274,17 @@ py -3.13 -m venv .venv-build
 ```
 
 Ergebnis in `dist\`. Ohne Inno Setup: `build.py --no-installer`.
+
+**Lokal unter Linux bauen** (Python 3.13 oder neuer):
+
+```bash
+python3 -m venv ~/.local/share/venvs/ifc-build
+~/.local/share/venvs/ifc-build/bin/python -m pip install -c packaging/constraints.txt ".[build]"
+~/.local/share/venvs/ifc-build/bin/python packaging/build.py
+python packaging/smoke_test_linux.py dist/ifc-converter --gui --tarball dist/IFC-Converter-*-linux-x86_64.tar.gz
+```
+
+Ergebnis in `dist/` (`ifc-converter/`, das tar.gz, `SHA256SUMS.txt`). Der Programmordner enthält symbolische Links; liegt das Projekt auf einer Platte ohne Links (exFAT), `build.py --build-root ~/pfad` verwenden – `dist/` und `build/` landen dann dort. `smoke_test_linux.py` braucht ein Python mit ifcopenshell und rhino3dm (z. B. die Entwicklungsumgebung) und mit `--work` einen Ordner auf einer Platte mit Links.
 
 **Feste Versionen:** `packaging/constraints.txt` legt die genauen Versionen von IfcOpenShell, rhino3dm, Qt, NumPy und PyInstaller für Tests und Build fest, damit ein Release genau das enthält, was getestet wurde. Beim Aktualisieren die Maßhaltigkeit mit echten Modellen erneut prüfen (`tools/benchmark.py`).
 

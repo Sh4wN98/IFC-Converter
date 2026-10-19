@@ -1,23 +1,34 @@
-"""Build the distributable app: PyInstaller folder, portable ZIP and (on Windows) the Inno Setup installer.
+"""Build the distributable app: PyInstaller folder, portable ZIP and (on Windows) the Inno Setup installer,
+or (on Linux) the tar.gz with install.sh.
 
     python packaging/build.py                    # everything that works on this platform
     python packaging/build.py --no-installer     # skip Inno Setup
 
-Results land in dist/:
+Results land in dist/ (Windows):
     dist/IFC Converter/                          the program folder (IFC Converter.exe, ifc-convert.exe)
     dist/IFC-Converter-<version>-portable.zip    that folder zipped
     dist/IFC-Converter-<version>-Setup.exe       the installer (Windows, needs Inno Setup 6)
     dist/SHA256SUMS.txt                          checksums of the ZIP and the installer
+and on Linux:
+    dist/ifc-converter/                          the program folder (ifc-converter, ifc-convert)
+    dist/IFC-Converter-<version>-linux-x86_64.tar.gz
+                                                 that folder plus .desktop file, icon, MIME type,
+                                                 install.sh and uninstall.sh (packaging/linux/)
+    dist/SHA256SUMS.txt                          checksum of the tar.gz
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
+import platform
 import shutil
+import struct
 import subprocess
 import sys
+import tarfile
 import tomllib
 from pathlib import Path
 
@@ -27,6 +38,14 @@ ROOT = Path(__file__).resolve().parent.parent
 PACKAGING = ROOT / "packaging"
 DIST = ROOT / "dist"
 APP_NAME = "IFC Converter"
+WINDOWS = sys.platform == "win32"
+# The program folder PyInstaller builds (ifc_converter.spec): "IFC Converter" on Windows, "ifc-converter"
+# on Linux, where names without spaces are the custom.
+APP_DIR_NAME = APP_NAME if WINDOWS else "ifc-converter"
+# Short name used for the Linux files (.desktop, icon, MIME type, install folder).
+APP_SLUG = "ifc-converter"
+# What the Linux tar.gz contains next to the program folder (packaging/linux/).
+LINUX_FILES = ["install.sh", "uninstall.sh", f"{APP_SLUG}.desktop", f"{APP_SLUG}.xml", "LIESMICH.txt"]
 # Default thread stack of the exes (Windows' default for the bootloader is 1 MB, see pe.py): the
 # geometry kernels need about 1 MB per few thousand levels of nested geometry.
 STACK_RESERVE = 256 * 1024 ** 2
@@ -58,10 +77,10 @@ def run(command: list[str | Path]) -> None:
 def pyinstaller() -> Path:
     run([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-        "--distpath", DIST, "--workpath", ROOT / "build" / "pyinstaller",
+        "--distpath", DIST, "--workpath", DIST.parent / "build" / "pyinstaller",
         PACKAGING / "ifc_converter.spec",
     ])
-    return DIST / APP_NAME
+    return DIST / APP_DIR_NAME
 
 
 def enlarge_stacks(app_dir: Path) -> None:
@@ -103,6 +122,64 @@ def icon() -> Path:
     return icons[0] if icons else PACKAGING / "placeholder-icon.ico"
 
 
+def icon_png() -> bytes:
+    """The icon as PNG for Linux desktops: the app's icon.png, else the largest PNG image in the .ico."""
+    png = icon().with_suffix(".png")
+    if png.is_file():
+        return png.read_bytes()
+    # ICO: ICONDIR (6 bytes), then 16-byte entries with width, height, ..., size, offset. Modern icons
+    # (and ours) store the large images as PNG, which can be used as they are.
+    data = icon().read_bytes()
+    count = struct.unpack_from("<HHH", data, 0)[2]
+    best = b""
+    for index in range(count):
+        width, height, _, _, _, _, size, offset = struct.unpack_from("<BBBBHHII", data, 6 + 16 * index)
+        image = data[offset:offset + size]
+        if image.startswith(b"\x89PNG") and (width or 256) * (height or 256) > len(best):
+            best = image
+    if not best:
+        sys.exit(f"{icon()} contains no PNG image; add an icon.png next to it")
+    return best
+
+
+def linux_tarball(app_dir: Path, version: str) -> Path:
+    """dist/IFC-Converter-<version>-linux-<arch>.tar.gz: the program folder plus the files of packaging/linux.
+
+    Everything is owned by root with fixed permissions (only the two executables and the scripts are
+    executable), whatever the file system of the build machine records.
+    """
+    top = f"IFC-Converter-{version}-linux-{platform.machine()}"
+    target = DIST / f"{top}.tar.gz"
+    print(f"Creating {target.name}", flush=True)
+    linux = PACKAGING / "linux"
+    executables = {f"{top}/{APP_SLUG}/{APP_SLUG}", f"{top}/{APP_SLUG}/ifc-convert",
+                   f"{top}/install.sh", f"{top}/uninstall.sh"}
+
+    def normalize(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = info.gid = 0
+        info.uname = info.gname = "root"
+        if info.isdir():
+            info.mode = 0o755
+        else:
+            info.mode = 0o755 if info.name in executables else 0o644
+        return info
+
+    with tarfile.open(target, "w:gz", compresslevel=6) as tar:
+        tar.add(app_dir, arcname=f"{top}/{APP_SLUG}", filter=normalize)
+        for name in LINUX_FILES:
+            source = linux / name
+            if not source.is_file():
+                sys.exit(f"{source} is missing")
+            tar.add(source, arcname=f"{top}/{name}", filter=normalize)
+        png = icon_png()
+        info = tarfile.TarInfo(f"{top}/{APP_SLUG}.png")
+        info.size = len(png)
+        info.mtime = int(linux.joinpath("install.sh").stat().st_mtime)
+        tar.addfile(normalize(info), io.BytesIO(png))
+    print(f"  {target.name}: {target.stat().st_size / 1024 ** 2:.0f} MB", flush=True)
+    return target
+
+
 def checksums(files: list[Path]) -> None:
     lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n" for f in files]
     (DIST / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8")
@@ -112,20 +189,33 @@ def checksums(files: list[Path]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-installer", action="store_true", help="do not build the Inno Setup installer")
-    parser.add_argument("--no-zip", action="store_true", help="do not create the portable ZIP")
+    parser.add_argument("--no-zip", action="store_true", help="do not create the portable ZIP (Linux: the tar.gz)")
+    parser.add_argument("--reuse-app-dir", action="store_true",
+                        help="pack the program folder of the previous build instead of building it again "
+                             "(for working on the packaging)")
+    parser.add_argument("--build-root", type=Path, metavar="DIR",
+                        help="put dist/ and build/ under DIR instead of the project folder (on Linux the "
+                             "program folder contains symbolic links, which e.g. exFAT cannot store)")
     args = parser.parse_args()
+    global DIST
+    if args.build_root:
+        DIST = args.build_root.resolve() / "dist"
 
     version = project_version()
     check_tag(version)
     print(f"Building {APP_NAME} {version} with Python {sys.version.split()[0]}", flush=True)
 
-    app_dir = pyinstaller()
-    if sys.platform == "win32":
-        enlarge_stacks(app_dir)
+    if args.reuse_app_dir and (DIST / APP_DIR_NAME).is_dir():
+        app_dir = DIST / APP_DIR_NAME
+        print(f"Reusing {app_dir}", flush=True)
+    else:
+        app_dir = pyinstaller()
+        if WINDOWS:
+            enlarge_stacks(app_dir)
     outputs = []
     if not args.no_zip:
-        outputs.append(portable_zip(app_dir, version))
-    if sys.platform == "win32" and not args.no_installer:
+        outputs.append(portable_zip(app_dir, version) if WINDOWS else linux_tarball(app_dir, version))
+    if WINDOWS and not args.no_installer:
         outputs.append(installer(app_dir, version))
     if outputs:
         checksums(outputs)
