@@ -31,7 +31,11 @@ GEOMETRIES = ("brep", "mesh")
 # Opening volumes would cover every window and door; space volumes would hide the building inside.
 # The Rhino export keeps spaces on their own layer instead, where they are easy to switch off.
 # Grids are only lines, which GLB/OBJ meshes cannot show (the Rhino export writes them as curves).
-EXCLUDED_CLASSES = ["IfcOpeningElement", "IfcSpace", "IfcGrid"]
+# The layout parts of an alignment (IFC4X3) repeat its 3D axis: horizontal ones as a plan at height
+# 0, vertical ones as a profile in distance/height coordinates, drawn in the XY plane somewhere off
+# the model (a bSI test road: 950 m instead of 882 m wide, 150 m instead of 1.5 m high).
+ALIGNMENT_LAYOUT_CLASSES = ["IfcAlignmentHorizontal", "IfcAlignmentVertical", "IfcAlignmentCant", "IfcAlignmentSegment"]
+EXCLUDED_CLASSES = ["IfcOpeningElement", "IfcSpace", "IfcGrid", *ALIGNMENT_LAYOUT_CLASSES]
 
 # Geometry libraries of IfcOpenShell. The hybrid one (CGAL for meshes and simple solids, OpenCASCADE
 # for the rest) is 3-13x faster on real models and handles large triangulated terrain in seconds where
@@ -235,6 +239,7 @@ def convert(
         supported = ", ".join(s for s in ifcopenshell.ifcopenshell_wrapper.schema_names() if s.startswith("IFC"))
         raise ValueError(f"IFC-Version wird nicht unterstützt ({exc}). Unterstützt werden: {supported}.") from exc
     repair_units(model)
+    repair_extrusions(model)
     merge_projects(model)
     read_seconds = time.monotonic() - read_started
     threads = threads or default_threads()
@@ -472,6 +477,32 @@ def repair_units(model: ifcopenshell.file) -> None:
         if isinstance(factor.ValueComponent, (int, float)):
             measure = UNIT_MEASURES.get(unit.UnitType, "IfcRatioMeasure")
             factor.ValueComponent = model.create_entity(measure, float(factor.ValueComponent))
+
+
+def repair_extrusions(model: ifcopenshell.file) -> int:
+    """Turn extrusions with a negative depth the right way round, in memory; returns how many.
+
+    IFC only allows positive depths, and the geometry kernel rejects an IfcExtrudedAreaSolid with
+    a negative one ("Non-positive extrusion height"): the element loses that part silently, or all
+    of its geometry (bridge girders of the Zenodo "AutoGen" set: 304 extrusions, 28 beams without
+    geometry). A depth of -6 along a direction is the same solid as 6 along the opposite direction,
+    so the solid keeps its place and size.
+    """
+    repaired = 0
+    for solid in model.by_type("IfcExtrudedAreaSolid"):
+        depth = solid.Depth
+        if depth is None or depth >= 0:
+            continue
+        direction = solid.ExtrudedDirection
+        # A new direction entity: the old one may be shared with extrusions of a positive depth.
+        solid.ExtrudedDirection = model.create_entity(
+            "IfcDirection", [-float(ratio) for ratio in direction.DirectionRatios]
+        )
+        solid.Depth = -depth
+        repaired += 1
+    if repaired:
+        log.info("%d Extrusionen mit negativer Tiefe umgedreht", repaired)
+    return repaired
 
 
 def merge_projects(model: ifcopenshell.file) -> None:

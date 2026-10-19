@@ -499,10 +499,11 @@ def open_model(path: Path):
     """The IFC model as the converter reads it (units repaired, federated projects merged)."""
     import ifcopenshell
 
-    from ifc_converter.converter import merge_projects, repair_units
+    from ifc_converter.converter import merge_projects, repair_extrusions, repair_units
 
     model = ifcopenshell.open(str(path))
     repair_units(model)
+    repair_extrusions(model)
     merge_projects(model)
     return model
 
