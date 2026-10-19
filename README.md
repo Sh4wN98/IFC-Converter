@@ -49,7 +49,7 @@ cd IFC-Converter-<Version>-linux-x86_64
 
 1. **Installiert:** „IFC Converter“ im Startmenü öffnen. **Aus dem Quellcode:** unter Windows `start.bat` doppelklicken, unter Linux/macOS `./start.sh` ausführen.
 2. Aus dem Quellcode richtet sich der Converter beim ersten Start selbst ein (Internet nötig für den Download von IfcOpenShell, rhino3dm und Qt; Python 3.10 oder neuer muss installiert sein). Nach einem Update passiert das automatisch noch einmal.
-3. IFC-Dateien (`.ifc` oder `.ifczip`, IFC2x3 bis IFC4.3) oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“). ifcXML kann nicht gelesen werden.
+3. IFC-Dateien (`.ifc` oder `.ifczip`, IFC2x3 bis IFC4.3) oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“). ifcXML kann nicht gelesen werden. Das alte IFC2x2 (2003) wird als IFC2x3 gelesen, der Tunnel-Entwurf IFC4x4 als IFC4.3 mit Ersatzklassen für seine Entwurfs-Entitäten (IfcTunnel → IfcFacility, IfcUndergroundExcavation/IfcArchElement → IfcBuildingElementProxy); das Protokoll weist darauf hin, Maße und Lage bleiben unverändert.
 4. Format wählen – 3DM (Rhino, Standard), GLB, OBJ oder DAE (Collada, z. B. für SketchUp, Blender, ArchiCAD) –, Ausgabeordner prüfen und auf „Konvertieren“ klicken.
 5. Die fertigen Dateien landen standardmäßig auf dem Desktop. Gibt es den Namen schon, wird `(2)`, `(3)` … angehängt.
 
@@ -175,7 +175,7 @@ Die Zeiten wurden mit dem Kern „Schnell“ gemessen. Mit dem Standard „Genau
 - **Leere Geometrie-Darstellungen** einzelner Bauteile blockieren nicht mehr die Nachbarn.
 - **Statik-Analysemodelle** (z. B. RFEM): Knoten, Stabachsen und Lasten werden übersprungen, Flächenbauteile umgewandelt.
 - Bauteile, deren Geometrie sich nicht berechnen lässt, werden gezählt und gemeldet („236 Bauteile (3 ohne Geometrie)“). Kommt gar keine Geometrie heraus, gibt es einen Fehler statt einer leeren Datei.
-- **Nicht unterstützt:** IFC2X2 (vor 2006) und der Entwurf IFC4X4 (Tunnel) – dafür gibt es eine klare Meldung. Brücken im Zwischenformat IFC4X2 mit `IfcSectionedSolidHorizontal` kann IfcOpenShell nicht berechnen.
+- **Fremde Schemas:** IFC2X2 (vor 2006) wird als IFC2X3 gelesen, der Entwurf IFC4X4 (Tunnel) als IFC4X3 mit Ersatzklassen (siehe Schnellstart); andere Versionen bekommen eine klare Meldung. Brücken im Zwischenformat IFC4X2 mit `IfcSectionedSolidHorizontal` kann IfcOpenShell nicht berechnen.
 
 ### Terminal-Modus (Drag & Drop ins Konsolenfenster)
 
