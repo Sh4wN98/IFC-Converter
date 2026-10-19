@@ -271,7 +271,7 @@ def start_interruptible(cli: Path, source: Path, target: Path, *options: str) ->
             kill_tree(process)
             raise AssertionError("ifc-convert started no conversion child within 120 s")
         time.sleep(0.2)
-    time.sleep(2)  # well inside the conversion, still reading the IFC
+    time.sleep(0.5)  # inside the conversion (reading or computing), long before it is done
     if WINDOWS and not mutex_exists():
         kill_tree(process)
         raise AssertionError(f"ifc-convert does not hold the mutex {APP_MUTEX} for the installer")

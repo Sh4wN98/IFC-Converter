@@ -396,8 +396,9 @@ def main() -> int:
         print("  no conversion processes left over ✓")
         check_no_leftovers(temp_before, "the conversions")
 
-        check_cancel(cli, walls, out)
-        check_killed(cli, walls, out, source)
+        # The nested model: the 600 walls convert in under 3 s on the CI runner, before the signal arrives.
+        check_cancel(cli, nested, out)
+        check_killed(cli, nested, out, source)
 
         if args.gui:
             check_gui(gui, source)
