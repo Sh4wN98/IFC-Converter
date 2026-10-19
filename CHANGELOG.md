@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.5.3 – 2026-10-19
+
+- **IFC2x2 und IFC4x4 werden gelesen:** IFC2x2 (2003) als IFC2x3; der unveröffentlichte Tunnel-Entwurf IFC4x4 als IFC4.3 mit Ersatzklassen für seine sechs Entwurfs-Entitäten (IfcTunnel → IfcFacility, IfcTunnelPart → IfcFacilityPart, IfcUndergroundExcavation und IfcArchElement → IfcBuildingElementProxy; Datensatz-Verweise entfallen). Geprüft am „Energy Tower“ (IFC2x2, 234.000 Entitäten) und am Trimble-Tunnel (IFC4x4, 695.000 Entitäten, 16 Bauteile mit Geometrie). Das Protokoll nennt die Umdeutung; Maße und Lage bleiben unverändert.
+
 ## 0.5.2 – 2026-10-19
 
 - **Linux-Version:** `IFC-Converter-<Version>-linux-x86_64.tar.gz` mit `install.sh` (Installation ohne Root unter `~/.local`, Startmenü-Eintrag, `ifc-convert` im Pfad) und `uninstall.sh`; läuft unter Wayland und X11. Die Prüfsummen aller Pakete stehen in `SHA256SUMS.txt`.

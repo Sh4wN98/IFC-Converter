@@ -20,6 +20,8 @@ import ifcopenshell.geom as geom
 import ifcopenshell.util.element
 import ifcopenshell.util.unit
 
+from ifc_converter import schema_bridge
+
 # Output formats: "3dm" has its own writer (rhino.py), the others are IfcOpenShell's serializers
 # (serializers.py, which says why e.g. glTF, USD and IGES are not among them).
 FORMATS = ("glb", "obj", "3dm", "dae")
@@ -243,11 +245,22 @@ def convert(
 
     report("read", f"IFC-Datei wird gelesen ({size_text(input_path.stat().st_size)}) …")
     read_started = time.monotonic()
+    # Schemas IfcOpenShell does not know (IFC2x2, the IFC4x4 draft) are read as the closest it knows,
+    # from a rewritten copy (see schema_bridge); a .ifczip is read as it is.
+    bridge = schema_bridge.bridge_for(input_path) if input_path.suffix.lower() == ".ifc" else None
+    bridged = schema_bridge.bridged_copy(input_path, bridge) if bridge else None
     try:
-        model = ifcopenshell.open(str(input_path))
+        model = ifcopenshell.open(str(bridged.path if bridged else input_path))
     except ifcopenshell.SchemaError as exc:
         supported = ", ".join(s for s in ifcopenshell.ifcopenshell_wrapper.schema_names() if s.startswith("IFC"))
-        raise ValueError(f"IFC-Version wird nicht unterstützt ({exc}). Unterstützt werden: {supported}.") from exc
+        bridges = ", ".join(sorted({b.label for b in schema_bridge.BRIDGES.values()}))
+        raise ValueError(f"IFC-Version wird nicht unterstützt ({exc}). Unterstützt werden: {supported}; "
+                         f"außerdem werden {bridges} als nächstverwandtes Schema gelesen.") from exc
+    finally:
+        if bridged:
+            bridged.remove()  # the model is in memory now
+    if bridged:
+        report("note", f"{bridged.note} Maße und Lage bleiben unverändert.")
     repair_units(model)
     repair_extrusions(model)
     merge_projects(model)

@@ -145,11 +145,12 @@ def test_cli_kernel_flag(wall_ifc, tmp_path, monkeypatch):
 
 
 def test_unsupported_schema_gets_a_clear_message(wall_ifc, tmp_path):
-    text = wall_ifc.read_text().replace("FILE_SCHEMA(('IFC4'))", "FILE_SCHEMA(('IFC4X4'))")
-    assert "IFC4X4" in text
-    future = tmp_path / "tunnel.ifc"
+    # (IFC4X4, the tunnel draft, is bridged to IFC4.3 since 0.5.3: see test_schema_bridge.py)
+    text = wall_ifc.read_text().replace("FILE_SCHEMA(('IFC4'))", "FILE_SCHEMA(('IFC5'))")
+    assert "IFC5" in text
+    future = tmp_path / "future.ifc"
     future.write_text(text)
-    with pytest.raises(ValueError, match="IFC-Version wird nicht unterstützt.*IFC4X4.*IFC2X3"):
+    with pytest.raises(ValueError, match="IFC-Version wird nicht unterstützt.*IFC5.*IFC2X3"):
         convert(future, fmt="glb")
 
 
