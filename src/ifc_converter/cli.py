@@ -30,11 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "inputs", nargs="*", type=Path,
-        help="IFC file(s) to convert; without any, starts drag-and-drop mode",
+        help="IFC file(s) to convert (.ifc or .ifczip); without any, starts drag-and-drop mode",
     )
     parser.add_argument(
         "-f", "--format", choices=FORMATS, default="glb",
-        help="output format: glb, obj or 3dm (Rhino) (default: glb)",
+        help="output format: glb, obj, 3dm (Rhino), stp (STEP, exact B-rep) or dae (Collada) (default: glb)",
     )
     parser.add_argument(
         "-g", "--geometry", choices=GEOMETRIES, default="brep",

@@ -93,8 +93,19 @@ SIDE_WIDTH = 320  # settings column on the right
 # Format -> (label, hint), in the order shown in the window.
 FORMAT_INFO = {
     "3dm": ("3DM (Rhino)", "Rhino-Datei (.3dm) – direkt in Rhino öffnen und weiterbearbeiten."),
+    "stp": (
+        "STEP (CAD, exakte Flächen)",
+        "STEP AP214 (.stp) – exakte Flächen und Volumenkörper statt Dreiecksnetze, für Rhino, SolidWorks, "
+        "Inventor, FreeCAD. Datei etwa 100× so groß wie .glb und die Umwandlung deutlich langsamer "
+        "(nur OpenCASCADE-Kern), daher nicht für sehr große Modelle. Objektname = IFC-GlobalId.",
+    ),
     "glb": ("GLB", "glTF binär (.glb) – kompakt, für Web-Viewer, Blender, Three.js und Game-Engines."),
     "obj": ("OBJ", "Wavefront OBJ (.obj + .mtl) – lässt sich in fast jedem 3D-Programm öffnen."),
+    "dae": (
+        "DAE (Collada)",
+        "COLLADA 1.4 (.dae) – Dreiecksnetze mit Farben, für SketchUp, Blender, Unity und ArchiCAD. "
+        "Textdatei, etwa doppelt so groß wie .glb.",
+    ),
 }
 
 # Rhino geometry mode (convert(..., geometry=...), only used for 3DM) -> (label, hint).
@@ -405,7 +416,7 @@ class DropZone(QFrame):
         icon.setObjectName("DropIcon")
         title = QLabel("IFC-Dateien oder Ordner hierher ziehen")
         title.setObjectName("DropTitle")
-        hint = QLabel("Ordner werden nach .ifc-Dateien durchsucht")
+        hint = QLabel("Ordner werden nach .ifc- und .ifczip-Dateien durchsucht")
         hint.setObjectName("Hint")
         self.add_button = QPushButton("Dateien hinzufügen…")
         self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -907,7 +918,8 @@ class MainWindow(QMainWindow):
                 self._pending_rows.append(start + offset)
             self._insert_row(start + offset)
         for path in result.rejected:
-            self.log(f"✗ Keine IFC-Datei gefunden: {path} – nur .ifc-Dateien und Ordner mit .ifc-Dateien")
+            self.log(f"✗ Keine IFC-Datei gefunden: {path} – nur .ifc- und .ifczip-Dateien und Ordner damit "
+                     "(ifcXML kann nicht gelesen werden)")
         if result.duplicates:
             names = ", ".join(p.name for p in result.duplicates[:3])
             more = " …" if len(result.duplicates) > 3 else ""
@@ -925,7 +937,8 @@ class MainWindow(QMainWindow):
     def browse_files(self) -> None:
         start = self.settings.value("last_input_dir", str(Path.home()))
         files, _ = QFileDialog.getOpenFileNames(
-            self, "IFC-Dateien hinzufügen", str(start), "IFC-Dateien (*.ifc *.IFC);;Alle Dateien (*)"
+            self, "IFC-Dateien hinzufügen", str(start),
+            "IFC-Dateien (*.ifc *.IFC *.ifczip *.ifcZIP);;Alle Dateien (*)",
         )
         if files:
             self.settings.setValue("last_input_dir", str(Path(files[0]).parent))

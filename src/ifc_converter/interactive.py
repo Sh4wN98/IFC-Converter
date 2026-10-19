@@ -14,7 +14,7 @@ from urllib.request import url2pathname
 
 from ifc_converter import __version__
 from ifc_converter.app import APP_NAME, log_path
-from ifc_converter.converter import FORMATS, ConversionResult, memory_warning
+from ifc_converter.converter import FORMATS, INPUT_SUFFIXES, ConversionResult, memory_warning
 from ifc_converter.process import auto_threads, convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
@@ -301,11 +301,9 @@ class ProgressLine:
 def output_files(target: Path, fmt: str) -> list[Path]:
     """Every file converting to ``target`` may write: OBJ adds a .mtl, and IfcOpenShell's GLB
     serializer buffers in two temporary files that a crashed or terminated conversion leaves behind."""
-    if fmt == "obj":
-        return [target, target.with_suffix(".mtl")]
-    if fmt == "glb":
-        return [target, Path(f"{target}.indices.tmp"), Path(f"{target}.vertices.tmp")]
-    return [target]
+    from ifc_converter.serializers import output_files as serializer_files
+
+    return serializer_files(target, fmt, temp=True)
 
 
 def _discard(path: Path) -> None:
@@ -363,12 +361,12 @@ def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
     files, rejected = [], []
     for path in paths:
         if path.is_dir():
-            found = sorted(p for p in path.rglob("*") if p.suffix.lower() == ".ifc")
+            found = sorted(p for p in path.rglob("*") if p.suffix.lower() in INPUT_SUFFIXES)
             if found:
                 files.extend(found)
             else:
                 rejected.append(path)
-        elif path.is_file() and path.suffix.lower() == ".ifc":
+        elif path.is_file() and path.suffix.lower() in INPUT_SUFFIXES:
             files.append(path)
         else:
             rejected.append(path)
@@ -385,7 +383,8 @@ def run(
     print("=" * 60)
     print("  IFC-Datei(en) oder Ordner hier ins Fenster ziehen, dann Enter.")
     print(f"  Fertige Dateien landen in: {output_dir}")
-    print("  Format wechseln: 'glb', 'obj' oder '3dm' eingeben.  Beenden: 'q'")
+    formats = ", ".join(f"'{name}'" for name in FORMATS[:-1]) + f" oder '{FORMATS[-1]}'"
+    print(f"  Format wechseln: {formats} eingeben.  Beenden: 'q'")
     print("  Abbrechen einer laufenden Umwandlung: Strg+C")
     print(f"  Rechenleistung: {resource_text(auto_threads(), low_priority)}")
     print()
