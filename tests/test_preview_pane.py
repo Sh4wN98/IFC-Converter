@@ -119,7 +119,7 @@ def test_large_files_and_files_during_a_conversion_wait_for_a_click(app, tmp_pat
     pane.show_file(ifc(tmp_path))
     app.processEvents()
     assert calls == [] and not pane.compute_button.isHidden()
-    assert ("Große Datei" if why == "large" else "Während einer Umwandlung") in pane.view.message
+    assert ("Große Datei" if why == "large" else "Während einer Konvertierung") in pane.view.message
     pane.compute_button.click()
     assert wait_until(app, lambda: pane.view.mesh is not None) and len(calls) == 1
     pane.shutdown()
@@ -198,3 +198,20 @@ def test_the_window_previews_the_selected_file_and_can_hide_it(app, tmp_path, pr
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_title_and_info_line_shorten_long_names_instead_of_widening(app, tmp_path, previews):
+    pane = preview_pane.PreviewPane(view_factory=FakeView)
+    pane.resize(300, 300)
+    pane.show()
+    name = "Ein_ausgesprochen_langer_Projektname_mit_vielen_Zeichen_2026_Architektur.ifc"
+    pane.show_file(ifc(tmp_path, name))
+    assert wait_until(app, lambda: pane.view.mesh is not None)
+    assert pane.title.text() == f"Vorschau – {name}"  # the full text, drawn shortened
+    assert pane.title.minimumSizeHint().width() < 40
+    assert pane.info.minimumHeight() > 0  # keeps its line when empty: no jumping view
+    pane.show_file(None)
+    assert pane.info.text() == "" and pane.title.text() == "Vorschau"
+    assert pane.info.minimumHeight() > 0
+    pane.shutdown()
+    pane.close()

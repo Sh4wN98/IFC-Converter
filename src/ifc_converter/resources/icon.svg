@@ -1,25 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- IFC Converter app icon: a building block (isometric cube) and an arrow for the conversion.
-       After editing, regenerate icon.png and icon.ico with: python tools/make_icon.py -->
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2f80ed"/>
-      <stop offset="1" stop-color="#1b4f9c"/>
-    </linearGradient>
-  </defs>
-  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#tile)"/>
-  <!-- Cube: top, left and right face, lit from the top left. -->
-  <g stroke="#ffffff" stroke-width="8" stroke-linejoin="round">
-    <path d="M104 32 L164 66 L104 100 L44 66 Z" fill="#ffffff"/>
-    <path d="M44 66 L104 100 L104 170 L44 136 Z" fill="#d3e3fb"/>
-    <path d="M164 66 L104 100 L104 170 L164 136 Z" fill="#94b9f0"/>
+  <!-- IFC Converter app icon: an isometric building block (the IFC model) and an arrow (converted into
+       another format). Flat, three colours. After editing, regenerate icon.png and icon.ico with:
+       python tools/make_icon.py -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#2b6cdf"/>
+  <!-- Block: top, left and right face, lit from the top left. -->
+  <g stroke="#ffffff" stroke-width="7" stroke-linejoin="round">
+    <path d="M112 38 L176 75 L112 112 L48 75 Z" fill="#ffffff"/>
+    <path d="M48 75 L112 112 L112 186 L48 149 Z" fill="#cfe0fb"/>
+    <path d="M176 75 L112 112 L112 186 L176 149 Z" fill="#9dbff3"/>
   </g>
-  <!-- Floor lines on the side faces: it is a building. -->
-  <g stroke="#1b4f9c" stroke-width="7" stroke-linecap="round" opacity="0.5">
-    <path d="M56 97 L92 117.5 M56 120 L92 140.5"/>
-    <path d="M116 117.5 L152 97 M116 140.5 L152 120"/>
+  <!-- Storeys: three floor lines on each side face, so it reads as a building. -->
+  <g stroke="#2b6cdf" stroke-width="5" stroke-linecap="round" opacity="0.45">
+    <path d="M58 104 L102 129.5 M58 124 L102 149.5 M58 144 L102 169.5"/>
+    <path d="M122 129.5 L166 104 M122 149.5 L166 124 M122 169.5 L166 144"/>
   </g>
   <!-- Arrow: converted into another format. -->
-  <path d="M126 186 L182 186 L182 162 L228 198 L182 234 L182 210 L126 210 Z"
-        fill="#ffb423" stroke="#ffb423" stroke-width="4" stroke-linejoin="round"/>
+  <g fill="none" stroke="#ffb423" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M146 200 L222 200"/>
+    <path d="M192 168 L224 200 L192 232"/>
+  </g>
 </svg>

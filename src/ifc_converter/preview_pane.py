@@ -14,9 +14,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ifc_converter.converter import size_text
+from ifc_converter.dialogs import ElidedLabel, muted
 
 log = logging.getLogger(__name__)
 
@@ -120,32 +121,38 @@ class PreviewPane(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         header = QHBoxLayout()
-        self.title = QLabel("Vorschau")
+        header.setSpacing(8)
+        # Title and info line shorten long file names with "…" instead of widening the window, and the
+        # info line keeps its height when empty, so the view does not jump when another file is chosen.
+        self.title = ElidedLabel("Vorschau")
         self.title.setObjectName("PreviewTitle")
-        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.compute_button = QPushButton("Vorschau berechnen")
+        self.compute_button.setToolTip(
+            "Berechnet die Vorschau dieser Datei jetzt (niedrige Priorität, höchstens 4 Threads); sie wird gemerkt."
+        )
         self.compute_button.clicked.connect(self.compute)
         self.cancel_button = QPushButton("Abbrechen")
+        self.cancel_button.setToolTip("Berechnung der Vorschau abbrechen")
         self.cancel_button.clicked.connect(self.cancel)
         self.reset_button = QPushButton("Ansicht zurücksetzen")
-        self.reset_button.setToolTip("Ganzes Modell zeigen (auch Doppelklick in die Ansicht)")
+        self.reset_button.setToolTip("Startansicht: ganzes Modell schräg von Südwesten (Pos1; Doppelklick: ganzes Modell)")
         header.addWidget(self.title, stretch=1)
         for button in (self.compute_button, self.cancel_button, self.reset_button):
             header.addWidget(button)
         layout.addLayout(header)
 
         self.view = view_factory()
-        self.view.setMinimumHeight(160)
+        self.view.setMinimumHeight(120)
         self.view.element_clicked.connect(self._element_clicked)
         self.reset_button.clicked.connect(self.view.reset_view)
         layout.addWidget(self.view, stretch=1)
 
-        self.info = QLabel()
+        self.info = muted(ElidedLabel())
         self.info.setObjectName("PreviewInfo")
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.info.setMinimumHeight(self.info.fontMetrics().height() + 2)
         layout.addWidget(self.info)
         self._show_state(NO_FILE)
 
@@ -183,7 +190,7 @@ class PreviewPane(QWidget):
             return
         if self._busy():
             self._show_state(
-                "Während einer Umwandlung wird keine Vorschau berechnet, damit sie nicht gebremst wird.",
+                "Während einer Konvertierung wird keine Vorschau berechnet, damit sie nicht gebremst wird.",
                 can_compute=True,
             )
         elif size > AUTO_PREVIEW_SIZE:
@@ -328,4 +335,4 @@ class PreviewPane(QWidget):
         if info.get("left_out"):
             parts.append(f"{_number(info['left_out'])} kleine Bauteile ausgelassen")
         parts.append(f"Darstellung: {getattr(self.view, 'renderer_name', '–')}")
-        return " · ".join(parts) + " – Klick auf ein Bauteil zeigt seinen Namen"
+        return " · ".join(parts) + " – Klick auf ein Bauteil zeigt Klasse, GlobalId und Name"
