@@ -2,7 +2,7 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
-## 0.5.0 – 2026-10-19
+## 0.5.1 – 2026-10-19
 
 - **Linux-Version:** `IFC-Converter-<Version>-linux-x86_64.tar.gz` mit `install.sh` (Installation ohne Root unter `~/.local`, Startmenü-Eintrag, `ifc-convert` im Pfad) und `uninstall.sh`; läuft unter Wayland und X11. Die Prüfsummen aller Pakete stehen in `SHA256SUMS.txt`.
 - **Neues Ausgabeformat DAE (Collada):** Dreiecksnetze mit Farben, in Metern, Z nach oben, ein Knoten je Bauteil (für SketchUp, Blender, Unity, ArchiCAD). **Gepackte `.ifczip`-Dateien** werden direkt gelesen; ifcXML wird mit einer klaren Meldung abgelehnt.

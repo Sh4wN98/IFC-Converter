@@ -111,7 +111,7 @@ main() {
     echo "  Achtung: Auf diesem Rechner fehlen Systembibliotheken, ohne die das Fenster nicht startet:"
     # shellcheck disable=SC2086
     echo "           $(printf '%s ' $missing)"
-    echo "           Ubuntu/Debian: sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libgl1 libegl1 libfontconfig1 libdbus-1-3"
+    echo "           Ubuntu/Debian: sudo apt install libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0 libxcb-sync1 libxcb-xkb1 libxcb-shm0 libxcb-glx0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libgl1 libegl1 libfontconfig1 libdbus-1-3"
   fi
 }
 
