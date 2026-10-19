@@ -49,8 +49,8 @@ cd IFC-Converter-<Version>-linux-x86_64
 
 1. **Installiert:** „IFC Converter“ im Startmenü öffnen. **Aus dem Quellcode:** unter Windows `start.bat` doppelklicken, unter Linux/macOS `./start.sh` ausführen.
 2. Aus dem Quellcode richtet sich der Converter beim ersten Start selbst ein (Internet nötig für den Download von IfcOpenShell, rhino3dm und Qt; Python 3.10 oder neuer muss installiert sein). Nach einem Update passiert das automatisch noch einmal.
-3. IFC-Dateien oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“).
-4. Format wählen (Standard: 3DM), Ausgabeordner prüfen und auf „Konvertieren“ klicken.
+3. IFC-Dateien (`.ifc` oder `.ifczip`, IFC2x3 bis IFC4.3) oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“). ifcXML kann nicht gelesen werden.
+4. Format wählen – 3DM (Rhino, Standard), GLB, OBJ oder DAE (Collada, z. B. für SketchUp, Blender, ArchiCAD) –, Ausgabeordner prüfen und auf „Konvertieren“ klicken.
 5. Die fertigen Dateien landen standardmäßig auf dem Desktop. Gibt es den Namen schon, wird `(2)`, `(3)` … angehängt.
 
 - **Während einer Umwandlung** hinzugefügte Dateien (ins Fenster gezogen, über „Dateien hinzufügen…“ oder per „Öffnen mit“/Ziehen aufs Programmsymbol) werden vorgemerkt und gleich danach mit denselben Einstellungen umgewandelt. Nach „Abbrechen“ bleiben sie in der Liste stehen.
@@ -59,7 +59,7 @@ cd IFC-Converter-<Version>-linux-x86_64
 
 ### 3D-Vorschau
 
-Unter der Dateiliste zeigt eine Vorschau die ausgewählte Datei – eine ins Fenster gezogene Datei wird gleich ausgewählt. Ein- und ausblenden: **Ansicht → Vorschau** (F3); die Trennlinie zur Liste lässt sich verschieben.
+Unter der Dateiliste zeigt eine Vorschau die ausgewählte Datei – eine ins Fenster gezogene Datei wird gleich ausgewählt. Ein- und ausblenden: **Ansicht → Vorschau** (F3); die Trennlinie zur Liste lässt sich verschieben. Das Protokoll unten lässt sich ebenso ein- und ausklappen (**Ansicht → Protokoll**, F4, oder der Knopf „Protokoll“ links unten).
 
 - Dateien bis 150 MB werden sofort berechnet (wenige Sekunden), größere erst nach Klick auf „Vorschau berechnen“ (das Einlesen allein dauert Minuten). Während einer Umwandlung wird keine Vorschau von selbst berechnet, damit sie nicht gebremst wird.
 - Eine berechnete Vorschau wird gemerkt und erscheint beim nächsten Mal sofort, auch nach einem Neustart des Programms (solange die Datei unverändert ist).
@@ -208,6 +208,8 @@ ifc-converter-gui                         # Programmfenster starten
 
 ifc-convert haus.ifc                      # → haus.glb
 ifc-convert haus.ifc -f obj               # → haus.obj + haus.mtl
+ifc-convert haus.ifc -f dae               # → haus.dae (Collada, Netze mit Farben, Z nach oben, Meter)
+ifc-convert haus.ifczip                   # gepackte IFC wird direkt gelesen
 ifc-convert haus.ifc -f 3dm               # → haus.3dm (Rhino, Polyflächen)
 ifc-convert haus.ifc -f 3dm -g mesh       # → haus.3dm nur mit Netzen
 ifc-convert haus.ifc -o export/modell.glb # eigener Ausgabepfad

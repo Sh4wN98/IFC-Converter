@@ -332,7 +332,7 @@ def test_preview_is_no_output_format(wall_ifc, tmp_path, capsys):
     with pytest.raises(SystemExit):
         build_parser().parse_args([str(wall_ifc), "-f", "preview"])
     assert "preview" not in capsys.readouterr().err.split("choose from")[-1]
-    with pytest.raises(ValueError, match="möglich sind: glb, obj, 3dm$"):
+    with pytest.raises(ValueError, match="möglich sind: glb, obj, 3dm, dae$"):
         convert(wall_ifc, fmt="fbx")
     # Without an output path it goes beside the IFC, like the formats (only the app's cache is used).
     assert convert(wall_ifc, fmt="preview").output == wall_ifc.with_suffix(".npz")

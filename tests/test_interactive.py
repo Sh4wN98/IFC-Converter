@@ -460,7 +460,7 @@ def test_converter_errors_are_german(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="^IFC-Datei nicht gefunden: "):
         convert(tmp_path / "fehlt.ifc")
-    with pytest.raises(ValueError, match="^Nicht unterstütztes Format „stl“, möglich sind: glb, obj, 3dm$"):
+    with pytest.raises(ValueError, match="^Nicht unterstütztes Format „stl“, möglich sind: glb, obj, 3dm, dae$"):
         convert(tmp_path / "fehlt.ifc", fmt="stl")
     with pytest.raises(ValueError, match="^Nicht unterstützte Geometrieart „nurbs“"):
         convert(tmp_path / "fehlt.ifc", geometry="nurbs")

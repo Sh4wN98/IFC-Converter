@@ -4,7 +4,11 @@ Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases ver
 
 ## 0.5.0 – 2026-10-19
 
-(wird vor dem Release ergänzt)
+- **Linux-Version:** `IFC-Converter-<Version>-linux-x86_64.tar.gz` mit `install.sh` (Installation ohne Root unter `~/.local`, Startmenü-Eintrag, `ifc-convert` im Pfad) und `uninstall.sh`; läuft unter Wayland und X11. Die Prüfsummen aller Pakete stehen in `SHA256SUMS.txt`.
+- **Neues Ausgabeformat DAE (Collada):** Dreiecksnetze mit Farben, in Metern, Z nach oben, ein Knoten je Bauteil (für SketchUp, Blender, Unity, ArchiCAD). **Gepackte `.ifczip`-Dateien** werden direkt gelesen; ifcXML wird mit einer klaren Meldung abgelehnt.
+- **Überarbeitetes Programmfenster:** neues Programmsymbol, Statussymbole und Fortschritt je Datei in der Liste, ein-/ausklappbares Protokoll (Ansicht → Protokoll, F4), kompakte Ablagezone sobald Dateien in der Liste sind, Einstellungen mit Reitern (passt auch bei 150 % Skalierung), Über-Dialog mit Komponenten und Lizenzen, einheitliche Texte („Konvertierung“), Hervorhebung von „Ausgabeordner öffnen“ nach dem Erfolg. Geprüft in hellem und dunklem Farbschema.
+- **Maßhaltigkeit:** Extrusionen mit negativer Tiefe (Zenodo-„AutoGen“-Brücken, IFC4.3) werden beim Einlesen repariert – bisher fehlten diese Bauteile; Trassierungs-Hilfslinien (`IfcAlignmentHorizontal/Vertical/Cant/Segment`) werden in GLB/OBJ nicht mehr als Geometrie geschrieben (sie lagen weit außerhalb des Modells). Für fünf Modelle quer durch den Testbestand wurde belegt, dass jede Bauteilklasse mit 3D-Körper in der Ausgabe ankommt.
+- Release-Text kommt aus dieser Datei (`packaging/release_notes.py`).
 
 ## 0.4.1 – 2026-10-19
 

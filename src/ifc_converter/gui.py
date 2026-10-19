@@ -106,12 +106,6 @@ SIDE_WIDTH = 320  # settings column on the right
 # Format -> (label, hint), in the order shown in the window.
 FORMAT_INFO = {
     "3dm": ("3DM (Rhino)", "Rhino-Datei (.3dm) – direkt in Rhino öffnen und weiterbearbeiten."),
-    "stp": (
-        "STEP (CAD, exakte Flächen)",
-        "STEP AP214 (.stp) – exakte Flächen und Volumenkörper statt Dreiecksnetze, für Rhino, SolidWorks, "
-        "Inventor, FreeCAD. Datei etwa 100× so groß wie .glb und die Umwandlung deutlich langsamer "
-        "(nur OpenCASCADE-Kern), daher nicht für sehr große Modelle. Objektname = IFC-GlobalId.",
-    ),
     "glb": ("GLB", "glTF binär (.glb) – kompakt, für Web-Viewer, Blender, Three.js und Game-Engines."),
     "obj": ("OBJ", "Wavefront OBJ (.obj + .mtl) – lässt sich in fast jedem 3D-Programm öffnen."),
     "dae": (

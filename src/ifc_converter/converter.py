@@ -22,7 +22,7 @@ import ifcopenshell.util.unit
 
 # Output formats: "3dm" has its own writer (rhino.py), the others are IfcOpenShell's serializers
 # (serializers.py, which says why e.g. glTF, USD and IGES are not among them).
-FORMATS = ("glb", "obj", "3dm", "stp", "dae")
+FORMATS = ("glb", "obj", "3dm", "dae")
 # Input files: .ifc, or a .ifczip holding one (unpacked to the temp folder while reading). ifcXML
 # cannot be read by IfcOpenShell 0.9 (see convert).
 INPUT_SUFFIXES = (".ifc", ".ifczip")
@@ -202,7 +202,7 @@ def convert(
     blocks: bool = False,
     checkpoint_dir: str | Path | None = None,
 ) -> ConversionResult:
-    """Convert an IFC file to GLB, OBJ (plus .mtl), Rhino 3DM, STEP or DAE and return what was written.
+    """Convert an IFC file to GLB, OBJ (plus .mtl), Rhino 3DM or DAE and return what was written.
 
     ``fmt="preview"`` (not offered to users, see INTERNAL_FORMATS) writes the preview (.npz) of
     preview.write_preview instead; the app calls it through preview.compute_preview.
