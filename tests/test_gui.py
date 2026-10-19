@@ -103,9 +103,10 @@ def test_prepare_run_skips_done_files_unless_all_done(tmp_path):
 
 
 def test_format_size():
-    assert format_size(512) == "512 B"
-    assert format_size(1536) == "1,5 KB"
-    assert format_size(3 * 1024 * 1024) == "3,0 MB"
+    # A narrow no-break space between number and unit, so "2,2 MB" never wraps.
+    assert format_size(512) == "512 B"
+    assert format_size(1536) == "1,5 KB"
+    assert format_size(3 * 1024 * 1024) == "3,0 MB"
 
 
 def test_window_add_paths_updates_table(window, wall_ifc, tmp_path):
@@ -152,7 +153,7 @@ def test_converts_in_background_and_continues_after_errors(window, wall_ifc, tmp
     assert window.queue[0].status is Status.FAILED
     assert window.status_text(0).startswith("Fehler: ")
     assert window.queue[1].status is Status.DONE
-    assert window.status_text(1) == "Fertig – 1 Bauteile"
+    assert window.status_text(1) == "Fertig – 1 Bauteil"
     assert window.overall_progress.value() == 100
     assert window.open_button.isEnabled()
     assert window.convert_button.isEnabled()
@@ -224,10 +225,10 @@ def test_reading_state_until_first_progress(window, wall_ifc, tmp_path):
     assert window.overall_progress.maximum() == 0  # busy indicator while reading
 
     window._on_file_progress(0, 0)  # convert() reports 0 % once the file is read
-    assert window.status_text(0) == "Läuft … 0 %"
+    assert window.status_text(0) == "Wird konvertiert … 0 %"
     assert window.overall_progress.maximum() == 100
     window._on_file_progress(0, 40)
-    assert window.status_text(0) == "Läuft … 40 %"
+    assert window.status_text(0) == "Wird konvertiert … 40 %"
 
 
 def test_cancel_hint_while_reading(window, wall_ifc, tmp_path):
@@ -437,7 +438,7 @@ def test_skipped_elements_are_shown_in_row_tooltip_and_log(window, wall_ifc, mon
     wait_finished(window)
 
     assert window.queue[0].status is Status.DONE
-    assert window.status_text(0) == "Fertig – 1 Bauteile (3 ohne Geometrie)"
+    assert window.status_text(0) == "Fertig – 1 Bauteil (3 ohne Geometrie)"
     tooltip = window.table.item(0, 2).toolTip()
     assert "3 Bauteile ohne Geometrie" in tooltip
     assert "nicht unterstützte Geometrietypen" in tooltip
@@ -483,7 +484,7 @@ def test_retry_goes_back_to_reading_state(window, wall_ifc, tmp_path):
         assert window.overall_progress.maximum() == 0  # busy indicator again
         assert "neuer Versuch" in window.status_label.text()
         window._on_file_progress(0, 0)
-        assert window.status_text(0) == "Läuft … 0 %"
+        assert window.status_text(0) == "Wird konvertiert … 0 %"
     finally:
         window._worker = None
 
@@ -504,6 +505,7 @@ def test_crash_removes_glb_temp_files(window, wall_ifc, tmp_path, monkeypatch):
 
 from ifc_converter.dialogs import (  # noqa: E402
     AboutDialog,
+    ElidedLabel,
     ErrorDialog,
     ErrorReporter,
     Preferences,
@@ -827,9 +829,9 @@ def test_long_final_phases_are_shown_in_the_row_and_status_line(window, wall_ifc
     window._on_file_started(0, wall_ifc.with_suffix(".3dm"))
     window._on_file_progress(0, 90)
     window._on_file_status(0, "geometry", "Geometrie wird berechnet (16 Threads) …")
-    assert item.status_text == "Läuft … 90 %"  # the percentage tells enough there
+    assert item.status_text == "Wird konvertiert … 90 %"  # the percentage tells enough there
     window._on_file_status(0, "write", "Rhino-Datei wird geschrieben (600 Objekte): 1,2 GB geschrieben …")
-    assert item.status_text == "Läuft … 90 % – Rhino-Datei wird geschrieben (600 Objekte): 1,2 GB geschrieben …"
+    assert item.status_text == "Wird konvertiert … 90 % – Rhino-Datei wird geschrieben (600 Objekte): 1,2 GB geschrieben …"
     assert "1,2 GB geschrieben" in window.status_label.text()
     assert "Rhino-Datei wird geschrieben" in window.log_view.toPlainText()
     window._worker = None
@@ -889,7 +891,7 @@ def test_closing_during_a_conversion_asks_with_no_as_default(window, wall_ifc, t
         window._worker = None
     text, default = asked[0]
     assert default == QMessageBox.StandardButton.No
-    assert "„wall.ifc“ wird umgewandelt, die Umwandlung läuft seit 2 min 5 s (42 %)" in text
+    assert "„wall.ifc“ wird konvertiert, die Konvertierung läuft seit 2 min 5 s (42 %)" in text
 
 
 def test_durations_in_german():
@@ -934,14 +936,14 @@ def test_files_added_during_a_run_are_converted_after_it(window, wall_ifc, tmp_p
 
     assert window.queue[1].status is Status.WAITING and window.queue[1].queued
     assert window.status_text(1) == "Vorgemerkt – startet danach"
-    assert "+ 1 Datei(en) vorgemerkt: Sie werden gleich nach der laufenden Konvertierung" in window.log_view.toPlainText()
+    assert "+ 1 Datei vorgemerkt: Konvertierung gleich nach der laufenden" in window.log_view.toPlainText()
     gate.set()
     assert wait_finished(window) is False
     out = tmp_path / "out"
     assert [item.status for item in window.queue.items] == [Status.DONE, Status.DONE]
     assert (out / "wall.glb").is_file() and (out / "zweite.glb").is_file()
     log = window.log_view.toPlainText()
-    assert "▶ Weiter mit 1 während der Konvertierung hinzugefügten Datei(en)" in log
+    assert "▶ Weiter mit 1 Datei, hinzugefügt während der Konvertierung" in log
     assert window.status_text(1).startswith("Fertig")
     assert window.convert_button.isEnabled()
 
@@ -958,7 +960,7 @@ def test_files_added_during_a_cancelled_run_wait(window, wall_ifc, tmp_path, mon
     assert wait_finished(window) is True
     assert window.queue[1].status is Status.WAITING and not window.queue[1].queued
     assert window.status_text(1) == "Wartend"
-    assert "1 vorgemerkte Datei(en) nicht umgewandelt – „Konvertieren“ startet sie." in window.log_view.toPlainText()
+    assert "1 vorgemerkte Datei nicht konvertiert – „Konvertieren“ startet sie." in window.log_view.toPlainText()
     assert not (tmp_path / "out" / "zweite.glb").exists()
 
 
@@ -1035,10 +1037,10 @@ def test_start_line_shows_threads_and_priority(window, wall_ifc, child_calls):
 
 def test_settings_dialog_shows_what_a_conversion_uses(app):
     dialog = SettingsDialog(Preferences())
-    assert dialog.threads_usage.text().startswith(f"Eine Umwandlung nutzt damit bis zu {process.auto_threads()} ")
+    assert dialog.threads_usage.text().startswith(f"Eine Konvertierung nutzt damit bis zu {process.auto_threads()} ")
     dialog.threads_spin.setValue(1)
     dialog.priority_check.setChecked(False)
-    assert dialog.threads_usage.text().startswith("Eine Umwandlung nutzt damit bis zu 1 Thread (von ")
+    assert dialog.threads_usage.text().startswith("Eine Konvertierung nutzt damit bis zu 1 Thread (von ")
     assert dialog.threads_usage.text().endswith("normale Priorität.")
 
 
@@ -1110,3 +1112,119 @@ def test_rhino_blocks_reach_only_the_3dm_conversion(window, wall_ifc, child_call
     wait_finished(window)
     assert child_calls[0].get("blocks") is (True if fmt == "3dm" else None)
     assert ("als Blöcke" in window.log_view.toPlainText()) is (fmt == "3dm")
+
+
+# ------------------------------------------------------------------ 0.5.0 polish
+
+
+def test_count_texts_use_german_plurals_and_thousands_dots():
+    assert gui.count_text(1, "Bauteil", "Bauteile") == "1 Bauteil"
+    assert gui.count_text(117137, "Bauteil", "Bauteile") == "117.137 Bauteile"
+    assert gui.files_text(1) == "1 Datei" and gui.files_text(3) == "3 Dateien"
+
+
+def test_status_icons_exist_for_every_status_and_are_cached():
+    for status in Status:
+        icon = gui.status_icon(status)
+        assert not icon.isNull()
+        assert gui.status_icon(status) is icon
+        assert not icon.pixmap(16, 16).isNull()
+
+
+def test_rows_show_a_status_icon_and_the_count_label_counts_finished_files(window, wall_ifc, tmp_path):
+    other = tmp_path / "zwei.ifc"
+    other.write_bytes(wall_ifc.read_bytes())
+    window.add_paths([wall_ifc, other])
+    assert not window.table.item(0, 2).icon().isNull()
+    assert window.count_label.text() == "2 Dateien"
+    window._on_file_started(0, tmp_path / "out" / "wall.glb")
+    window._on_file_done(0, ConversionResult(output=tmp_path / "out" / "wall.glb", elements=12))
+    window._update_actions()
+    assert window.count_label.text() == "1 von 2 Dateien fertig"
+    assert window.table.item(0, 2).toolTip().startswith("Geschrieben: ")
+
+
+def test_drop_zone_is_compact_only_while_the_list_has_files(window, wall_ifc):
+    assert window.drop_zone.property("compact") is False
+    assert not window.drop_zone.hint.isHidden()
+    window.add_paths([wall_ifc])
+    assert window.drop_zone.property("compact") is True
+    assert window.drop_zone.hint.isHidden() and window.drop_zone.icon.isHidden()
+    assert not window.drop_zone.title.isHidden() and not window.drop_zone.add_button.isHidden()
+    window.clear_list()
+    assert window.drop_zone.property("compact") is False
+
+
+def test_log_can_be_folded_away_and_the_choice_is_remembered(window, settings):
+    menus = {action.text(): action.menu() for action in window.menuBar().actions()}
+    assert [a.text() for a in menus["&Ansicht"].actions()] == ["Vorschau", "Protokoll"]
+    assert window.log_action.isChecked() and window.log_toggle.isChecked()
+    window.log_toggle.setChecked(False)
+    assert window.log_view.isHidden() and not window.log_action.isChecked()
+    assert window.log_toggle.arrowType() == Qt.ArrowType.RightArrow
+    assert settings.value("log_visible", type=bool) is False
+    window.log_action.trigger()
+    assert not window.log_view.isHidden() and window.log_toggle.isChecked()
+    assert settings.value("log_visible", type=bool) is True
+    # The log is also a splitter pane the user can drag, and the splitter state is saved on close.
+    assert window.log_splitter.widget(1) is window.log_view
+    assert window.log_view.minimumHeight() >= 60
+
+
+def test_open_output_button_is_highlighted_after_a_successful_batch(window, wall_ifc, child_calls):
+    assert not window.open_button.property("highlight")
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert window.open_button.isEnabled() and window.open_button.property("highlight") is True
+    assert window.overall_progress.format() == "1 von 1 Datei fertig"
+    assert "+ 1 Datei hinzugefügt" in window.log_view.toPlainText()
+    assert "▶ 1 Datei → GLB" in window.log_view.toPlainText()
+
+
+def test_elided_label_keeps_the_full_text_and_shortens_the_drawing(app):
+    label = ElidedLabel("Ein sehr langer Dateiname, der nie in diese Breite passt.ifc")
+    label.resize(80, 20)
+    label.show()
+    label.grab()  # paints: the shortened text gets the full text as tooltip
+    assert label.text() == "Ein sehr langer Dateiname, der nie in diese Breite passt.ifc"
+    assert label.toolTip() == label.text()
+    assert label.minimumSizeHint().width() < 40  # it never forces the window wider
+    label.setText("kurz")
+    label.grab()
+    assert label.toolTip() == ""
+    label.deleteLater()
+
+
+def test_main_window_minimum_size_fits_a_small_screen(window):
+    assert window.minimumWidth() <= 900 and window.minimumHeight() <= 660
+
+
+def test_settings_dialog_is_tabbed_and_keeps_its_widgets(app):
+    dialog = SettingsDialog(Preferences())
+    assert [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())] == [
+        "Leistung", "Geometriekern", "Ausgabe", "Logdatei",
+    ]
+    assert dialog.priority_check.text() == "Mit niedriger Priorität konvertieren (empfohlen)"
+    assert dialog.minimumHeight() <= 480  # fits a laptop screen at 150 % scaling
+    dialog.deleteLater()
+
+
+def test_about_dialog_lists_every_component_with_version_and_licence(app):
+    dialog = AboutDialog()
+    texts = [label.text() for label in dialog.findChildren(gui.QLabel)]
+    for expected in ("Komponente", "Version", "Lizenz", "Qt", "PySide6", "NumPy", "Shapely / GEOS", "System"):
+        assert expected in texts
+    assert "Konvertiert IFC-Gebäudemodelle" in "\n".join(texts)
+    dialog.deleteLater()
+
+
+def test_status_texts_are_consistent_german(window, wall_ifc):
+    window.add_paths([wall_ifc])
+    item = window.queue[0]
+    item.status, item.progress, item.elements = Status.RUNNING, 7, 0
+    assert item.status_text == "Wird konvertiert … 7 %"
+    item.status, item.elements, item.skipped = Status.DONE, 12345, 2
+    assert item.status_text == "Fertig – 12.345 Bauteile (2 ohne Geometrie)"
+    assert window._running_text() == "Die Konvertierung läuft noch."
