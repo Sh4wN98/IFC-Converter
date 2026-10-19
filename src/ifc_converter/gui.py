@@ -15,8 +15,18 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRect, QSettings, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPalette
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -44,6 +54,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -55,11 +66,13 @@ from ifc_converter.converter import DEFAULT_KERNEL, FORMATS, ConversionResult, c
 from ifc_converter.dialogs import (
     KERNEL_INFO,
     AboutDialog,
+    ElidedLabel,
     ErrorReporter,
     Preferences,
     SettingsDialog,
     SkippedDialog,
     app_icon,
+    muted,
     open_log,
     save_anonymized_log,
 )
@@ -105,12 +118,16 @@ GEOMETRY_INFO = {
         "Objekte (Möbel, Sanitär, Leuchten) bleiben Netze. Datei je nach Modell 1,2–4,5× größer – "
         "bei sehr großen Modellen besser „Netze“ wählen.",
     ),
-    "mesh": ("Netze (Meshes)", "Kleinste Dateien, schnellste Umwandlung."),
+    "mesh": ("Netze (Meshes)", "Kleinste Dateien, schnellste Konvertierung. Runde Flächen glatt schattiert, Kanten scharf."),
 }
 
 DONE_COLOR = QColor("#2e9d57")
 ERROR_COLOR = QColor("#d64545")
+RUNNING_COLOR = QColor("#2f80ed")
+WAITING_COLOR = QColor("#8a949e")
 PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 1
+# Between a number and its unit ("2,2 MB", "40 %"): a narrow space that never breaks the line.
+NNBSP = "\u202f"
 # QueueItem.progress while the IFC file is still being read: convert() reports progress(0) only afterwards.
 READING = -1
 
@@ -157,11 +174,11 @@ class QueueItem:
             if self.progress == READING:
                 return "IFC wird gelesen …"
             if self.detail:
-                return f"Läuft … {self.progress} % – {self.detail}"
-            return f"Läuft … {self.progress} %"
+                return f"Wird konvertiert … {self.progress}{NNBSP}% – {self.detail}"
+            return f"Wird konvertiert … {self.progress}{NNBSP}%"
         if self.status is Status.DONE:
-            skipped = f" ({self.skipped} ohne Geometrie)" if self.skipped > 0 else ""
-            return f"Fertig – {self.elements} Bauteile{skipped}"
+            skipped = f" ({number_text(self.skipped)} ohne Geometrie)" if self.skipped > 0 else ""
+            return f"Fertig – {count_text(self.elements, 'Bauteil', 'Bauteile')}{skipped}"
         if self.status is Status.FAILED:
             return f"Fehler: {self.error}"
         if self.status is Status.CANCELLED:
@@ -177,14 +194,23 @@ class AddResult:
 
 
 def format_size(size: int) -> str:
-    """Human readable file size with a German decimal comma."""
+    """Human readable file size with a German decimal comma, e.g. "2,2 MB"."""
     value = float(size)
     for unit in ("B", "KB", "MB", "GB"):
         if value < 1024 or unit == "GB":
             break
         value /= 1024
     text = f"{value:.0f}" if unit == "B" else f"{value:.1f}"
-    return f"{text.replace('.', ',')} {unit}"
+    return f"{text.replace('.', ',')}{NNBSP}{unit}"
+
+
+def count_text(count: int, singular: str, plural: str) -> str:
+    """A count with its noun, e.g. "1 Datei", "3 Dateien", "117.137 Bauteile"."""
+    return f"{number_text(count)} {singular if count == 1 else plural}"
+
+
+def files_text(count: int) -> str:
+    return count_text(count, "Datei", "Dateien")
 
 
 def target_path(source: Path, fmt: str, out_dir: Path | None) -> Path:
@@ -372,16 +398,67 @@ class ConversionWorker(QObject):
 # ------------------------------------------------------------------------- widgets
 
 
+_status_icons: dict[Status, QIcon] = {}
+
+
+def status_icon(status: Status) -> QIcon:
+    """A small round glyph for the status column: tick (done), cross (failed), dot (running), ring (waiting)."""
+    icon = _status_icons.get(status)
+    if icon is not None:
+        return icon
+    icon = QIcon()
+    for size in (16, 32, 48):  # the icon stays crisp at 150 % and 200 % scaling
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        unit = size / 16
+        circle = QRectF(2 * unit, 2 * unit, 12 * unit, 12 * unit)
+        if status is Status.WAITING:
+            painter.setPen(QPen(WAITING_COLOR, 1.5 * unit))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(circle)
+        else:
+            colour = {Status.DONE: DONE_COLOR, Status.FAILED: ERROR_COLOR, Status.RUNNING: RUNNING_COLOR}.get(
+                status, WAITING_COLOR
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(colour)
+            painter.drawEllipse(circle)
+            pen = QPen(QColor("white"), 1.8 * unit)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            if status is Status.DONE:
+                painter.drawPolyline([QRectF(5 * unit, 8 * unit, 0, 0).topLeft(),
+                                      QRectF(7.2 * unit, 10.4 * unit, 0, 0).topLeft(),
+                                      QRectF(11.2 * unit, 5.8 * unit, 0, 0).topLeft()])
+            elif status is Status.FAILED:
+                painter.drawLine(QRectF(5.6 * unit, 5.6 * unit, 0, 0).topLeft(), QRectF(10.4 * unit, 10.4 * unit, 0, 0).topLeft())
+                painter.drawLine(QRectF(10.4 * unit, 5.6 * unit, 0, 0).topLeft(), QRectF(5.6 * unit, 10.4 * unit, 0, 0).topLeft())
+            elif status is Status.CANCELLED:
+                painter.drawLine(QRectF(5.2 * unit, 8 * unit, 0, 0).topLeft(), QRectF(10.8 * unit, 8 * unit, 0, 0).topLeft())
+            else:  # running: a white dot in the middle, the progress fill shows the rest
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("white"))
+                painter.drawEllipse(QRectF(6 * unit, 6 * unit, 4 * unit, 4 * unit))
+        painter.end()
+        icon.addPixmap(pixmap)
+    _status_icons[status] = icon
+    return icon
+
+
 class StatusDelegate(QStyledItemDelegate):
     """Paints a slim progress fill behind the status text of running files."""
 
     def paint(self, painter, option, index):
         percent = index.data(PROGRESS_ROLE)
         if percent is not None and percent > 0:
-            rect = option.rect.adjusted(3, 4, -3, -4)
+            rect = option.rect.adjusted(2, 3, -2, -3)
             color = QColor(option.palette.color(QPalette.ColorRole.Highlight))
-            color.setAlpha(70)
+            color.setAlpha(60)
             painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
             painter.drawRoundedRect(QRect(rect.x(), rect.y(), int(rect.width() * percent / 100), rect.height()), 4, 4)
@@ -398,32 +475,43 @@ class DropZone(QFrame):
         super().__init__(parent)
         self.setObjectName("DropZone")
         self.setProperty("active", False)
-        self.setMinimumHeight(150)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Klicken öffnet den Dateidialog (Strg+O). Ordner werden nach .ifc-Dateien durchsucht.")
 
-        icon = QLabel("⬇")
-        icon.setObjectName("DropIcon")
-        title = QLabel("IFC-Dateien oder Ordner hierher ziehen")
-        title.setObjectName("DropTitle")
-        hint = QLabel("Ordner werden nach .ifc-Dateien durchsucht")
-        hint.setObjectName("Hint")
+        self.icon = QLabel("⬇")
+        self.icon.setObjectName("DropIcon")
+        self.title = QLabel("IFC-Dateien oder Ordner hierher ziehen")
+        self.title.setObjectName("DropTitle")
+        self.hint = muted(QLabel("Ordner werden nach .ifc-Dateien durchsucht – auch mehrere auf einmal"))
+        self.hint.setObjectName("Hint")
         self.add_button = QPushButton("Dateien hinzufügen…")
         self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_button.clicked.connect(self.browse_requested)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(6)
-        for widget in (icon, title, hint):
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(16, 16, 16, 16)
+        self._layout.setSpacing(6)
+        for widget in (self.icon, self.title, self.hint):
             widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(widget)
-        layout.addSpacing(4)
-        layout.addWidget(self.add_button, alignment=Qt.AlignmentFlag.AlignCenter)
+            widget.setWordWrap(True)  # a narrow window wraps the text instead of growing
+            self._layout.addWidget(widget)
+        self._layout.addWidget(self.add_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.set_compact(False)
 
     def set_active(self, active: bool) -> None:
         self.setProperty("active", active)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def set_compact(self, compact: bool) -> None:
+        """Smaller once the list has files, so the list and the preview get the room."""
+        if self.property("compact") == compact:
+            return
+        self.setProperty("compact", compact)
+        self.icon.setVisible(not compact)
+        self.hint.setVisible(not compact)
+        self._layout.setContentsMargins(16, 10 if compact else 16, 16, 10 if compact else 16)
+        self.setMinimumHeight(0 if compact else 124)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -437,6 +525,7 @@ QLabel#Status[state="done"] { color: #2e9d57; font-weight: 600; }
 QLabel#Status[state="failed"] { color: #d64545; font-weight: 600; }
 QLabel#DropIcon { font-size: 26px; color: palette(highlight); }
 QLabel#DropTitle { font-size: 15px; font-weight: 600; }
+QLabel#PreviewTitle, QLabel#SectionTitle { font-weight: 600; }
 #DropZone {
     border: 2px dashed palette(mid);
     border-radius: 12px;
@@ -452,11 +541,12 @@ QGroupBox {
     border: 1px solid palette(mid);
     border-radius: 8px;
     margin-top: 10px;
-    padding: 10px 8px 8px 8px;
+    padding: 12px 10px 10px 10px;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
 QGroupBox QRadioButton, QGroupBox QCheckBox, QGroupBox QLabel, QGroupBox QLineEdit { font-weight: normal; }
 QTableWidget { border: 1px solid palette(mid); border-radius: 8px; }
+QHeaderView::section { padding: 4px 6px; border: none; border-bottom: 1px solid palette(mid); background: palette(window); }
 QPlainTextEdit#Log { border: 1px solid palette(mid); border-radius: 8px; font-family: monospace; }
 QPushButton { padding: 5px 12px; }
 QPushButton#Primary {
@@ -467,9 +557,22 @@ QPushButton#Primary {
     padding: 8px 22px;
     font-weight: 600;
 }
+QPushButton#Primary:hover { background: %HOVER%; }
 QPushButton#Primary:disabled { background: palette(mid); color: palette(window); }
+QPushButton[highlight="true"] {
+    border: 1px solid palette(highlight);
+    border-radius: 6px;
+    color: palette(highlight);
+    background: palette(base);
+    font-weight: 600;
+}
+QPushButton[highlight="true"]:hover { background: palette(alternate-base); }
+QToolButton#LogToggle { border: none; padding: 2px 6px; color: palette(window-text); }
+QToolButton#LogToggle:hover { background: palette(alternate-base); border-radius: 4px; }
 QProgressBar { border: 1px solid palette(mid); border-radius: 6px; text-align: center; min-height: 18px; }
 QProgressBar::chunk { background: palette(highlight); border-radius: 5px; }
+QSplitter::handle:vertical { height: 8px; }
+QSplitter::handle:horizontal { width: 8px; }
 """
 
 
@@ -493,16 +596,6 @@ class HintLabel(QLabel):
         height = max(self.fontMetrics().boundingRect(rect, flags, text).height() for text in self._texts) + 2
         if height != self.minimumHeight():
             self.setMinimumHeight(height)
-
-
-def _muted(label: QLabel) -> QLabel:
-    palette = label.palette()
-    muted = palette.color(QPalette.ColorRole.PlaceholderText)
-    # Only the enabled groups, so a disabled hint still looks disabled.
-    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
-        palette.setColor(group, QPalette.ColorRole.WindowText, muted)
-    label.setPalette(palette)
-    return label
 
 
 class MainWindow(QMainWindow):
@@ -535,7 +628,9 @@ class MainWindow(QMainWindow):
         available = self.screen().availableGeometry()
         self.resize(min(1100, available.width() - 40), min(860, available.height() - 40))
         self.setAcceptDrops(True)
-        self.setStyleSheet(STYLESHEET)
+        # QSS cannot darken a palette colour, so the hover shade of the primary button is computed here.
+        hover = self.palette().color(QPalette.ColorRole.Highlight).darker(118).name()
+        self.setStyleSheet(STYLESHEET.replace("%HOVER%", hover))
 
         self._build_ui()
         self._build_menus()
@@ -549,14 +644,16 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 14, 18, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(8)
 
+        # Header: icon, title and subtitle.
         logo = QLabel()
-        logo.setPixmap(app_icon().pixmap(44, 44))
+        logo.setPixmap(app_icon().pixmap(40, 40))
+        logo.setFixedSize(40, 40)
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
-        subtitle = _muted(QLabel("IFC-Gebäudemodelle in 3D-Formate umwandeln"))
+        subtitle = muted(QLabel("IFC-Gebäudemodelle in 3D-Formate konvertieren"))
         titles = QVBoxLayout()
         titles.setSpacing(0)
         titles.addWidget(title)
@@ -566,12 +663,19 @@ class MainWindow(QMainWindow):
         header.addWidget(logo)
         header.addLayout(titles, stretch=1)
         root.addLayout(header)
+        root.addSpacing(4)
 
+        # Upper part (files, preview, settings) and the log share a vertical splitter: the user decides
+        # how much room the log gets; "Protokoll" below folds it away.
+        upper = QWidget()
+        upper_layout = QVBoxLayout(upper)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
+        upper_layout.setSpacing(8)
         body = QHBoxLayout()
-        body.setSpacing(14)
-        root.addLayout(body, stretch=1)
+        body.setSpacing(16)
+        upper_layout.addLayout(body, stretch=1)
 
-        # Left: drop zone, file table, list buttons.
+        # Left: drop zone, file table, list buttons, preview.
         left = QVBoxLayout()
         left.setSpacing(8)
         body.addLayout(left, stretch=1)
@@ -588,15 +692,20 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
+        self.table.setIconSize(QSize(16, 16))
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.verticalHeader().setMinimumSectionSize(24)
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header_view.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header_view.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header_view.setHighlightSections(False)
-        self.table.setColumnWidth(2, 230)
+        header_view.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.table.setColumnWidth(2, 260)
         self.table.setItemDelegateForColumn(2, StatusDelegate(self.table))
+        self.table.setMinimumHeight(2 * 28 + 30)  # header and two rows
+        self.table.setToolTip("Doppelklick auf eine fertige Datei öffnet ihren Ausgabeordner; Rechtsklick für mehr.")
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.table.cellDoubleClicked.connect(self._open_row_folder)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -608,17 +717,21 @@ class MainWindow(QMainWindow):
         files_layout.addWidget(self.table, stretch=1)
 
         list_buttons = QHBoxLayout()
+        list_buttons.setSpacing(8)
         self.remove_button = QPushButton("Entfernen")
+        self.remove_button.setToolTip("Markierte Dateien aus der Liste nehmen (Entf). Die Dateien selbst bleiben unberührt.")
         self.remove_button.clicked.connect(self.remove_selected)
         self.clear_button = QPushButton("Liste leeren")
+        self.clear_button.setToolTip("Alle Dateien aus der Liste nehmen.")
         self.clear_button.clicked.connect(self.clear_list)
         self.details_button = QPushButton("Übersprungene Bauteile…")
         self.details_button.setToolTip(
-            "Listet die Bauteile der gewählten Datei, die nicht umgewandelt wurden, mit Klasse, GlobalId und Name "
+            "Listet die Bauteile der gewählten Datei, die nicht konvertiert wurden, mit Klasse, GlobalId und Name "
             "(auch per Rechtsklick auf die Zeile)."
         )
         self.details_button.clicked.connect(lambda: self.show_details())
-        self.count_label = _muted(QLabel())
+        self.count_label = muted(ElidedLabel())
+        self.count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         list_buttons.addWidget(self.remove_button)
         list_buttons.addWidget(self.clear_button)
         list_buttons.addWidget(self.details_button)
@@ -636,12 +749,13 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([200, 400])
+        self.splitter.handle(1).setToolTip("Ziehen: Liste und Vorschau aufteilen")
         left.addWidget(self.splitter, stretch=1)
         self.table.itemSelectionChanged.connect(self._update_preview)
 
         # Right: format and output settings.
         right = QVBoxLayout()
-        right.setSpacing(10)
+        right.setSpacing(12)
         side = QWidget()
         side.setObjectName("SideContent")
         side.setLayout(right)
@@ -659,19 +773,21 @@ class MainWindow(QMainWindow):
 
         format_box = QGroupBox("Zielformat")
         format_layout = QVBoxLayout(format_box)
+        format_layout.setSpacing(6)
         self.format_group = QButtonGroup(self)
         self.format_buttons: dict[str, QRadioButton] = {}
-        for fmt, (label, _hint) in FORMAT_INFO.items():
+        for fmt, (label, hint) in FORMAT_INFO.items():
             if fmt not in FORMATS:
                 continue
             button = QRadioButton(label)
+            button.setToolTip(hint)
             self.format_group.addButton(button)
             self.format_buttons[fmt] = button
             format_layout.addWidget(button)
             button.toggled.connect(self._format_changed)
             if fmt == "3dm":
                 format_layout.addWidget(self._build_geometry_options())
-        self.format_hint = _muted(HintLabel([hint for _label, hint in (*FORMAT_INFO.values(), *GEOMETRY_INFO.values())]))
+        self.format_hint = muted(HintLabel([hint for _label, hint in (*FORMAT_INFO.values(), *GEOMETRY_INFO.values())]))
         self.format_hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         format_layout.addSpacing(2)
         format_layout.addWidget(self.format_hint)
@@ -679,11 +795,13 @@ class MainWindow(QMainWindow):
 
         output_box = QGroupBox("Speicherort")
         output_layout = QVBoxLayout(output_box)
+        output_layout.setSpacing(6)
         self.output_edit = QLineEdit()
         self.output_edit.setReadOnly(True)
         self.output_button = QPushButton("Ändern…")
         self.output_button.clicked.connect(self.choose_output_dir)
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(self.output_edit, stretch=1)
         row.addWidget(self.output_button)
         output_layout.addLayout(row)
@@ -691,38 +809,64 @@ class MainWindow(QMainWindow):
         self.beside_check.toggled.connect(self._beside_changed)
         output_layout.addWidget(self.beside_check)
         collision_hint = "Vorhandene Dateien werden nie überschrieben: Gibt es den Namen schon, wird (2), (3) … angehängt."
-        self.output_button.setToolTip(collision_hint)
-        self.beside_check.setToolTip(collision_hint)
+        self.output_button.setToolTip(f"Ausgabeordner wählen.\n{collision_hint}")
+        self.beside_check.setToolTip(f"Jede Datei landet im Ordner ihrer IFC-Datei.\n{collision_hint}")
         right.addWidget(output_box)
         right.addStretch()
 
-        # Bottom: progress, log, actions.
+        # Progress of the whole batch, directly under the list and the settings.
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
         self.overall_progress.setValue(0)
         self.overall_progress.setFormat("Bereit")
-        root.addWidget(self.overall_progress)
+        self.overall_progress.setToolTip("Fortschritt über alle Dateien der Liste")
+        upper_layout.addWidget(self.overall_progress)
 
+        # The log: what happened, with times; the splitter handle above it lets the user enlarge it.
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("Log")
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText("Protokoll")
-        self.log_view.setFixedHeight(96)
-        root.addWidget(self.log_view)
+        self.log_view.setPlaceholderText("Protokoll – hier steht, was mit jeder Datei passiert ist.")
+        self.log_view.setMinimumHeight(60)
+        self.log_view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # Tab skips it; it is only read
+        self.log_view.setToolTip("Protokoll dieser Sitzung. Alles steht auch in der Logdatei (Hilfe → Logdatei öffnen).")
+        self.log_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.log_splitter.setChildrenCollapsible(False)
+        self.log_splitter.addWidget(upper)
+        self.log_splitter.addWidget(self.log_view)
+        self.log_splitter.setStretchFactor(0, 1)
+        self.log_splitter.setStretchFactor(1, 0)
+        self.log_splitter.setSizes([600, 110])
+        self.log_splitter.handle(1).setToolTip("Ziehen: Protokoll vergrößern oder verkleinern")
+        root.addWidget(self.log_splitter, stretch=1)
 
+        # Bottom: log toggle, status line, actions.
         actions = QHBoxLayout()
-        self.status_label = _muted(QLabel())
+        actions.setSpacing(8)
+        self.log_toggle = QToolButton()
+        self.log_toggle.setObjectName("LogToggle")
+        self.log_toggle.setText("Protokoll")
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.setChecked(True)
+        self.log_toggle.setAutoRaise(True)
+        self.log_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.log_toggle.setArrowType(Qt.ArrowType.DownArrow)
+        self.log_toggle.setToolTip("Protokoll ein- oder ausblenden (F4)")
+        self.log_toggle.toggled.connect(self.set_log_visible)
+        self.status_label = muted(ElidedLabel())
         self.status_label.setObjectName("Status")
-        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.open_button = QPushButton("Ausgabeordner öffnen")
+        self.open_button.setToolTip("Öffnet den Ordner der zuletzt geschriebenen Datei.")
         self.open_button.clicked.connect(self.open_output_dir)
         self.cancel_button = QPushButton("Abbrechen")
+        self.cancel_button.setToolTip("Laufende Konvertierung abbrechen. Fertige Dateien bleiben, die angefangene wird gelöscht.")
         self.cancel_button.clicked.connect(self.cancel_conversion)
         self.convert_button = QPushButton("Konvertieren")
         self.convert_button.setObjectName("Primary")
         self.convert_button.setDefault(True)
-        self.convert_button.setToolTip("Strg+Enter")
+        self.convert_button.setToolTip("Alle Dateien der Liste konvertieren (Strg+Enter)")
         self.convert_button.clicked.connect(self.start_conversion)
+        actions.addWidget(self.log_toggle)
         actions.addWidget(self.status_label, stretch=1)
         actions.addWidget(self.open_button)
         actions.addWidget(self.cancel_button)
@@ -754,8 +898,10 @@ class MainWindow(QMainWindow):
         self.about_action = action(f"Über {APP_NAME}", self.show_about)
         self.preview_action = action("Vorschau", self.set_preview_visible, ["F3"])
         self.preview_action.setCheckable(True)
-        self.drop_zone.add_button.setToolTip("Strg+O")
-        self.remove_button.setToolTip("Entf")
+        self.log_action = action("Protokoll", self.set_log_visible, ["F4"])
+        self.log_action.setCheckable(True)
+        self.log_action.setChecked(True)
+        self.drop_zone.add_button.setToolTip("IFC-Dateien auswählen (Strg+O). Ordner: Datei → Ordner hinzufügen…")
 
         menus = self.menuBar()
         file_menu = menus.addMenu("&Datei")
@@ -767,7 +913,7 @@ class MainWindow(QMainWindow):
         edit_menu = menus.addMenu("&Bearbeiten")
         edit_menu.addActions([self.remove_action, self.clear_action])
         view_menu = menus.addMenu("&Ansicht")
-        view_menu.addAction(self.preview_action)
+        view_menu.addActions([self.preview_action, self.log_action])
         tools_menu = menus.addMenu("E&xtras")
         tools_menu.addAction(self.settings_action)
         help_menu = menus.addMenu("&Hilfe")
@@ -779,9 +925,9 @@ class MainWindow(QMainWindow):
         """Sub-options under 3DM: polysurfaces or meshes."""
         self.geometry_box = QWidget()
         layout = QVBoxLayout(self.geometry_box)
-        layout.setContentsMargins(24, 0, 0, 4)
-        layout.setSpacing(2)
-        layout.addWidget(QLabel("Geometrie:"))
+        layout.setContentsMargins(22, 0, 0, 4)
+        layout.setSpacing(4)
+        layout.addWidget(muted(QLabel("Geometrie")))
         self.geometry_group = QButtonGroup(self)
         self.geometry_buttons: dict[str, QRadioButton] = {}
         for mode, (label, hint) in GEOMETRY_INFO.items():
@@ -823,6 +969,10 @@ class MainWindow(QMainWindow):
         visible = self.settings.value("preview_visible", True, type=bool)
         self.preview_action.setChecked(visible)
         self.preview.setVisible(visible)
+        log_splitter = self.settings.value("log_splitter")
+        if log_splitter is not None:
+            self.log_splitter.restoreState(log_splitter)
+        self.set_log_visible(self.settings.value("log_visible", True, type=bool))
 
     @property
     def fmt(self) -> str:
@@ -870,7 +1020,7 @@ class MainWindow(QMainWindow):
 
     def _set_output_dir(self, path: Path, save: bool = True) -> None:
         self.output_edit.setText(str(path))
-        self.output_edit.setToolTip(f"{path}\n\nVorhandene Dateien werden nie überschrieben: (2), (3) … wird angehängt.")
+        self.output_edit.setToolTip(f"Ausgabeordner: {path}\n\nVorhandene Dateien werden nie überschrieben: (2), (3) … wird angehängt.")
         self.output_edit.setCursorPosition(0)
         if save:
             self.settings.setValue("output_dir", str(path))
@@ -913,10 +1063,10 @@ class MainWindow(QMainWindow):
             more = " …" if len(result.duplicates) > 3 else ""
             self.log(f"• Schon in der Liste: {names}{more}")
         if result.added and self.is_running:
-            self.log(f"+ {len(result.added)} Datei(en) vorgemerkt: Sie werden gleich nach der laufenden "
-                     "Konvertierung mit denselben Einstellungen umgewandelt.")
+            self.log(f"+ {files_text(len(result.added))} vorgemerkt: Konvertierung gleich nach der laufenden, "
+                     "mit denselben Einstellungen.")
         elif result.added:
-            self.log(f"+ {len(result.added)} Datei(en) hinzugefügt")
+            self.log(f"+ {files_text(len(result.added))} hinzugefügt")
         if result.added and not self.table.selectionModel().selectedRows():
             self.table.selectRow(start)  # its preview shows right away
         self._update_actions()
@@ -973,9 +1123,10 @@ class MainWindow(QMainWindow):
         cell = self.table.item(row, 2)
         cell.setText(item.status_text)
         cell.setData(PROGRESS_ROLE, item.progress if item.status is Status.RUNNING else None)
+        cell.setIcon(status_icon(item.status))
         if item.status is Status.DONE:
             cell.setForeground(DONE_COLOR)
-            tooltip = str(item.output)
+            tooltip = f"Geschrieben: {item.output}"
             if item.crashed:
                 tooltip += f"\n\n⚠ {len(item.crashed)} übersprungen (Geometriekern abgestürzt oder hängen geblieben)"
             if item.skipped > 0:
@@ -1035,7 +1186,7 @@ class MainWindow(QMainWindow):
         prefs = self.preferences
         kernel = "" if prefs.kernel == DEFAULT_KERNEL else f", Geometriekern {KERNEL_INFO[prefs.kernel][0]}"
         blocks = ", gleiche Bauteile als Blöcke" if fmt == "3dm" and prefs.blocks else ""
-        self.log(f"▶ {len(rows)} Datei(en) → {label}{blocks}, Ziel: {target}{kernel}")
+        self.log(f"▶ {files_text(len(rows))} → {label}{blocks}, Ziel: {target}{kernel}")
         threads = prefs.effective_threads
         resources = resource_text(threads, prefs.low_priority, rhino_workers(threads) if fmt == "3dm" else 0)
         self.log(f"• Rechenleistung: {resources}")
@@ -1129,7 +1280,7 @@ class MainWindow(QMainWindow):
         if item.status is not Status.RUNNING:
             return
         if item.progress == READING:
-            self._set_activity(f"{item.path.name} wird umgewandelt …")
+            self._set_activity(f"{item.path.name} wird konvertiert …")
         item.progress = percent
         self._refresh_row(row)
         self._update_overall(percent)
@@ -1142,7 +1293,7 @@ class MainWindow(QMainWindow):
         self._run_done += 1
         self._last_output_dir = result.output.parent
         self._update_overall(0)
-        self.log(f"✓ {item.path.name} → {result.output}  ({number_text(result.elements)} Bauteile)")
+        self.log(f"✓ {item.path.name} → {result.output}  ({count_text(result.elements, 'Bauteil', 'Bauteile')})")
         if result.crashed:
             self.log(f"⚠ {item.path.name}: {crashed_warning(result.crashed)}")
         if result.skipped > 0:
@@ -1173,7 +1324,7 @@ class MainWindow(QMainWindow):
         self._worker = None
 
         seconds = time.monotonic() - self._started_at
-        summary = f"{self._run_done} von {len(self._run_rows)} Datei(en) fertig"
+        summary = f"{self._run_done} von {files_text(len(self._run_rows))} fertig"
         if self._run_failed:
             summary += f", {self._run_failed} mit Fehler"
         if cancelled:
@@ -1204,9 +1355,10 @@ class MainWindow(QMainWindow):
         if not pending:
             return False
         if cancelled:
-            self.log(f"• {len(pending)} vorgemerkte Datei(en) nicht umgewandelt – „Konvertieren“ startet sie.")
+            noun = "vorgemerkte Datei" if len(pending) == 1 else "vorgemerkte Dateien"
+            self.log(f"• {len(pending)} {noun} nicht konvertiert – „Konvertieren“ startet sie.")
             return False
-        self.log(f"▶ Weiter mit {len(pending)} während der Konvertierung hinzugefügten Datei(en)")
+        self.log(f"▶ Weiter mit {files_text(len(pending))}, hinzugefügt während der Konvertierung")
         return self._start_run(pending)
 
     def _notify_finished(self, cancelled: bool, seconds: float) -> None:
@@ -1249,7 +1401,7 @@ class MainWindow(QMainWindow):
         self.overall_progress.setRange(0, 100)
         value = min(100, int((finished * 100 + (current_percent if finished < total else 0)) / total))
         self.overall_progress.setValue(value)
-        self.overall_progress.setFormat(f"{finished} / {total} Dateien – %p %")
+        self.overall_progress.setFormat(f"{finished} von {files_text(total)} fertig – %p{NNBSP}%")
         self._set_title(f"{value} %")  # visible in the taskbar while the window is in the background
 
     # --------------------------------------------------------------- helpers
@@ -1313,6 +1465,9 @@ class MainWindow(QMainWindow):
         self.remove_button.setEnabled(not running and bool(self.table.selectionModel().selectedRows()))
         self.clear_button.setEnabled(not running and has_items)
         self.open_button.setEnabled(not running and self._last_output_dir is not None)
+        # After a successful batch, the way to the result is the most likely next click.
+        self._set_highlight(self.open_button, self.open_button.isEnabled() and self._chain_done > 0)
+        self.drop_zone.set_compact(has_items)
         for act, button in (
             (self.convert_action, self.convert_button), (self.cancel_action, self.cancel_button),
             (self.remove_action, self.remove_button), (self.clear_action, self.clear_button),
@@ -1329,9 +1484,17 @@ class MainWindow(QMainWindow):
         self.output_edit.setEnabled(not running and not beside)
         self.output_button.setEnabled(not running and not beside)
         count = len(self.queue)
-        self.count_label.setText(f"{count} Datei" if count == 1 else f"{count} Dateien")
+        done = sum(1 for item in self.queue if item.status is Status.DONE)
+        self.count_label.setText(f"{done} von {files_text(count)} fertig" if done else files_text(count))
         if not running and not self.status_label.text():
             self._set_status("Dateien hinzufügen und auf „Konvertieren“ klicken.")
+
+    @staticmethod
+    def _set_highlight(button: QPushButton, on: bool) -> None:
+        if bool(button.property("highlight")) != on:
+            button.setProperty("highlight", on)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     # ---------------------------------------------------------- drag & drop
 
@@ -1370,15 +1533,15 @@ class MainWindow(QMainWindow):
         """E.g. "„Modell.ifc“ wird seit 42 min 3 s umgewandelt (89 %)."."""
         running = next((item for item in self.queue if item.status is Status.RUNNING), None)
         if running is None:
-            return "Die Umwandlung läuft noch."
+            return "Die Konvertierung läuft noch."
         since = duration_text(time.monotonic() - self._started_at)
-        return f"„{running.path.name}“ wird umgewandelt, die Umwandlung läuft seit {since} ({max(running.progress, 0)} %)."
+        return f"„{running.path.name}“ wird konvertiert, die Konvertierung läuft seit {since} ({max(running.progress, 0)} %)."
 
     def closeEvent(self, event):
         if self.is_running:
             answer = QMessageBox.question(
                 self, APP_NAME,
-                f"{self._running_text()}\n\nBeim Beenden wird die Umwandlung abgebrochen, ihr Fortschritt geht "
+                f"{self._running_text()}\n\nBeim Beenden wird die Konvertierung abgebrochen, ihr Fortschritt geht "
                 "verloren. Trotzdem beenden?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,  # Enter keeps it running
@@ -1394,6 +1557,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("table_header", self.table.horizontalHeader().saveState())
         self.settings.setValue("preview_splitter", self.splitter.saveState())
+        self.settings.setValue("log_splitter", self.log_splitter.saveState())
         self.settings.sync()
         super().closeEvent(event)
 
@@ -1406,6 +1570,14 @@ class MainWindow(QMainWindow):
         self.preview_action.setChecked(visible)
         self.settings.setValue("preview_visible", visible)
         self._update_preview()
+
+    def set_log_visible(self, visible: bool) -> None:
+        """Show or fold away the log (Ansicht → Protokoll, F4, or the "Protokoll" button)."""
+        self.log_view.setVisible(visible)
+        self.log_action.setChecked(visible)
+        self.log_toggle.setChecked(visible)
+        self.log_toggle.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
+        self.settings.setValue("log_visible", visible)
 
     def _update_preview(self) -> None:
         """Show the preview of the selected file (the current one of several), if the pane is shown."""

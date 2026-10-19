@@ -6,8 +6,18 @@ import html
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QGuiApplication, QIcon, QKeySequence
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QDesktopServices,
+    QFont,
+    QFontDatabase,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -17,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -25,7 +36,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSpinBox,
+    QSizePolicy,
     QStyle,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -135,6 +148,55 @@ def _selectable(text: str) -> QLabel:
     return label
 
 
+def muted(label: QLabel) -> QLabel:
+    """Grey text (the palette's placeholder colour) for secondary information, in the main window too."""
+    palette = label.palette()
+    colour = palette.color(QPalette.ColorRole.PlaceholderText)
+    # Only the enabled groups, so a disabled hint still looks disabled.
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        palette.setColor(group, QPalette.ColorRole.WindowText, colour)
+    label.setPalette(palette)
+    return label
+
+
+class ElidedLabel(QLabel):
+    """A one-line label that shortens its text with "…" instead of growing or clipping.
+
+    ``text()`` still returns the whole text (and the tooltip shows it when it is shortened), so the
+    label never forces the window wider than the user made it: status lines, file names, info lines.
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt API
+        self._full = text
+        self.setToolTip("")
+        super().setText(text)
+        self.update()
+
+    def text(self) -> str:
+        return self._full
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        return QSize(self.fontMetrics().horizontalAdvance("…") + 2, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        rect = self.contentsRect()
+        elided = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, rect.width())
+        if elided != self._full and self.toolTip() != self._full:
+            self.setToolTip(self._full)
+        elif elided == self._full and self.toolTip():
+            self.setToolTip("")
+        painter = QPainter(self)
+        role = self.foregroundRole()
+        painter.setPen(self.palette().color(QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled, role))
+        painter.drawText(rect, int(self.alignment()) | Qt.TextFlag.TextSingleLine, elided)
+
+
 class _Dialog(QDialog):
     """A dialog that is always as tall as its word-wrapped labels need at its current width.
 
@@ -214,114 +276,40 @@ class Preferences:
 # ---------------------------------------------------------------------- settings
 
 
-class SettingsDialog(_Dialog):
-    """Einstellungen: threads, priority, geometry kernel and what happens with the output folder."""
+class SettingsDialog(QDialog):
+    """Einstellungen: threads, priority, geometry kernel and what happens with the output folder.
+
+    One tab per topic, so the dialog stays small enough for a laptop screen at 150 % scaling.
+    """
 
     def __init__(self, preferences: Preferences, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
-        self.setMinimumWidth(520)
+        self.setMinimumSize(600, 460)
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
 
-        performance = QGroupBox("Leistung")
-        form = QVBoxLayout(performance)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Max. Threads:"))
-        self.threads_spin = QSpinBox()
-        self.threads_spin.setRange(0, cpu_count())
-        self.threads_spin.setSpecialValueText(f"Automatisch ({auto_threads()})")
-        self.threads_spin.setMinimumWidth(170)
-        row.addWidget(self.threads_spin)
-        row.addStretch()
-        form.addLayout(row)
-        form.addWidget(_hint(
-            "So viele Prozessorkerne berechnen die Geometrie gleichzeitig. Weniger Threads bremsen andere "
-            "Programme weniger, die Umwandlung dauert dafür länger. "
-            f"„Automatisch“ nutzt auf diesem PC bis zu {auto_threads()} seiner {cpu_count()} logischen Kerne, "
-            "zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte, und lässt den Rest für andere "
-            "Programme frei. Jeder Thread kann bei großen Bauteilen bis ca. 1 GB RAM "
-            "brauchen; bei wenig freiem Speicher werden automatisch weniger genutzt."
-        ))
-        self.threads_usage = _hint("")
-        form.addWidget(self.threads_usage)
-        self.priority_check = QCheckBox("Mit niedriger Priorität umwandeln (empfohlen)")
-        form.addWidget(self.priority_check)
-        form.addWidget(_hint(
-            "Die Umwandlung läuft mit der Windows-Priorität „Niedriger als normal“: Programme wie Rhino oder "
-            "Revit haben immer Vorrang und bleiben flüssig bedienbar, die Umwandlung nutzt nur die Rechenzeit, "
-            "die sie übrig lassen. Ohne diese Einstellung konkurriert sie gleichberechtigt mit ihnen."
-        ))
-        self.threads_spin.valueChanged.connect(self._show_usage)
-        self.priority_check.toggled.connect(self._show_usage)
-        layout.addWidget(performance)
-
-        kernel_box = QGroupBox("Geometriekern")
-        kernel_layout = QVBoxLayout(kernel_box)
-        self.kernel_group = QButtonGroup(self)
-        self.kernel_buttons: dict[str, QRadioButton] = {}
-        for kernel, (label, hint) in KERNEL_INFO.items():
-            button = QRadioButton(label)
-            self.kernel_group.addButton(button)
-            self.kernel_buttons[kernel] = button
-            kernel_layout.addWidget(button)
-            kernel_layout.addWidget(_hint(hint))
-        layout.addWidget(kernel_box)
-
-        output_box = QGroupBox("Ausgabe")
-        output_layout = QVBoxLayout(output_box)
-        self.open_output_check = QCheckBox("Ausgabeordner nach dem Konvertieren öffnen")
-        output_layout.addWidget(self.open_output_check)
-        output_layout.addWidget(_hint(
-            "Vorhandene Dateien werden nie überschrieben – gibt es den Namen schon, wird (2), (3) … "
-            "angehängt. Die IFC-Dateien selbst werden nie verändert."
-        ))
-        self.blocks_check = QCheckBox("Gleiche Bauteile als Blöcke (kleinere Datei)")
-        self.blocks_check.setToolTip(
-            "Bauteile mit derselben Typ-Geometrie (Fenster, Türen, Möbel …) werden Instanzen eines Rhino-Blocks.\n"
-            "Die Datei wird kleiner, aber Blockinstanzen verhalten sich anders als normale Objekte:\n"
-            "Zum Bearbeiten der Geometrie muss eine Instanz erst aufgelöst werden (_Explode).\n"
-            "Benutzertexte, Layer und Farbe stehen an der Instanz."
-        )
-        output_layout.addWidget(self.blocks_check)
-        output_layout.addWidget(_hint(
-            "Nur für Rhino (.3dm). Zum Bearbeiten in Rhino muss eine Blockinstanz erst aufgelöst werden (_Explode)."
-        ))
-        layout.addWidget(output_box)
-
-        storage = QGroupBox("Speicherorte")
-        storage_form = QFormLayout(storage)
-        storage_form.addRow("Einstellungen:", _selectable(str(app_info.settings_path())))
-        storage_form.addRow("Protokoll:", _selectable(str(app_info.log_dir())))
-        open_log_button = QPushButton("Logdatei öffnen")
-        open_log_button.clicked.connect(open_log)
-        save_log_button = QPushButton("Anonymisiert speichern…")
-        save_log_button.clicked.connect(lambda: save_anonymized_log(self))
-        button_row = QHBoxLayout()
-        button_row.addWidget(open_log_button)
-        button_row.addWidget(save_log_button)
-        button_row.addStretch()
-        storage_form.addRow("", button_row)
-        self.anonymize_check = QCheckBox("Logdatei anonymisieren")
-        self.anonymize_check.setToolTip(ANONYMIZE_HINT)
-        storage_form.addRow("", self.anonymize_check)
-        storage_form.addRow("", _hint(
-            "Die Logdatei bleibt auf diesem PC; nichts wird automatisch versendet. Eingeschaltet, enthält sie "
-            "ab jetzt keine Benutzer-, Rechner-, Server-, Ordner-, Datei- und Bauteilnamen mehr."
-        ))
-        layout.addWidget(storage)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(False)
+        layout.addWidget(self.tabs, stretch=1)
+        self.tabs.addTab(self._performance_tab(), "Leistung")
+        self.tabs.addTab(self._kernel_tab(), "Geometriekern")
+        self.tabs.addTab(self._output_tab(), "Ausgabe")
+        self.tabs.addTab(self._log_tab(), "Logdatei")
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.RestoreDefaults
         )
-        for which, text in (
-            (QDialogButtonBox.StandardButton.Ok, "OK"),
-            (QDialogButtonBox.StandardButton.Cancel, "Abbrechen"),
-            (QDialogButtonBox.StandardButton.RestoreDefaults, "Standardwerte"),
+        for which, text, tooltip in (
+            (QDialogButtonBox.StandardButton.Ok, "OK", "Einstellungen übernehmen und speichern"),
+            (QDialogButtonBox.StandardButton.Cancel, "Abbrechen", "Änderungen verwerfen"),
+            (QDialogButtonBox.StandardButton.RestoreDefaults, "Standardwerte", "Alle Einstellungen auf die Vorgaben zurücksetzen"),
         ):
             self.buttons.button(which).setText(text)
+            self.buttons.button(which).setToolTip(tooltip)
             self.buttons.button(which).setIcon(QIcon())  # some Linux styles add icons; Windows has none
         self.buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(
             lambda: self.set_preferences(Preferences())
@@ -332,10 +320,139 @@ class SettingsDialog(_Dialog):
 
         self.set_preferences(preferences)
 
+    @staticmethod
+    def _page() -> tuple[QWidget, QVBoxLayout]:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+        return page, layout
+
+    def _performance_tab(self) -> QWidget:
+        page, layout = self._page()
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Höchstens so viele Threads:"))
+        self.threads_spin = QSpinBox()
+        self.threads_spin.setRange(0, cpu_count())
+        self.threads_spin.setSpecialValueText(f"Automatisch ({auto_threads()})")
+        self.threads_spin.setMinimumWidth(170)
+        self.threads_spin.setToolTip("0 bzw. „Automatisch“ lässt einige Kerne frei und nimmt bei wenig freiem RAM weniger.")
+        row.addWidget(self.threads_spin)
+        row.addStretch()
+        layout.addLayout(row)
+        layout.addWidget(_hint(
+            "So viele Prozessorkerne berechnen die Geometrie gleichzeitig. Weniger Threads bremsen andere "
+            "Programme weniger, die Konvertierung dauert dafür länger. "
+            f"„Automatisch“ nutzt bis zu {auto_threads()} der {cpu_count()} logischen Kerne dieses PCs (mit den "
+            "Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte) und bei wenig freiem RAM weniger; jeder Thread "
+            "kann bei großen Bauteilen bis ca. 1 GB brauchen."
+        ))
+        layout.addSpacing(4)
+        self.priority_check = QCheckBox("Mit niedriger Priorität konvertieren (empfohlen)")
+        layout.addWidget(self.priority_check)
+        layout.addWidget(_hint(
+            "Die Konvertierung läuft mit der Windows-Priorität „Niedriger als normal“: Rhino, Revit & Co. haben "
+            "Vorrang und bleiben flüssig bedienbar; die Konvertierung nutzt nur die Rechenzeit, die sie übrig "
+            "lassen. Ohne diese Einstellung konkurriert sie gleichberechtigt mit ihnen."
+        ))
+        layout.addSpacing(4)
+        self.threads_usage = _hint("")
+        layout.addWidget(self.threads_usage)
+        layout.addStretch()
+        self.threads_spin.valueChanged.connect(self._show_usage)
+        self.priority_check.toggled.connect(self._show_usage)
+        return page
+
+    def _kernel_tab(self) -> QWidget:
+        page, layout = self._page()
+        layout.addWidget(_hint(
+            "Womit die Geometrie der Bauteile berechnet wird. Gilt für alle Zielformate."
+        ))
+        layout.addSpacing(4)
+        self.kernel_group = QButtonGroup(self)
+        self.kernel_buttons: dict[str, QRadioButton] = {}
+        for kernel, (label, hint) in KERNEL_INFO.items():
+            button = QRadioButton(label)
+            button.setToolTip(hint)
+            self.kernel_group.addButton(button)
+            self.kernel_buttons[kernel] = button
+            layout.addWidget(button)
+            description = _hint(hint)
+            description.setContentsMargins(22, 0, 0, 6)
+            layout.addWidget(description)
+        layout.addStretch()
+        return page
+
+    def _output_tab(self) -> QWidget:
+        page, layout = self._page()
+        self.open_output_check = QCheckBox("Ausgabeordner nach der Konvertierung öffnen")
+        self.open_output_check.setToolTip("Öffnet den Ordner im Explorer, sobald alle Dateien konvertiert sind.")
+        layout.addWidget(self.open_output_check)
+        layout.addWidget(_hint(
+            "Vorhandene Dateien werden nie überschrieben – gibt es den Namen schon, wird (2), (3) … "
+            "angehängt. Die IFC-Dateien selbst werden nie verändert."
+        ))
+        layout.addSpacing(8)
+        rhino = QLabel("Rhino (.3dm)")
+        rhino_font = rhino.font()
+        rhino_font.setWeight(QFont.Weight.DemiBold)
+        rhino.setFont(rhino_font)
+        layout.addWidget(rhino)
+        self.blocks_check = QCheckBox("Gleiche Bauteile als Blöcke (kleinere Datei)")
+        self.blocks_check.setToolTip(
+            "Bauteile mit derselben Typ-Geometrie (Fenster, Türen, Möbel …) werden Instanzen eines Rhino-Blocks.\n"
+            "Die Datei wird kleiner, aber Blockinstanzen verhalten sich anders als normale Objekte:\n"
+            "Zum Bearbeiten der Geometrie muss eine Instanz erst aufgelöst werden (_Explode).\n"
+            "Benutzertexte, Layer und Farbe stehen an der Instanz."
+        )
+        layout.addWidget(self.blocks_check)
+        layout.addWidget(_hint(
+            "Typ-Geometrie, die mehrere Bauteile teilen (Fenster, Türen, Möbel …), wird einmal als Block gespeichert "
+            "und je Bauteil als Instanz eingefügt: Datei 20–45 % kleiner. Zum Bearbeiten in Rhino muss eine "
+            "Blockinstanz erst aufgelöst werden (_Explode)."
+        ))
+        layout.addStretch()
+        return page
+
+    def _log_tab(self) -> QWidget:
+        page, layout = self._page()
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(6)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.addRow("Logdatei:", _selectable(str(app_info.log_dir())))
+        form.addRow("Einstellungen:", _selectable(str(app_info.settings_path())))
+        layout.addLayout(form)
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+        open_log_button = QPushButton("Logdatei öffnen")
+        open_log_button.setToolTip("Öffnet die aktuelle Logdatei im Standardprogramm für Textdateien.")
+        open_log_button.clicked.connect(open_log)
+        save_log_button = QPushButton("Anonymisiert speichern…")
+        save_log_button.setToolTip(ANONYMIZE_HINT)
+        save_log_button.clicked.connect(lambda: save_anonymized_log(self))
+        button_row.addWidget(open_log_button)
+        button_row.addWidget(save_log_button)
+        button_row.addStretch()
+        layout.addLayout(button_row)
+        layout.addSpacing(8)
+        self.anonymize_check = QCheckBox("Logdatei anonymisieren")
+        self.anonymize_check.setToolTip(ANONYMIZE_HINT)
+        layout.addWidget(self.anonymize_check)
+        layout.addWidget(_hint(
+            "Die Logdatei bleibt auf diesem PC; nichts wird automatisch versendet. Eingeschaltet, enthält sie "
+            "ab jetzt keine Benutzer-, Rechner-, Server-, Ordner-, Datei- und Bauteilnamen mehr."
+        ))
+        layout.addStretch()
+        return page
+
     def _show_usage(self) -> None:
         """What a conversion takes of the PC with the settings shown (as at the start of a conversion)."""
         threads = self.threads_spin.value() or auto_threads()
-        self.threads_usage.setText(f"Eine Umwandlung nutzt damit {resource_text(threads, self.priority_check.isChecked())}.")
+        self.threads_usage.setText(
+            f"Eine Konvertierung nutzt damit {resource_text(threads, self.priority_check.isChecked())}."
+        )
 
     def set_preferences(self, preferences: Preferences) -> None:
         self.threads_spin.setValue(preferences.threads)
@@ -366,21 +483,31 @@ def version_report() -> str:
     return "\n".join(f"{name}: {version}" for name, version in component_versions().items())
 
 
+def _licence_of(component: str) -> str:
+    """The licence of a component of component_versions(), e.g. "Qt" from the "Qt 6 / PySide6" entry."""
+    for name, licence in LICENSES.items():
+        if component == name or component in [part.strip() for part in name.split("/")] or component in name.split():
+            return licence
+    return ""
+
+
 class AboutDialog(_Dialog):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Über {APP_NAME}")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
         header = QHBoxLayout()
         header.setSpacing(16)
         icon = QLabel()
-        icon.setPixmap(app_icon().pixmap(80, 80))
+        icon.setPixmap(app_icon().pixmap(72, 72))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
         header.addWidget(icon)
         title_box = QVBoxLayout()
+        title_box.setSpacing(2)
         title = QLabel(APP_NAME)
         title_font = title.font()
         title_font.setPointSizeF(title_font.pointSizeF() * 1.6)
@@ -388,35 +515,49 @@ class AboutDialog(_Dialog):
         title.setFont(title_font)
         title_box.addWidget(title)
         title_box.addWidget(_selectable(f"Version {__version__}"))
+        title_box.addSpacing(4)
         title_box.addWidget(_hint(
-            "Wandelt IFC-Gebäudemodelle in Rhino-Dateien (3DM), GLB und OBJ um. Läuft vollständig lokal: "
+            "Konvertiert IFC-Gebäudemodelle in Rhino-Dateien (3DM), GLB und OBJ. Läuft vollständig lokal: "
             "keine Internetverbindung, keine Telemetrie, keine automatischen Updates."
         ))
         header.addLayout(title_box, stretch=1)
         layout.addLayout(header)
 
-        versions = QGroupBox("Versionen")
-        versions_form = QFormLayout(versions)
-        for name, version in component_versions().items():
-            if name != APP_NAME:
-                versions_form.addRow(f"{name}:", _selectable(version))
-        layout.addWidget(versions)
-
-        licenses = QGroupBox("Open-Source-Komponenten")
-        licenses_form = QFormLayout(licenses)
-        for name, license_name in LICENSES.items():
-            licenses_form.addRow(f"{name}:", QLabel(license_name))
-        licenses_form.addRow(_hint(
+        components = QGroupBox("Komponenten")
+        grid = QGridLayout(components)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(4)
+        for column, heading in enumerate(("Komponente", "Version", "Lizenz")):
+            label = _hint(heading)
+            label.setWordWrap(False)
+            grid.addWidget(label, 0, column)
+        rows = [(name, version, _licence_of(name)) for name, version in component_versions().items() if name != APP_NAME]
+        listed = {name for name, _version, _licence in rows}
+        rows += [(name, "–", licence) for name, licence in LICENSES.items()
+                 if not any(part.strip() in listed or part.strip() == name for part in name.split("/"))]
+        rows.sort(key=lambda row: row[0] == "System")  # the operating system last, after the libraries
+        for row, (name, version, licence) in enumerate(rows, start=1):
+            grid.addWidget(QLabel(name), row, 0)
+            grid.addWidget(_selectable(version), row, 1)
+            grid.addWidget(QLabel(licence), row, 2)
+        grid.setColumnStretch(1, 1)
+        note = _hint(
             "Die Bibliotheken sind unverändert enthalten. Die vollständigen Lizenztexte stehen im "
             "Programmordner in THIRD-PARTY-NOTICES.txt und im Ordner „licenses“."
-        ))
-        layout.addWidget(licenses)
+        )
+        grid.addWidget(note, len(rows) + 1, 0, 1, 3)
+        layout.addWidget(components)
 
-        layout.addWidget(_selectable(f"Quellcode: {REPOSITORY}"))
-        layout.addWidget(_selectable(f"Protokoll: {app_info.log_dir()}"))
+        links = QFormLayout()
+        links.setHorizontalSpacing(12)
+        links.setVerticalSpacing(4)
+        links.addRow("Quellcode:", _selectable(REPOSITORY))
+        links.addRow("Logdatei:", _selectable(str(app_info.log_dir())))
+        layout.addLayout(links)
 
         buttons = QDialogButtonBox()
         self.copy_button = buttons.addButton("Versionsinfo kopieren", QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_button.setToolTip("Kopiert Programm- und Komponentenversionen als Text, z. B. für eine Fehlermeldung.")
         self.copy_button.clicked.connect(self._copy)
         close = buttons.addButton("Schließen", QDialogButtonBox.ButtonRole.AcceptRole)
         close.setDefault(True)
@@ -438,10 +579,13 @@ class ErrorDialog(_Dialog):
         super().__init__(parent)
         self.details = details
         self.setWindowTitle(f"{APP_NAME} – Unerwarteter Fehler")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(700)  # four buttons in a row
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
+        header.setSpacing(12)
         icon = QLabel()
         icon.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical).pixmap(40, 40))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -543,12 +687,14 @@ class SkippedDialog(_Dialog):
         self.setWindowTitle(f"Übersprungene Bauteile – {file_name}")
         self.setMinimumSize(720, 420)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
         counts = []
         if crashed:
             counts.append(f"{len(crashed)} übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb")
         if no_geometry or skipped:
-            counts.append(f"{max(skipped, len(no_geometry))} ohne Geometrie (nicht umwandelbar)")
+            counts.append(f"{max(skipped, len(no_geometry))} ohne Geometrie (nicht konvertierbar)")
         layout.addWidget(_selectable(f"<b>{html.escape(file_name)}</b>: " + "; ".join(counts) + "."))
 
         self.rows = [(CRASHED_REASON, *split_label(label)) for label in crashed]
@@ -559,6 +705,8 @@ class SkippedDialog(_Dialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         self.table.setWordWrap(False)
         for row, values in enumerate(self.rows):
             for column, value in enumerate(values):
@@ -584,6 +732,7 @@ class SkippedDialog(_Dialog):
 
         buttons = QDialogButtonBox()
         self.copy_button = buttons.addButton("Alles kopieren", QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_button.setToolTip("Kopiert die ganze Tabelle, zum Einfügen in Excel oder eine E-Mail.")
         self.copy_button.clicked.connect(self.copy_all)
         close = buttons.addButton("Schließen", QDialogButtonBox.ButtonRole.RejectRole)
         close.setDefault(True)
