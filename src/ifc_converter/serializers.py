@@ -7,17 +7,15 @@ duplex, revit_arc, Clinic Architectural and an IFC4X3 bridge, see tests/test_for
   its placement as the node matrix (so the single-precision vertices stay exact far from the
   origin). Streams through two temp files next to the output, limited to 4 GB by the format.
 - ``obj`` (+ ``.mtl``): triangle meshes in world coordinates with 15 digits; streams.
-- ``stp``: STEP AP214 with the exact OpenCASCADE B-rep of every element (planes, cylinders, NURBS;
-  no triangle meshes), what CAD programs import best. Every product is a STEP PRODUCT named after the
-  GlobalId. Only OpenCASCADE can produce it: the hybrid kernel's shapes are silently dropped by the
-  STEP writer, so the kernel strategy is forced to "opencascade". OpenCASCADE's STEP writer keeps the
-  whole model in memory until the end and writes it in one go: the file is ~100x the size of the GLB
-  (duplex: 61 MB instead of 0.4 MB) and takes 10-40x the time, so it is for models of up to a few thousand
-  elements, not for the 1 GB ones.
 - ``dae``: COLLADA 1.4.1, triangle meshes, Z-up, in metres, one node per element (name = GlobalId),
   materials from the IFC styles. The whole document is kept in memory and written at the end.
 
 Not offered:
+
+- ``stp``/``step``: OpenCASCADE's STEP writer takes the kernel's B-rep without the element placement
+  (a 17 m wall of the duplex sat at the origin; "use-world-coords" does not apply to native output),
+  names every face "product-<uuid>" instead of the GlobalId and keeps the whole model in memory
+  (61 MB for the 2 MB duplex). Left in SERIALIZERS for experiments, not in converter.FORMATS.
 
 - ``gltf``: IfcOpenShell maps it to the GLB serializer, which writes a binary .glb whatever the
   extension (no JSON .gltf with a .bin side file), so it would only be GLB under another name.
@@ -104,6 +102,10 @@ def write(
     settings.set("mesher-linear-deflection", converter.LINEAR_DEFLECTION)
     if serializer.native:
         settings.set("iterator-output", NATIVE_OUTPUT)
+        # The triangulating serializers place each element themselves (GLB: node matrices); the STEP
+        # writer takes the B-rep as it comes, so the kernel must place it (the duplex came out twice
+        # as wide, its mirrored type geometry sitting at the origin).
+        settings.set("use-world-coords", True)
     token = converter._kernel.set("opencascade") if serializer.native else None
     try:
         # Geometry from the iterator is already in metres, so the scale is fixed at 1.

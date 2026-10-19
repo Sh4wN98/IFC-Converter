@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 import child_helpers  # noqa: E402
 from ifc_converter import __version__, gui, process  # noqa: E402
-from ifc_converter.converter import ConversionResult  # noqa: E402
+from ifc_converter.converter import FORMATS, ConversionResult  # noqa: E402
 from ifc_converter.gui import ConversionWorker, FileQueue, Status, format_size  # noqa: E402
 
 
@@ -63,7 +63,7 @@ def test_window_builds_with_defaults(window, tmp_path):
     assert window.fmt == "3dm"
     assert window.output_dir == tmp_path / "out"
     assert not window.convert_button.isEnabled()
-    assert set(window.format_buttons) == {"3dm", "glb", "obj"}
+    assert set(window.format_buttons) == set(FORMATS)
 
 
 def test_queue_adds_folders_rejects_non_ifc_and_ignores_duplicates(tmp_path):

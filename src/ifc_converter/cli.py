@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "-f", "--format", choices=FORMATS, default="glb",
-        help="output format: glb, obj, 3dm (Rhino), stp (STEP, exact B-rep) or dae (Collada) (default: glb)",
+        help="output format: glb, obj, 3dm (Rhino) or dae (Collada) (default: glb)",
     )
     parser.add_argument(
         "-g", "--geometry", choices=GEOMETRIES, default="brep",
