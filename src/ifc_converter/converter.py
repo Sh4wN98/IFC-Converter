@@ -20,7 +20,12 @@ import ifcopenshell.geom as geom
 import ifcopenshell.util.element
 import ifcopenshell.util.unit
 
-FORMATS = ("glb", "obj", "3dm")
+# Output formats: "3dm" has its own writer (rhino.py), the others are IfcOpenShell's serializers
+# (serializers.py, which says why e.g. glTF, USD and IGES are not among them).
+FORMATS = ("glb", "obj", "3dm", "stp", "dae")
+# Input files: .ifc, or a .ifczip holding one (unpacked to the temp folder while reading). ifcXML
+# cannot be read by IfcOpenShell 0.9 (see convert).
+INPUT_SUFFIXES = (".ifc", ".ifczip")
 # Targets of convert() that are not offered as output formats: "preview" is the light mesh of the
 # model shown in the window (.npz, see preview.py), computed like a conversion in the child process.
 INTERNAL_FORMATS = ("preview",)
@@ -193,7 +198,7 @@ def convert(
     blocks: bool = False,
     checkpoint_dir: str | Path | None = None,
 ) -> ConversionResult:
-    """Convert an IFC file to GLB, OBJ (plus .mtl) or Rhino 3DM and return what was written.
+    """Convert an IFC file to GLB, OBJ (plus .mtl), Rhino 3DM, STEP or DAE and return what was written.
 
     ``fmt="preview"`` (not offered to users, see INTERNAL_FORMATS) writes the preview (.npz) of
     preview.write_preview instead; the app calls it through preview.compute_preview.
@@ -219,6 +224,11 @@ def convert(
     input_path = Path(input_path)
     if not input_path.is_file():
         raise FileNotFoundError(f"IFC-Datei nicht gefunden: {input_path}")
+    if input_path.suffix.lower() in (".ifcxml", ".xml"):
+        raise ValueError(
+            f"ifcXML-Dateien kann IfcOpenShell nicht lesen ({input_path.name}). Bitte das Modell im "
+            "Autorenprogramm als .ifc (STEP-Textformat) oder .ifczip exportieren."
+        )
     suffix = ".npz" if fmt == "preview" else f".{fmt}"
     output_path = Path(output_path) if output_path else input_path.with_suffix(suffix)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +275,9 @@ def convert(
 
                 elements = write_preview(model, target, threads, progress, report, input_path, read_seconds)
             else:
-                elements = _serialize(model, target, fmt, threads, progress, report)
+                from ifc_converter.serializers import write
+
+                elements = write(model, target, fmt, threads, progress, report)
         finally:
             _kernel.reset(token)
             _candidates.reset(candidates_token)
@@ -302,7 +314,9 @@ def size_text(size: int) -> str:
 
 def _output_files(path: Path, fmt: str) -> list[Path]:
     """The files a conversion to ``path`` writes (OBJ: the .mtl next to it)."""
-    return [path, path.with_suffix(".mtl")] if fmt == "obj" else [path]
+    from ifc_converter.serializers import output_files
+
+    return output_files(path, fmt)
 
 
 @contextmanager
@@ -634,7 +648,7 @@ def iter_shapes(
                     hybrid += run.products
                 for shape in pipeline.shapes(run, index):
                     done.add(shape.id)
-                    if local and not shape.geometry.verts:
+                    if local and not has_geometry(shape):
                         empty.append(model.by_id(shape.id))
                     else:
                         yield keep(shape)
@@ -648,7 +662,7 @@ def iter_shapes(
                 empty = [product for product in empty if product.id() not in hybrid_ids]
                 if missing:
                     for shape in pipeline.shapes(pipeline.start(index, missing, LIBRARIES["opencascade"]), index):
-                        if local and not shape.geometry.verts:
+                        if local and not has_geometry(shape):
                             empty.append(model.by_id(shape.id))
                         else:
                             yield keep(shape)
@@ -926,9 +940,18 @@ def _parts_produced(product: ifcopenshell.entity_instance, produced: set[int]) -
 
 def _produced(shape, produced: set[int]):
     """``shape``, noted in ``produced`` if it has geometry."""
-    if shape.geometry.verts:
+    if has_geometry(shape):
         produced.add(shape.id)
     return shape
+
+
+def has_geometry(shape) -> bool:
+    """Whether ``shape`` (triangulated, or native B-rep for the STEP/IGES serializers) is not empty."""
+    geometry = shape.geometry
+    verts = getattr(geometry, "verts", None)
+    if verts is not None:
+        return bool(verts)
+    return geometry.size() > 0  # native: the number of OpenCASCADE shapes
 
 
 def product_label(product: ifcopenshell.entity_instance) -> str:
@@ -1022,7 +1045,7 @@ def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, 
             shape = _with_large_stack(compute)
         except RuntimeError:  # the kernel could not build it
             continue
-        if shape.geometry.verts or settings.get("use-world-coords"):
+        if has_geometry(shape) or settings.get("use-world-coords"):
             return shape
         # Local coordinates gave nothing (type geometry with openings): world coordinates do.
         settings.set("use-world-coords", True)
@@ -1055,11 +1078,19 @@ def _second_attempts(settings: geom.settings, products: list, position, budget: 
             shape = _deep_shape(settings, product, "opencascade")
         finally:
             settings.set("precision", previous)
-        if shape is None or not shape.geometry.verts:
+        if (shape is None or not has_geometry(shape)) and not _native_output(settings):
+            # The STEP writer drops the hybrid kernel's shapes, so they are no rescue there.
             shape = _deep_shape(settings, product, "hybrid")
         budget[0] -= time.monotonic() - started
-        if shape is not None and shape.geometry.verts:
+        if shape is not None and has_geometry(shape):
             yield shape
+
+
+def _native_output(settings: geom.settings) -> bool:
+    """Whether ``settings`` ask for B-rep shapes (STEP) instead of triangle meshes."""
+    from ifc_converter.serializers import NATIVE_OUTPUT
+
+    return settings.get("iterator-output") == NATIVE_OUTPUT
 
 
 def _body_representation(product: ifcopenshell.entity_instance):
@@ -1236,31 +1267,6 @@ def _load_malloc_trim():
 
 
 _malloc_trim = _load_malloc_trim()
-
-
-def _serialize(
-    model, output_path: Path, fmt: str, threads: int, progress: ProgressCallback | None,
-    report: Callable[[str, str], None] = lambda phase, text: None,
-) -> int:
-    """Write GLB/OBJ with IfcOpenShell's built-in serializers."""
-    settings = geom.settings()
-    settings.set("mesher-linear-deflection", LINEAR_DEFLECTION)
-
-    # Geometry from the iterator is already in metres, so the scale is fixed at 1.
-    serializer = getattr(geom.serializers, fmt)(str(output_path), settings)
-    serializer.setFile(model)
-    serializer.setUnitNameAndMagnitude("METER", 1.0)
-    serializer.writeHeader()
-
-    elements = 0
-    for shape in iter_shapes(model, settings, threads, EXCLUDED_CLASSES, progress, 95, status=report):
-        if not shape.geometry.verts:  # nothing to write, so it counts as skipped
-            continue
-        serializer.write(shape)
-        elements += 1
-    report("write", f"{fmt.upper()}-Datei wird geschrieben …")
-    serializer.finalize()
-    return elements
 
 
 def memory_warning(input_path: str | Path) -> str | None:
