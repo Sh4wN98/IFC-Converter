@@ -24,8 +24,8 @@ import numpy
 import rhino3dm
 
 from ifc_converter.converter import (
-    LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, StatusCallback, available_memory, geometry_library,
-    curve_phase, iter_shapes, product_label, shape_products,
+    ALIGNMENT_LAYOUT_CLASSES, LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, StatusCallback, available_memory,
+    geometry_library, curve_phase, iter_shapes, product_label, shape_products,
 )
 from ifc_converter.polysurface import planar_polysurface
 from ifc_converter.process import exit_with_parent, no_crash_dialogs
@@ -122,10 +122,7 @@ Color = tuple[int, int, int, int]
 # their own layers in Rhino, where they are easy to switch off.
 # The layout parts of an alignment repeat its 3D axis: horizontal ones as a plan at height 0,
 # vertical ones as a profile in distance/height coordinates that would lie somewhere off the model.
-EXCLUDED_CLASSES = [
-    "IfcOpeningElement",
-    "IfcAlignmentHorizontal", "IfcAlignmentVertical", "IfcAlignmentCant", "IfcAlignmentSegment",
-]
+EXCLUDED_CLASSES = ["IfcOpeningElement", *ALIGNMENT_LAYOUT_CLASSES]
 # Elements drawn as lines. The geometry kernel only yields the 3D axis of alignments with a vertical
 # layout (a gradient curve); plan-only alignments and grids are computed in a second pass that
 # includes curves. Curves are not enabled for everything: elements with a body and an axis would

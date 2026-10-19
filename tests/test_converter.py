@@ -875,3 +875,63 @@ def test_products_without_geometry_get_a_second_attempt(many_walls_ifc, tmp_path
     monkeypatch.setattr(converter, "RESCUE_SECONDS", 0)  # no time left for second attempts
     result = convert(many_walls_ifc, tmp_path / "walls2.glb", "glb", threads=2)
     assert (result.elements, result.skipped) == (599, 1)
+
+
+def test_negative_extrusion_depth_is_turned_round(wall_ifc, tmp_path):
+    """IFC allows only positive depths; the kernel drops an extrusion with a negative one. A depth
+    of -3 along -Z is the same wall as 3 along +Z, so the repaired wall must match the intact one."""
+    from ifc_converter.converter import repair_extrusions
+
+    model = ifcopenshell.open(str(wall_ifc))
+    solid = model.by_type("IfcExtrudedAreaSolid")[0]
+    assert (solid.Depth, tuple(solid.ExtrudedDirection.DirectionRatios)) == (3000.0, (0.0, 0.0, 1.0))  # mm
+    solid.Depth = -3000.0
+    solid.ExtrudedDirection.DirectionRatios = (0.0, 0.0, -1.0)
+    path = tmp_path / "negative.ifc"
+    model.write(str(path))
+
+    repaired = ifcopenshell.open(str(path))
+    assert repair_extrusions(repaired) == 1
+    solid = repaired.by_type("IfcExtrudedAreaSolid")[0]
+    assert (solid.Depth, tuple(solid.ExtrudedDirection.DirectionRatios)) == (3000.0, (0.0, 0.0, 1.0))
+    assert repair_extrusions(repaired) == 0
+
+    intact = _obj_mesh(convert(wall_ifc, tmp_path / "intact.obj", "obj").output)[0]
+    negative = _obj_mesh(convert(path, tmp_path / "negative.obj", "obj").output)[0]
+    assert len(negative) == len(intact)
+    assert negative.min(axis=0) == pytest.approx(intact.min(axis=0))
+    assert negative.max(axis=0) == pytest.approx([5.0, 0.2, 3.0])
+
+
+def test_negative_depth_along_unchanged_direction_extrudes_the_other_way(wall_ifc, tmp_path):
+    # Depth -3 m along +Z: the wall hangs down from z = 0 to z = -3 (what the author's tool drew).
+    model = ifcopenshell.open(str(wall_ifc))
+    model.by_type("IfcExtrudedAreaSolid")[0].Depth = -3000.0  # mm
+    path = tmp_path / "down.ifc"
+    model.write(str(path))
+    vertices = _obj_mesh(convert(path, tmp_path / "down.obj", "obj").output)[0]
+    assert vertices.min(axis=0) == pytest.approx([0.0, 0.0, -3.0])
+    assert vertices.max(axis=0) == pytest.approx([5.0, 0.2, 0.0])
+
+
+@pytest.mark.parametrize("fmt", ["glb", "obj"])
+def test_alignment_layout_parts_are_left_out_of_glb_and_obj(alignment_ifc, fmt, tmp_path):
+    """The horizontal and vertical layouts repeat the alignment's axis as a plan at height 0 and as
+    a distance/height profile in the XY plane, far off the model; only the 3D axis is written."""
+    import ifcopenshell.guid
+
+    model = ifcopenshell.open(str(alignment_ifc))
+    classes = {ifcopenshell.guid.expand(p.GlobalId): p.is_a() for p in model.by_type("IfcProduct")}
+    result = convert(alignment_ifc, tmp_path / f"alignment.{fmt}", fmt)
+    if fmt == "obj":
+        names = [line.split()[1] for line in result.output.read_text().splitlines() if line.startswith("g ")]
+    else:
+        import json
+        import struct
+
+        with open(result.output, "rb") as glb:
+            glb.read(12)
+            length, _ = struct.unpack("<II", glb.read(8))
+            names = [node["name"] for node in json.loads(glb.read(length))["nodes"] if "name" in node]
+    written = {classes[name.removeprefix("product-").rsplit("-", 1)[0].replace("-", "")] for name in names}
+    assert names and written == {"IfcAlignment"}
