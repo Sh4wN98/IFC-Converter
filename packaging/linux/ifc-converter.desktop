@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=IFC Converter
+GenericName=IFC-Konverter
+GenericName[en]=IFC converter
+Comment=IFC-Gebäudemodelle in Rhino .3dm, glTF/GLB und OBJ umwandeln
+Comment[en]=Convert IFC building models to Rhino .3dm, glTF/GLB and OBJ
+Exec=ifc-converter %F
+TryExec=ifc-converter
+Icon=ifc-converter
+Terminal=false
+Categories=Graphics;3DGraphics;
+MimeType=application/x-ifc;
+Keywords=IFC;BIM;Rhino;3dm;glTF;GLB;OBJ;
+StartupNotify=true
+StartupWMClass=ifc-converter

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MIME type for IFC files (shared-mime-info has none), so that the converter appears under
+     "Open with" for *.ifc. install.sh registers it for the current user only. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-ifc">
+    <comment>IFC-Gebäudemodell</comment>
+    <comment xml:lang="en">IFC building model</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.ifc"/>
+  </mime-type>
+</mime-info>

@@ -1,0 +1,34 @@
+IFC Converter für Linux (x86_64)
+================================
+
+Wandelt IFC-Gebäudemodelle in Rhino .3dm, glTF/GLB und OBJ um. Python ist nicht nötig,
+alles Nötige liegt im Ordner ifc-converter/.
+
+Installation (ohne Root, nur für den angemeldeten Benutzer):
+
+    ./install.sh
+
+  installiert nach ~/.local/opt/ifc-converter, legt die Befehle ~/.local/bin/ifc-converter
+  (Fenster) und ~/.local/bin/ifc-convert (Kommandozeile) an, einen Eintrag im Anwendungsmenü
+  mit Symbol und einen „Öffnen mit“-Eintrag für .ifc-Dateien. Das Standardprogramm für
+  IFC-Dateien wird nicht geändert. Erneut ausführen = Update; Einstellungen bleiben.
+  Anderer Ort: IFC_CONVERTER_PREFIX=/pfad ./install.sh
+
+Ohne Installation: direkt ./ifc-converter/ifc-converter (Fenster) bzw.
+  ./ifc-converter/ifc-convert haus.ifc -f 3dm   (Kommandozeile, Optionen mit --help)
+
+Deinstallation:  ~/.local/opt/ifc-converter/uninstall.sh (oder ./uninstall.sh hier).
+  Einstellungen (~/.config/ifc-converter) und Logdateien, gemerkte Problem-Bauteile und
+  Vorschauen (~/.local/state/ifc-converter) bleiben liegen.
+
+Wayland / X11: Qt wählt die Anzeige selbst (Wayland-Sitzung → Wayland, sonst X11). Macht
+  eine davon Probleme (kein Fenster, keine 3D-Vorschau), die andere erzwingen:
+      QT_QPA_PLATFORM=xcb ifc-converter        bzw.   QT_QPA_PLATFORM=wayland ifc-converter
+  Die 3D-Vorschau braucht OpenGL 3.3 (Mesa reicht); ohne geht sie auf die eigene Darstellung.
+
+Systembibliotheken: Auf jedem Desktop-Linux vorhanden. Auf einem frisch installierten
+  Ubuntu/Debian fehlt gelegentlich libxcb-cursor0:
+      sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libgl1 libegl1 libfontconfig1 libdbus-1-3
+  install.sh meldet, was fehlt.
+
+Prüfsummen: SHA256SUMS.txt im GitHub-Release: sha256sum -c SHA256SUMS.txt

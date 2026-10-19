@@ -1,8 +1,8 @@
 name: Test and build
 
-# Every push: tests on Linux and Windows and, in parallel, the Windows app is built and the built exe
-# and installer are tested. A tag v<version> (matching pyproject.toml) additionally publishes a GitHub
-# release, but only if all of that passed.
+# Every push: tests on Linux and Windows and, in parallel, the Windows app (exe, portable ZIP, installer)
+# and the Linux app (tar.gz with install.sh) are built and smoke-tested. A tag v<version> (matching
+# pyproject.toml) additionally publishes one GitHub release with all of them, but only if all of that passed.
 on:
   push:
     branches: ["**"]
@@ -113,23 +113,88 @@ jobs:
           retention-days: 7
           compression-level: 0  # installer and ZIP are compressed already
 
+  build-linux:
+    name: Linux app (build + smoke test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            packaging/constraints.txt
+      - name: Qt system libraries
+        # What the bundled Qt expects from the system (the smoke test's ldd walk fails on anything missing):
+        # OpenGL/EGL, X11's xcb, Wayland client libraries, fontconfig, D-Bus, GLib, xkbcommon.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1 libopengl0 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libwayland-client0 libwayland-cursor0 libwayland-egl1 libdrm2 libfontconfig1 libdbus-1-3 libglib2.0-0 desktop-file-utils shared-mime-info
+      - name: Install
+        # Not editable: the build bundles the installed package metadata (version for the About dialog).
+        run: python -m pip install -c packaging/constraints.txt ".[build]"
+      - name: Build app and tar.gz
+        run: python packaging/build.py
+      - name: Smoke test of the built app and the tar.gz
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          tarball=$(ls dist/IFC-Converter-*-linux-*.tar.gz)
+          python packaging/smoke_test_linux.py dist/ifc-converter --gui --tarball "$tarball"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: IFC-Converter-linux
+          path: |
+            dist/IFC-Converter-*-linux-*.tar.gz
+            dist/SHA256SUMS.txt
+          retention-days: 7
+          compression-level: 0  # the tar.gz is compressed already
+
   release:
     name: GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build-windows]
+    needs: [test, build-windows, build-linux]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7  # for CHANGELOG.md and packaging/release_notes.py
       - uses: actions/download-artifact@v8
         with:
           name: IFC-Converter-windows
-          path: dist
+          path: dist/windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: IFC-Converter-linux
+          path: dist/linux
+      - name: Collect the files and one SHA256SUMS.txt over all of them
+        # Each build's own checksums are verified first (a damaged artifact must not be released).
+        run: |
+          set -euo pipefail
+          (cd dist/windows && sha256sum -c SHA256SUMS.txt)
+          (cd dist/linux && sha256sum -c SHA256SUMS.txt)
+          mkdir release
+          cp dist/windows/IFC-Converter-*-Setup.exe dist/windows/IFC-Converter-*-portable.zip \
+             dist/linux/IFC-Converter-*-linux-*.tar.gz release/
+          (cd release && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          test "$(ls release | wc -l)" -eq 4 || { echo "::error::expected Setup.exe, portable ZIP, tar.gz and SHA256SUMS.txt in release/"; ls release; exit 1; }
+      - name: Release notes from CHANGELOG.md
+        # The newest "## " section (which must be this version's) plus the download line.
+        run: |
+          set -euo pipefail
+          python3 packaging/release_notes.py CHANGELOG.md --version "${GITHUB_REF_NAME#v}" > notes.md
+          cat notes.md
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
             --title "IFC Converter ${GITHUB_REF_NAME#v}" \
-            --notes "Windows: IFC-Converter-${GITHUB_REF_NAME#v}-Setup.exe installieren (ohne Administratorrechte) oder die portable ZIP entpacken. Prüfsummen in SHA256SUMS.txt."
+            --notes-file notes.md

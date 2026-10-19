@@ -3,6 +3,10 @@
 #
 #   pyinstaller --noconfirm packaging/ifc_converter.spec     (or simply: python packaging/build.py)
 #
+# On Linux the same spec builds the folder "ifc-converter" with the executables ifc-converter (window)
+# and ifc-convert (command line): names without spaces, as is the custom there (build.py packs the
+# folder into the tar.gz together with the .desktop file, the icon and install.sh).
+#
 # A folder ("onedir") instead of a single exe: starts faster (nothing is unpacked to %TEMP% on every
 # start, which also matters for the conversion child processes), triggers far fewer antivirus false
 # positives, and the LGPL libraries (Qt, IfcOpenShell) stay replaceable DLLs.
@@ -16,10 +20,16 @@ from PyInstaller.utils.hooks import copy_metadata
 HERE = Path(SPECPATH)
 ROOT = HERE.parent
 APP_NAME = "IFC Converter"
+WINDOWS = sys.platform == "win32"
+# The program folder and the window's executable: "IFC Converter" on Windows, "ifc-converter" elsewhere.
+APP_DIR_NAME = APP_NAME if WINDOWS else "ifc-converter"
+GUI_EXE_NAME = APP_NAME if WINDOWS else "ifc-converter"
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
-# The app's own icon if the app ships one, else a placeholder.
+# The app's own icon if the app ships one, else a placeholder. Only Windows (and macOS) executables carry
+# an icon; on Linux the icon travels as a PNG next to the .desktop file (see build.py).
 ICON = next(iter(sorted((ROOT / "src" / "ifc_converter" / "resources").glob("*.ico"))), HERE / "placeholder-icon.ico")
+EXE_ICON = str(ICON) if WINDOWS or sys.platform == "darwin" else None
 
 datas = []
 resources = ROOT / "src" / "ifc_converter" / "resources"
@@ -42,6 +52,14 @@ EXCLUDES = [
 # Qt falls back to it where the graphics driver offers no usable OpenGL (remote desktop, virtual machines),
 # so the 3D preview (viewer.py) still draws with OpenGL there.
 UNNEEDED_BINARIES = {"d3dcompiler_47.dll"}
+# Linux: Qt platform plugins for machines without a display server (framebuffer, KMS/EGL devices, VNC,
+# Vulkan display). The app runs on desktops (xcb/Wayland; offscreen for the tests), and these plugins
+# would pull in system libraries (libgbm, libinput, libvulkan ...) that a desktop PC need not have.
+UNNEEDED_LINUX_BINARIES = {
+    "libqeglfs.so", "libqlinuxfb.so", "libqminimalegl.so", "libqvkkhrdisplay.so", "libqvnc.so",
+    "libqt6eglfsdeviceintegration.so.6", "libqt6eglfskmssupport.so.6",
+}
+UNNEEDED_LINUX_PLUGIN_DIRS = ("PySide6/Qt/plugins/egldeviceintegrations/",)
 # The 3D preview imports QtOpenGL/QtOpenGLWidgets only when it draws; listed so they are always bundled.
 PREVIEW_MODULES = ["ifc_converter.viewer", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets"]
 
@@ -57,6 +75,12 @@ def analysis(script: str, hiddenimports: list[str] = ()) -> Analysis:
         noarchive=False,
     )
     a.binaries = [b for b in a.binaries if Path(b[0]).name.lower() not in UNNEEDED_BINARIES]
+    if sys.platform.startswith("linux"):
+        a.binaries = [
+            b for b in a.binaries
+            if Path(b[0]).name.lower() not in UNNEEDED_LINUX_BINARIES
+            and not b[0].replace("\\", "/").startswith(UNNEEDED_LINUX_PLUGIN_DIRS)
+        ]
     return a
 
 
@@ -98,9 +122,9 @@ gui_exe = EXE(
     PYZ(gui.pure),
     gui.scripts,
     exclude_binaries=True,
-    name=APP_NAME,
+    name=GUI_EXE_NAME,
     console=False,
-    icon=str(ICON),
+    icon=EXE_ICON,
     version=version_info(f"{APP_NAME}.exe"),
     upx=False,  # UPX-packed exes are a classic antivirus false positive
     contents_directory="_internal",
@@ -111,7 +135,7 @@ cli_exe = EXE(
     exclude_binaries=True,
     name="ifc-convert",
     console=True,
-    icon=str(ICON),
+    icon=EXE_ICON,
     version=version_info("ifc-convert.exe"),
     upx=False,
     contents_directory="_internal",
@@ -119,6 +143,6 @@ cli_exe = EXE(
 COLLECT(
     gui_exe, gui.binaries, gui.datas,
     cli_exe, cli.binaries, cli.datas,
-    name=APP_NAME,
+    name=APP_DIR_NAME,
     upx=False,
 )
