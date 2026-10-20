@@ -122,6 +122,35 @@ def test_a_closed_hull_with_few_interior_products_is_not_taken_as_open(house_ifc
     assert not selection.open_hull and selection.inside == 2
 
 
+def test_a_massing_volume_does_not_seal_the_house(house_ifc):
+    # A Revit conceptual mass comes out as a simple box around the whole building: it must not hide
+    # the real hull from the fill. It is kept itself (seen from outside), the house decided as without it.
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    _box(model, body, "IfcBuildingElementProxy", "Mass", (14, 12, 5), (-1, -1, -1), storey)
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert selection.masses == 1 and "1 Baumassen" in selection.note
+    assert _names(model, selection.keep) == {"South", "North", "West", "East", "Floor", "Roof", "Column", "Mass"}
+    assert selection.inside == 2
+
+
+def test_ceilings_and_floorings_go_with_the_open_hull_fallback(house_ifc):
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    ceiling = _box(model, body, "IfcCovering", "Ceiling", (9, 7, 0.05), (0.5, 0.5, 2.8), storey)
+    ceiling.PredefinedType = "CEILING"
+    cladding = _box(model, body, "IfcCovering", "Cladding", (10, 0.05, 3), (0, -0.05, 0), storey)
+    cladding.PredefinedType = "CLADDING"
+    roof = next(slab for slab in model.by_type("IfcSlab") if slab.Name == "Roof")
+    api.run("root.remove_product", model, product=roof)
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert selection.open_hull and selection.fittings == 2  # the table and the ceiling
+    kept = _names(model, selection.keep)
+    assert "Cladding" in kept and "Ceiling" not in kept and "Decken- und Bodenbeläge" in selection.note
+
+
 def test_products_without_coarse_geometry_are_kept(house_ifc, monkeypatch):
     model = ifcopenshell.open(str(house_ifc))
     products = shape_products(model, EXCLUDED_CLASSES)
