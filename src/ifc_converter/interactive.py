@@ -15,6 +15,7 @@ from urllib.request import url2pathname
 from ifc_converter import __version__
 from ifc_converter.app import APP_NAME, log_path
 from ifc_converter.converter import FORMATS, INPUT_SUFFIXES, ConversionResult, memory_warning
+from ifc_converter.i18n import tr
 from ifc_converter.process import auto_threads, convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
@@ -23,11 +24,30 @@ _TOKEN = re.compile(r'"([^"]+)"|\'([^\']+)\'|((?:\\ |\S)+)')
 
 QUIT_WORDS = {"q", "quit", "exit", "ende", "beenden"}
 
-# Explains ConversionResult.skipped wherever results are shown.
-SKIPPED_HINT = (
-    "Diese Bauteile haben Geometrie, die nicht umgewandelt werden konnte – "
-    "z. B. nicht unterstützte Geometrietypen, oder sie werden von ihren Öffnungen vollständig weggeschnitten."
-)
+
+
+def skipped_hint() -> str:
+    """Explains ConversionResult.skipped wherever results are shown."""
+    return tr(
+        "These elements have geometry that could not be converted – e.g. unsupported geometry types, or their "
+        "openings cut them away completely."
+    )
+
+
+def log_menu() -> str:
+    """How the window's menu opens the log file."""
+    return tr("Help → Open log file")
+
+
+# The texts that used to be module constants (SKIPPED_HINT, LOG_MENU) are translated when read, so
+# that the language switch reaches them: ``interactive.SKIPPED_HINT`` still works.
+_LAZY_TEXTS = {"SKIPPED_HINT": skipped_hint, "LOG_MENU": log_menu}
+
+
+def __getattr__(name: str) -> str:
+    if name in _LAZY_TEXTS:
+        return _LAZY_TEXTS[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def parse_dropped(line: str, windows: bool | None = None) -> list[Path]:
@@ -116,12 +136,14 @@ def unique_path(path: Path) -> Path:
 
 def skipped_count(skipped: int) -> str:
     """"3 Bauteile ohne Geometrie" (elements whose geometry could not be converted)."""
-    return f"{skipped} {'Bauteil' if skipped == 1 else 'Bauteile'} ohne Geometrie"
+    if skipped == 1:
+        return tr("1 element without geometry")
+    return tr("{count} elements without geometry", count=skipped)
 
 
 def skipped_warning(skipped: int) -> str:
     """The warning for elements that were left out for lack of geometry, or "" if there are none."""
-    return f"{skipped_count(skipped)}. {SKIPPED_HINT}" if skipped > 0 else ""
+    return f"{skipped_count(skipped)}. {skipped_hint()}" if skipped > 0 else ""
 
 
 # How many skipped elements a message names; the log file lists all of them.
@@ -134,10 +156,17 @@ def crashed_warning(crashed: list[str]) -> str:
         return ""
     count = len(crashed)
     names = "; ".join(crashed[:NAMED_ELEMENTS])
-    more = f" … und {count - NAMED_ELEMENTS} weitere (alle in der Logdatei)" if count > NAMED_ELEMENTS else ""
-    return (
-        f"{count} {'Bauteil' if count == 1 else 'Bauteile'} übersprungen, weil der Geometriekern daran "
-        f"abstürzte oder hängen blieb: {names}{more}. Im CAD-Programm lassen sie sich über die GlobalId finden."
+    more = ""
+    if count > NAMED_ELEMENTS:
+        more = tr(" … and {count} more (all of them in the log file)", count=count - NAMED_ELEMENTS)
+    if count == 1:
+        return tr(
+            "1 element skipped because the geometry kernel crashed or hung on it: {names}{more}. "
+            "In the CAD program it can be found by its GlobalId.", names=names, more=more,
+        )
+    return tr(
+        "{count} elements skipped because the geometry kernel crashed or hung on them: {names}{more}. "
+        "In the CAD program they can be found by their GlobalId.", count=count, names=names, more=more,
     )
 
 
@@ -156,14 +185,12 @@ def split_label(label: str) -> tuple[str, str, str]:
 
 
 # Exceptions about the input, the output folder or the computer, not about the program: their text
-# is shown as it is (the converter's own ones are German). Everything else is an internal error.
+# is shown as it is (the converter's own ones are already translated). Everything else is an internal error.
 FILE_ERRORS = {
     "OSError", "FileNotFoundError", "PermissionError", "FileExistsError", "IsADirectoryError",
     "NotADirectoryError", "TimeoutError", "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
     "BrokenPipeError", "InterruptedError",
 }
-# How the window's menu opens the log file.
-LOG_MENU = "Hilfe → Logdatei öffnen"
 
 
 def _error_type(exc: BaseException) -> str:
@@ -183,39 +210,51 @@ def is_internal_error(exc: BaseException) -> bool:
 
 
 def error_message(exc: BaseException) -> str:
-    """A failed conversion in German, for the window and the terminal."""
+    """A failed conversion in the user's language, for the window and the terminal."""
     name = _error_type(exc)
     text = str(exc)
     if text == name:  # no message of its own
         text = ""
     if name == "MemoryError":
-        return "Der Arbeitsspeicher hat nicht gereicht"
+        return tr("There was not enough memory")
     if name == "Error":  # ifcopenshell.Error: the file could not be parsed
-        return f"Die Datei ließ sich nicht als IFC lesen (beschädigt oder keine IFC-Datei){f': {text}' if text else ''}"
+        if text:
+            return tr("The file could not be read as IFC (damaged or not an IFC file): {message}", message=text)
+        return tr("The file could not be read as IFC (damaged or not an IFC file)")
     if name in FILE_ERRORS and ("[Errno" in text or "[WinError" in text):
-        return f"Datei- oder Netzwerkfehler: {text}"
+        return tr("File or network error: {message}", message=text)
     if is_internal_error(exc):
-        return f"Interner Fehler ({name}){f': {text}' if text else ''}"
+        if text:
+            return tr("Internal error ({name}): {message}", name=name, message=text)
+        return tr("Internal error ({name})", name=name)
     return text or name
 
 
-def failure_hint(internal: bool, log: str = LOG_MENU) -> str:
-    """Where the details of a failure are (see is_internal_error); ``log`` says how to find the log file."""
+def failure_hint(internal: bool, log: str | None = None) -> str:
+    """Where the details of a failure are (see is_internal_error); ``log`` says how to find the log file
+    (default: the window's menu, see log_menu())."""
+    log = log or log_menu()
     if internal:
-        return f"Bitte die Logdatei ({log}) mitschicken, wenn Sie den Fehler melden."
-    return f"Details in der Logdatei ({log})."
+        return tr("Please attach the log file ({log}) when reporting the error.", log=log)
+    return tr("Details are in the log file ({log}).", log=log)
 
 
 def resource_text(threads: int, low_priority: bool, workers: int = 0) -> str:
     """What a conversion takes of the PC, e.g. "bis zu 6 von 32 logischen Kernen, niedrige Priorität"."""
     from ifc_converter.process import cpu_count
 
-    text = f"bis zu {threads} {'Thread' if threads == 1 else 'Threads'} (von {cpu_count()} logischen Kernen)"
+    if threads == 1:
+        text = tr("up to 1 thread (of {cores} logical cores)", cores=cpu_count())
+    else:
+        text = tr("up to {threads} threads (of {cores} logical cores)", threads=threads, cores=cpu_count())
     if workers:
-        text += f", bei großen 3DM-Modellen dazu bis zu {workers} Hilfsprozesse für die Rhino-Geometrie"
+        text = tr(
+            "{threads_text}, plus up to {workers} helper processes for the Rhino geometry with large 3DM models",
+            threads_text=text, workers=workers,
+        )
     if low_priority:
-        return f"{text}, niedrige Priorität – andere Programme haben Vorrang"
-    return f"{text}, normale Priorität"
+        return tr("{threads_text}, low priority – other programs take precedence", threads_text=text)
+    return tr("{threads_text}, normal priority", threads_text=text)
 
 
 def rhino_workers(threads: int) -> int:
@@ -228,25 +267,37 @@ def rhino_workers(threads: int) -> int:
         return 0
 
 
+def decimal_text(value: float, digits: int = 1) -> str:
+    """A number with ``digits`` decimals and the language's decimal mark, e.g. "12.3" or "12,3"."""
+    integer, _, fraction = f"{value:.{digits}f}".partition(".")
+    return tr("{integer}.{fraction}", integer=integer, fraction=fraction) if fraction else integer
+
+
 def duration_text(seconds: float) -> str:
-    """A duration in German, e.g. "12,3 s", "52 min 2 s" or "1 h 5 min"."""
+    """A duration in the user's language, e.g. "12,3 s", "52 min 2 s" or "1 h 5 min"."""
     if seconds < 60:
-        return f"{seconds:.1f} s".replace(".", ",")
+        return tr("{seconds} s", seconds=decimal_text(seconds))
     minutes, seconds = divmod(round(seconds), 60)
     if minutes < 60:
-        return f"{minutes} min {seconds} s"
+        return tr("{minutes} min {seconds} s", minutes=minutes, seconds=seconds)
     hours, minutes = divmod(minutes, 60)
-    return f"{hours} h {minutes} min"
+    return tr("{hours} h {minutes} min", hours=hours, minutes=minutes)
 
 
 def number_text(number: int) -> str:
-    """A count with German thousands separators, e.g. "117.137"."""
-    return f"{number:,}".replace(",", ".")
+    """A count with the language's thousands separators, e.g. "117,137" or "117.137"."""
+    sign, digits = ("-", str(-number)) if number < 0 else ("", str(number))
+    text = digits[:len(digits) % 3 or 3]
+    for start in range(len(text), len(digits), 3):
+        text = tr("{thousands},{hundreds}", thousands=text, hundreds=digits[start:start + 3])
+    return sign + text
 
 
 def inside_text(inside: int) -> str:
     """"2.431 innen liegende weggelassen" (option "Nur Gebäudehülle", see ConversionResult.inside)."""
-    return f"{number_text(inside)} innen {'liegendes' if inside == 1 else 'liegende'} weggelassen"
+    if inside == 1:
+        return tr("1 interior element left out")
+    return tr("{count} interior elements left out", count=number_text(inside))
 
 
 def check_memory(path: Path) -> str | None:

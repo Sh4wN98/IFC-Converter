@@ -78,7 +78,6 @@ from ifc_converter.dialogs import (
 )
 from ifc_converter.interactive import (
     DETAIL_PHASES,
-    SKIPPED_HINT,
     check_memory,
     collect_ifc_files,
     crashed_warning,
@@ -93,6 +92,7 @@ from ifc_converter.interactive import (
     resource_text,
     rhino_workers,
     skipped_count,
+    skipped_hint,
     skipped_warning,
     unique_path,
 )
@@ -1179,7 +1179,7 @@ class MainWindow(QMainWindow):
             if item.crashed:
                 tooltip += f"\n\n⚠ {len(item.crashed)} übersprungen (Geometriekern abgestürzt oder hängen geblieben)"
             if item.skipped > 0:
-                tooltip += f"\n\n⚠ {skipped_count(item.skipped)}: {SKIPPED_HINT}"
+                tooltip += f"\n\n⚠ {skipped_count(item.skipped)}: {skipped_hint()}"
             if item.inside > 0:
                 tooltip += f"\n\nNur Gebäudehülle: {inside_text(item.inside)} (innen liegende Bauteile)"
             if item.has_details:
