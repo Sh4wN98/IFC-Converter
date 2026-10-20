@@ -31,10 +31,12 @@ from ifc_converter import converter
 
 log = logging.getLogger(__name__)
 
-VOXEL = 0.2  # metres; the grid cell of the flood fill
+# The grid cell of the flood fill, in metres. Only surfaces are sampled, so an element thinner than
+# a cell is a single layer of cells: whatever pokes into that layer from inside (a table foot in a
+# 127 mm slab on grade) touches the outside air behind it. 0.1 m resolves slabs, walls and roofs;
+# glass and cladding stay thinner, which only ever keeps more.
+VOXEL = 0.1
 # The grid is coarsened (cell doubled) until it fits: 1 byte per cell for each of two boolean grids.
-# A coarser grid keeps more: an interior wall meeting an exterior wall thinner than a cell looks
-# exposed through it, so the grid is only coarsened for models whose grid is really large.
 MAX_VOXELS = 150_000_000
 EXPOSURE = 0.05  # share of a product's voxels next to outside air that makes it part of the hull
 # The sampled voxels of all products are kept until the grid is built (8 bytes each, packed; about
@@ -179,7 +181,9 @@ class _Sampler:
             self.origin = numpy.floor(points[0] / self.voxel) * self.voxel
         samples = _surface_points(points[triangles[:, 0]], points[triangles[:, 1]], points[triangles[:, 2]],
                                   self.voxel / 2)
-        cells = numpy.floor((samples - self.origin) / self.voxel).astype(numpy.int64)
+        # Points on a cell boundary (storey levels are) count up, also when rounding left them
+        # a billionth below it: a table at z = -1e-15 does not reach into the slab's cells.
+        cells = numpy.floor((samples - self.origin) / self.voxel + 1e-6).astype(numpy.int64)
         if (numpy.abs(cells) >= _RANGE).any():
             self.unknown.add(shape.id)
             return
@@ -237,25 +241,39 @@ class _Sampler:
 
 
 def _surface_points(a: numpy.ndarray, b: numpy.ndarray, c: numpy.ndarray, spacing: float) -> numpy.ndarray:
-    """Points on the triangles (a, b, c) at most ``spacing`` apart (a barycentric lattice), so that
-    every voxel a triangle passes through gets a point. Triangles are grouped by the number of
-    subdivisions, rounded up to a power of two."""
-    edges = numpy.maximum.reduce([numpy.linalg.norm(b - a, axis=1), numpy.linalg.norm(c - b, axis=1),
-                                  numpy.linalg.norm(a - c, axis=1)])
-    needed = numpy.ceil(edges / spacing)
-    needed = numpy.maximum(1, numpy.minimum(needed, 1 << 20))
-    expected = ((needed + 1) * (needed + 2) / 2).sum()
+    """Points on the triangles (a, b, c) at most ``spacing`` apart: a lattice along the two shorter
+    edges of each triangle, subdivided so that no two neighbours are further apart than that along
+    either (on the longest edge at most twice that, still within a cell). Triangles are grouped by
+    their two subdivision counts, each rounded up to a power of two."""
+    corners = numpy.stack([a, b, c], axis=1)  # (n, 3 corners, xyz)
+    opposite = numpy.stack([numpy.linalg.norm(b - c, axis=1), numpy.linalg.norm(c - a, axis=1),
+                            numpy.linalg.norm(a - b, axis=1)], axis=1)
+    # The corner opposite the longest edge comes first, so the lattice runs along the shorter edges.
+    first = opposite.argmax(axis=1)
+    order = (first[:, None] + numpy.arange(3)[None, :]) % 3
+    corners = numpy.take_along_axis(corners, order[:, :, None], axis=1)
+    a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
+    along_b = numpy.linalg.norm(b - a, axis=1)
+    along_c = numpy.linalg.norm(c - a, axis=1)
+    cap = 1 << 20
+    needed_b = numpy.clip(numpy.ceil(along_b / spacing), 1, cap)
+    needed_c = numpy.clip(numpy.ceil(along_c / spacing), 1, cap)
+    expected = ((needed_b + 1) * (needed_c + 1) / 2).sum()
     if expected > MAX_POINTS:  # a huge product: coarser, see MAX_POINTS
-        needed = numpy.maximum(1, numpy.ceil(needed * numpy.sqrt(MAX_POINTS / expected)))
-    levels = numpy.ceil(numpy.log2(needed)).astype(numpy.int64)
+        scale = numpy.sqrt(MAX_POINTS / expected)
+        needed_b = numpy.maximum(1, numpy.ceil(needed_b * scale))
+        needed_c = numpy.maximum(1, numpy.ceil(needed_c * scale))
+    levels_b = numpy.ceil(numpy.log2(needed_b)).astype(numpy.int64)
+    levels_c = numpy.ceil(numpy.log2(needed_c)).astype(numpy.int64)
+    groups = levels_b * 32 + levels_c
     result = []
-    for level in numpy.unique(levels):
-        n = 1 << int(level)
-        i, j = numpy.triu_indices(n + 1)  # i + j <= n ... as (i, n - j) below
-        i, j = i, n - j
-        u = (i / n)[None, :, None]
-        v = (j / n)[None, :, None]
-        chosen = levels == level
+    for group in numpy.unique(groups):
+        n_b, n_c = 1 << int(group // 32), 1 << int(group % 32)
+        i, j = numpy.meshgrid(numpy.arange(n_b + 1), numpy.arange(n_c + 1), indexing="ij")
+        u, v = (i / n_b).ravel(), (j / n_c).ravel()
+        inside = u + v <= 1 + 1e-9
+        u, v = u[inside][None, :, None], v[inside][None, :, None]
+        chosen = groups == group
         points = a[chosen, None, :] * (1 - u - v) + b[chosen, None, :] * u + c[chosen, None, :] * v
         result.append(points.reshape(-1, 3))
     return numpy.concatenate(result)
