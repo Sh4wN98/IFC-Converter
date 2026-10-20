@@ -15,9 +15,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QProcess, QRect, QRectF, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QColor,
     QDesktopServices,
     QIcon,
@@ -59,10 +60,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ifc_converter import __version__
+from ifc_converter import __version__, i18n
 from ifc_converter import app as app_info
 from ifc_converter.app import APP_NAME, enable_crash_log, hold_app_mutex, install_exception_hooks, setup_logging
 from ifc_converter.converter import DEFAULT_KERNEL, FORMATS, ConversionResult, convert
+from ifc_converter.i18n import tr
 from ifc_converter.dialogs import (
     KERNEL_INFO,
     AboutDialog,
@@ -105,42 +107,54 @@ DEFAULT_FORMAT = "3dm"
 DEFAULT_GEOMETRY = "brep"
 SIDE_WIDTH = 320  # settings column on the right
 
-# Format -> (label, hint), in the order shown in the window.
-FORMAT_INFO = {
-    "3dm": ("3DM (Rhino)", "Rhino-Datei (.3dm) – direkt in Rhino öffnen und weiterbearbeiten."),
-    "glb": ("GLB", "glTF binär (.glb) – kompakt, für Web-Viewer, Blender, Three.js und Game-Engines."),
-    "obj": ("OBJ", "Wavefront OBJ (.obj + .mtl) – lässt sich in fast jedem 3D-Programm öffnen."),
-    "dae": (
-        "DAE (Collada)",
-        "COLLADA 1.4 (.dae) – Dreiecksnetze mit Farben, für SketchUp, Blender, Unity und ArchiCAD. "
-        "Textdatei, etwa doppelt so groß wie .glb.",
-    ),
-}
+# The texts below are read when the window is built, not at import time, so that they follow the
+# language chosen at start (see i18n).
 
-# Rhino geometry mode (convert(..., geometry=...), only used for 3DM) -> (label, hint).
-GEOMETRY_INFO = {
-    "brep": (
-        "Polyflächen (empfohlen)",
-        "Wände, Decken, Fenster … als geschlossene Polyflächen mit echten Öffnungen. Sehr detaillierte "
-        "Objekte (Möbel, Sanitär, Leuchten) bleiben Netze. Datei je nach Modell 1,2–4,5× größer – "
-        "bei sehr großen Modellen besser „Netze“ wählen.",
-    ),
-    "mesh": ("Netze (Meshes)", "Kleinste Dateien, schnellste Konvertierung. Runde Flächen glatt schattiert, Kanten scharf."),
-}
 
-# Option "Nur Gebäudehülle" (convert(envelope=True)): the checkbox under the formats and its tooltip.
+def format_info() -> dict[str, tuple[str, str]]:
+    """Format -> (label, hint), in the order shown in the window. The labels are format names."""
+    return {
+        "3dm": ("3DM (Rhino)", tr("Rhino file (.3dm) – open and keep working on it directly in Rhino.")),
+        "glb": ("GLB", tr("glTF binary (.glb) – compact, for web viewers, Blender, Three.js and game engines.")),
+        "obj": ("OBJ", tr("Wavefront OBJ (.obj + .mtl) – opens in almost any 3D program.")),
+        "dae": (
+            "DAE (Collada)",
+            tr("COLLADA 1.4 (.dae) – triangle meshes with colours, for SketchUp, Blender, Unity and ArchiCAD. "
+               "Text file, about twice the size of .glb."),
+        ),
+    }
+
+
+def geometry_info() -> dict[str, tuple[str, str]]:
+    """Rhino geometry mode (convert(..., geometry=...), only used for 3DM) -> (label, hint)."""
+    return {
+        "brep": (
+            tr("Polysurfaces (recommended)"),
+            tr("Walls, slabs, windows … as closed polysurfaces with real openings. Very detailed objects "
+               "(furniture, sanitary fittings, lights) stay meshes. The file is 1.2–4.5× larger depending on "
+               "the model – for very large models, better choose “Meshes”."),
+        ),
+        "mesh": (tr("Meshes"), tr("Smallest files, fastest conversion. Curved surfaces smoothly shaded, edges sharp.")),
+    }
+
+
+# Option "Only the building hull" (convert(envelope=True)): the checkbox under the formats and its tooltip.
 # The side column has about 560 px at 1080p and the two boxes use 513 of them, so the option gets no
 # group box and no hint of its own; the tooltip tells the whole story, the log says what was left out.
-ENVELOPE_LABEL = "Nur Gebäudehülle"
-ENVELOPE_TOOLTIP = (
-    "Konvertiert nur die Gebäudehülle, also was von außen zu sehen ist: Außenwände, Dächer, Fenster, Türen, "
-    "Balkone, Gelände … Innenwände, Möbel, Einrichtung, Rohre und Kanäle werden weggelassen; die Datei wird "
-    "deutlich kleiner (z. B. für Umgebungsmodelle oder schwächere PCs).\n\n"
-    "Dafür berechnet ein kurzer zusätzlicher Durchgang zuerst eine grobe Geometrie aller Bauteile (die ersten "
-    "25 % des Fortschritts). Bauteile, die in der IFC als außen liegend markiert sind (IsExternal), bleiben "
-    "immer erhalten; im Zweifel wird ein Bauteil eher behalten als weggelassen. Maße und Lage der "
-    "umgewandelten Bauteile ändern sich nicht. Gilt für jedes Zielformat."
-)
+def envelope_label() -> str:
+    return tr("Only the building hull")
+
+
+def envelope_tooltip() -> str:
+    return tr(
+        "Converts only the building hull, i.e. what can be seen from outside: exterior walls, roofs, windows, "
+        "doors, balconies, terrain … Interior walls, furniture, fittings, pipes and ducts are left out; the file "
+        "gets much smaller (e.g. for context models or weaker PCs).\n\n"
+        "For this, a short extra pass first computes a coarse geometry of all elements (the first 25 % of the "
+        "progress). Elements marked as exterior in the IFC (IsExternal) are always kept; in doubt, an element is "
+        "rather kept than left out. Dimensions and positions of the converted elements do not change. Applies to "
+        "every output format."
+    )
 
 DONE_COLOR = QColor("#2e9d57")
 ERROR_COLOR = QColor("#d64545")
@@ -194,23 +208,23 @@ class QueueItem:
     def status_text(self) -> str:
         if self.status is Status.RUNNING:
             if self.progress == READING:
-                return "IFC wird gelesen …"
+                return tr("Reading IFC …")
             if self.detail:
-                return f"Wird konvertiert … {self.progress}{NNBSP}% – {self.detail}"
-            return f"Wird konvertiert … {self.progress}{NNBSP}%"
+                return tr("Converting … {percent}% – {detail}", percent=self.progress, detail=self.detail)
+            return tr("Converting … {percent}%", percent=self.progress)
         if self.status is Status.DONE:
             notes = []
             if self.skipped > 0:
-                notes.append(f"{number_text(self.skipped)} ohne Geometrie")
+                notes.append(tr("{count} without geometry", count=number_text(self.skipped)))
             if self.inside > 0:
                 notes.append(inside_text(self.inside))
-            details = f" ({', '.join(notes)})" if notes else ""
-            return f"Fertig – {count_text(self.elements, 'Bauteil', 'Bauteile')}{details}"
+            text = tr("Done – {elements}", elements=elements_text(self.elements))
+            return f"{text} ({', '.join(notes)})" if notes else text
         if self.status is Status.FAILED:
-            return f"Fehler: {self.error}"
+            return tr("Error: {error}", error=self.error)
         if self.status is Status.CANCELLED:
-            return "Abgebrochen"
-        return "Vorgemerkt – startet danach" if self.queued else "Wartend"
+            return tr("Cancelled")
+        return tr("Queued – starts afterwards") if self.queued else tr("Waiting")
 
 
 @dataclass
@@ -220,15 +234,20 @@ class AddResult:
     duplicates: list[Path]
 
 
+def decimal_mark() -> str:
+    """The decimal separator of the user interface language: a comma in every language but English."""
+    return "." if i18n.language() == "en" else ","
+
+
 def format_size(size: int) -> str:
-    """Human readable file size with a German decimal comma, e.g. "2,2 MB"."""
+    """Human readable file size, e.g. "2,2 MB" (German) or "2.2 MB" (English)."""
     value = float(size)
     for unit in ("B", "KB", "MB", "GB"):
         if value < 1024 or unit == "GB":
             break
         value /= 1024
     text = f"{value:.0f}" if unit == "B" else f"{value:.1f}"
-    return f"{text.replace('.', ',')}{NNBSP}{unit}"
+    return f"{text.replace('.', decimal_mark())}{NNBSP}{unit}"
 
 
 def count_text(count: int, singular: str, plural: str) -> str:
@@ -237,7 +256,13 @@ def count_text(count: int, singular: str, plural: str) -> str:
 
 
 def files_text(count: int) -> str:
-    return count_text(count, "Datei", "Dateien")
+    """"1 file", "3 files" in the user interface language."""
+    return tr("1 file") if count == 1 else tr("{count} files", count=number_text(count))
+
+
+def elements_text(count: int) -> str:
+    """"1 element", "117,137 elements" in the user interface language."""
+    return tr("1 element") if count == 1 else tr("{count} elements", count=number_text(count))
 
 
 def target_path(source: Path, fmt: str, out_dir: Path | None) -> Path:
@@ -507,15 +532,15 @@ class DropZone(QFrame):
         self.setObjectName("DropZone")
         self.setProperty("active", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Klicken öffnet den Dateidialog (Strg+O). Ordner werden nach .ifc-Dateien durchsucht.")
+        self.setToolTip(tr("Click to open the file dialog (Ctrl+O). Folders are searched for .ifc files."))
 
         self.icon = QLabel("⬇")
         self.icon.setObjectName("DropIcon")
-        self.title = QLabel("IFC-Dateien oder Ordner hierher ziehen")
+        self.title = QLabel(tr("Drop IFC files or folders here"))
         self.title.setObjectName("DropTitle")
-        self.hint = muted(QLabel("Ordner werden nach .ifc- und .ifczip-Dateien durchsucht – auch mehrere auf einmal"))
+        self.hint = muted(QLabel(tr("Folders are searched for .ifc and .ifczip files – several at once, too")))
         self.hint.setObjectName("Hint")
-        self.add_button = QPushButton("Dateien hinzufügen…")
+        self.add_button = QPushButton(tr("Add files…"))
         self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_button.clicked.connect(self.browse_requested)
 
@@ -632,7 +657,7 @@ class HintLabel(QLabel):
 class MainWindow(QMainWindow):
     conversion_finished = Signal(bool)  # True if cancelled; mainly for tests
 
-    COLUMNS = ("Datei", "Größe", "Status")
+    COLUMNS = ("File", "Size", "Status")  # translated when the table is built
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -684,7 +709,7 @@ class MainWindow(QMainWindow):
         logo.setFixedSize(40, 40)
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
-        subtitle = muted(QLabel("IFC-Gebäudemodelle in 3D-Formate konvertieren"))
+        subtitle = muted(QLabel(tr("Convert IFC building models to 3D formats")))
         titles = QVBoxLayout()
         titles.setSpacing(0)
         titles.addWidget(title)
@@ -716,7 +741,7 @@ class MainWindow(QMainWindow):
         left.addWidget(self.drop_zone)
 
         self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.setHorizontalHeaderLabels([tr("File"), tr("Size"), tr("Status")])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -736,7 +761,7 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(2, 260)
         self.table.setItemDelegateForColumn(2, StatusDelegate(self.table))
         self.table.setMinimumHeight(2 * 28 + 30)  # header and two rows
-        self.table.setToolTip("Doppelklick auf eine fertige Datei öffnet ihren Ausgabeordner; Rechtsklick für mehr.")
+        self.table.setToolTip(tr("Double-click a finished file to open its output folder; right-click for more."))
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.table.cellDoubleClicked.connect(self._open_row_folder)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -749,16 +774,16 @@ class MainWindow(QMainWindow):
 
         list_buttons = QHBoxLayout()
         list_buttons.setSpacing(8)
-        self.remove_button = QPushButton("Entfernen")
-        self.remove_button.setToolTip("Markierte Dateien aus der Liste nehmen (Entf). Die Dateien selbst bleiben unberührt.")
+        self.remove_button = QPushButton(tr("Remove"))
+        self.remove_button.setToolTip(tr("Take the selected files off the list (Del). The files themselves are left untouched."))
         self.remove_button.clicked.connect(self.remove_selected)
-        self.clear_button = QPushButton("Liste leeren")
-        self.clear_button.setToolTip("Alle Dateien aus der Liste nehmen.")
+        self.clear_button = QPushButton(tr("Clear list"))
+        self.clear_button.setToolTip(tr("Take all files off the list."))
         self.clear_button.clicked.connect(self.clear_list)
-        self.details_button = QPushButton("Übersprungene Bauteile…")
+        self.details_button = QPushButton(tr("Skipped elements…"))
         self.details_button.setToolTip(
-            "Listet die Bauteile der gewählten Datei, die nicht konvertiert wurden, mit Klasse, GlobalId und Name "
-            "(auch per Rechtsklick auf die Zeile)."
+            tr("Lists the elements of the selected file that were not converted, with class, GlobalId and name "
+               "(also by right-clicking the row).")
         )
         self.details_button.clicked.connect(lambda: self.show_details())
         self.count_label = muted(ElidedLabel())
@@ -780,7 +805,7 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([200, 400])
-        self.splitter.handle(1).setToolTip("Ziehen: Liste und Vorschau aufteilen")
+        self.splitter.handle(1).setToolTip(tr("Drag to divide the room between list and preview"))
         left.addWidget(self.splitter, stretch=1)
         self.table.itemSelectionChanged.connect(self._update_preview)
 
@@ -802,12 +827,13 @@ class MainWindow(QMainWindow):
         side_scroll.setFixedWidth(SIDE_WIDTH)
         body.addWidget(side_scroll)
 
-        format_box = QGroupBox("Zielformat")
+        format_box = QGroupBox(tr("Output format"))
         format_layout = QVBoxLayout(format_box)
         format_layout.setSpacing(6)
         self.format_group = QButtonGroup(self)
         self.format_buttons: dict[str, QRadioButton] = {}
-        for fmt, (label, hint) in FORMAT_INFO.items():
+        formats, geometries = format_info(), geometry_info()
+        for fmt, (label, hint) in formats.items():
             if fmt not in FORMATS:
                 continue
             button = QRadioButton(label)
@@ -818,36 +844,36 @@ class MainWindow(QMainWindow):
             button.toggled.connect(self._format_changed)
             if fmt == "3dm":
                 format_layout.addWidget(self._build_geometry_options())
-        self.format_hint = muted(HintLabel([hint for _label, hint in (*FORMAT_INFO.values(), *GEOMETRY_INFO.values())]))
+        self.format_hint = muted(HintLabel([hint for _label, hint in (*formats.values(), *geometries.values())]))
         self.format_hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         format_layout.addSpacing(2)
         format_layout.addWidget(self.format_hint)
         # Only the building hull (every format): under the formats, since it decides what the file holds.
-        self.envelope_check = QCheckBox(ENVELOPE_LABEL)
-        self.envelope_check.setToolTip(ENVELOPE_TOOLTIP)
+        self.envelope_check = QCheckBox(envelope_label())
+        self.envelope_check.setToolTip(envelope_tooltip())
         self.envelope_check.toggled.connect(self._envelope_changed)
         format_layout.addSpacing(4)
         format_layout.addWidget(self.envelope_check)
         right.addWidget(format_box)
 
-        output_box = QGroupBox("Speicherort")
+        output_box = QGroupBox(tr("Output folder"))
         output_layout = QVBoxLayout(output_box)
         output_layout.setSpacing(6)
         self.output_edit = QLineEdit()
         self.output_edit.setReadOnly(True)
-        self.output_button = QPushButton("Ändern…")
+        self.output_button = QPushButton(tr("Change…"))
         self.output_button.clicked.connect(self.choose_output_dir)
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(self.output_edit, stretch=1)
         row.addWidget(self.output_button)
         output_layout.addLayout(row)
-        self.beside_check = QCheckBox("Neben der IFC-Datei speichern")
+        self.beside_check = QCheckBox(tr("Save next to the IFC file"))
         self.beside_check.toggled.connect(self._beside_changed)
         output_layout.addWidget(self.beside_check)
-        collision_hint = "Vorhandene Dateien werden nie überschrieben: Gibt es den Namen schon, wird (2), (3) … angehängt."
-        self.output_button.setToolTip(f"Ausgabeordner wählen.\n{collision_hint}")
-        self.beside_check.setToolTip(f"Jede Datei landet im Ordner ihrer IFC-Datei.\n{collision_hint}")
+        collision_hint = tr("Existing files are never overwritten: if the name is taken, (2), (3) … is appended.")
+        self.output_button.setToolTip(f"{tr('Choose the output folder.')}\n{collision_hint}")
+        self.beside_check.setToolTip(f"{tr('Each file goes into the folder of its IFC file.')}\n{collision_hint}")
         right.addWidget(output_box)
         right.addStretch()
 
@@ -855,18 +881,18 @@ class MainWindow(QMainWindow):
         self.overall_progress = QProgressBar()
         self.overall_progress.setRange(0, 100)
         self.overall_progress.setValue(0)
-        self.overall_progress.setFormat("Bereit")
-        self.overall_progress.setToolTip("Fortschritt über alle Dateien der Liste")
+        self.overall_progress.setFormat(tr("Ready"))
+        self.overall_progress.setToolTip(tr("Progress over all files in the list"))
         upper_layout.addWidget(self.overall_progress)
 
         # The log: what happened, with times; the splitter handle above it lets the user enlarge it.
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("Log")
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText("Protokoll – hier steht, was mit jeder Datei passiert ist.")
+        self.log_view.setPlaceholderText(tr("Log – here you can see what happened to each file."))
         self.log_view.setMinimumHeight(60)
         self.log_view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # Tab skips it; it is only read
-        self.log_view.setToolTip("Protokoll dieser Sitzung. Alles steht auch in der Logdatei (Hilfe → Logdatei öffnen).")
+        self.log_view.setToolTip(tr("Log of this session. Everything is also in the log file (Help → Open log file)."))
         self.log_splitter = QSplitter(Qt.Orientation.Vertical)
         self.log_splitter.setChildrenCollapsible(False)
         self.log_splitter.addWidget(upper)
@@ -874,7 +900,7 @@ class MainWindow(QMainWindow):
         self.log_splitter.setStretchFactor(0, 1)
         self.log_splitter.setStretchFactor(1, 0)
         self.log_splitter.setSizes([600, 110])
-        self.log_splitter.handle(1).setToolTip("Ziehen: Protokoll vergrößern oder verkleinern")
+        self.log_splitter.handle(1).setToolTip(tr("Drag to enlarge or shrink the log"))
         root.addWidget(self.log_splitter, stretch=1)
 
         # Bottom: log toggle, status line, actions.
@@ -882,26 +908,26 @@ class MainWindow(QMainWindow):
         actions.setSpacing(8)
         self.log_toggle = QToolButton()
         self.log_toggle.setObjectName("LogToggle")
-        self.log_toggle.setText("Protokoll")
+        self.log_toggle.setText(tr("Log"))
         self.log_toggle.setCheckable(True)
         self.log_toggle.setChecked(True)
         self.log_toggle.setAutoRaise(True)
         self.log_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.log_toggle.setArrowType(Qt.ArrowType.DownArrow)
-        self.log_toggle.setToolTip("Protokoll ein- oder ausblenden (F4)")
+        self.log_toggle.setToolTip(tr("Show or hide the log (F4)"))
         self.log_toggle.toggled.connect(self.set_log_visible)
         self.status_label = muted(ElidedLabel())
         self.status_label.setObjectName("Status")
-        self.open_button = QPushButton("Ausgabeordner öffnen")
-        self.open_button.setToolTip("Öffnet den Ordner der zuletzt geschriebenen Datei.")
+        self.open_button = QPushButton(tr("Open output folder"))
+        self.open_button.setToolTip(tr("Opens the folder of the file written last."))
         self.open_button.clicked.connect(self.open_output_dir)
-        self.cancel_button = QPushButton("Abbrechen")
-        self.cancel_button.setToolTip("Laufende Konvertierung abbrechen. Fertige Dateien bleiben, die angefangene wird gelöscht.")
+        self.cancel_button = QPushButton(tr("Cancel"))
+        self.cancel_button.setToolTip(tr("Cancel the running conversion. Finished files are kept, the one in progress is deleted."))
         self.cancel_button.clicked.connect(self.cancel_conversion)
-        self.convert_button = QPushButton("Konvertieren")
+        self.convert_button = QPushButton(tr("Convert"))
         self.convert_button.setObjectName("Primary")
         self.convert_button.setDefault(True)
-        self.convert_button.setToolTip("Alle Dateien der Liste konvertieren (Strg+Enter)")
+        self.convert_button.setToolTip(tr("Convert all files in the list (Ctrl+Enter)"))
         self.convert_button.clicked.connect(self.start_conversion)
         actions.addWidget(self.log_toggle)
         actions.addWidget(self.status_label, stretch=1)
@@ -921,42 +947,92 @@ class MainWindow(QMainWindow):
             self.addAction(act)  # shortcuts also work while the menu bar is hidden
             return act
 
-        self.add_files_action = action("Dateien hinzufügen…", self.browse_files, ["Ctrl+O"])
-        self.add_folder_action = action("Ordner hinzufügen…", self.browse_folder, ["Ctrl+Shift+O"])
-        self.convert_action = action("Konvertieren", self.start_conversion, ["Ctrl+Return", "Ctrl+Enter"])
-        self.cancel_action = action("Abbrechen", self.cancel_conversion)
-        self.quit_action = action("Beenden", self.close, ["Ctrl+Q"])
-        self.remove_action = action("Entfernen", self.remove_selected, [QKeySequence.StandardKey.Delete])
-        self.clear_action = action("Liste leeren", self.clear_list)
-        self.settings_action = action("Einstellungen…", self.show_settings, ["Ctrl+,"])
-        self.open_output_action = action("Ausgabeordner öffnen", self.open_output_dir)
-        self.open_log_action = action("Logdatei öffnen", open_log)
-        self.save_log_action = action("Anonymisierte Logdatei speichern…", lambda: save_anonymized_log(self))
-        self.about_action = action(f"Über {APP_NAME}", self.show_about)
-        self.preview_action = action("Vorschau", self.set_preview_visible, ["F3"])
+        self.add_files_action = action(tr("Add files…"), self.browse_files, ["Ctrl+O"])
+        self.add_folder_action = action(tr("Add folder…"), self.browse_folder, ["Ctrl+Shift+O"])
+        self.convert_action = action(tr("Convert"), self.start_conversion, ["Ctrl+Return", "Ctrl+Enter"])
+        self.cancel_action = action(tr("Cancel"), self.cancel_conversion)
+        self.quit_action = action(tr("Quit"), self.close, ["Ctrl+Q"])
+        self.remove_action = action(tr("Remove"), self.remove_selected, [QKeySequence.StandardKey.Delete])
+        self.clear_action = action(tr("Clear list"), self.clear_list)
+        self.settings_action = action(tr("Settings…"), self.show_settings, ["Ctrl+,"])
+        self.open_output_action = action(tr("Open output folder"), self.open_output_dir)
+        self.open_log_action = action(tr("Open log file"), open_log)
+        self.save_log_action = action(tr("Save anonymised log file…"), lambda: save_anonymized_log(self))
+        self.about_action = action(tr("About {app}", app=APP_NAME), self.show_about)
+        self.preview_action = action(tr("Preview"), self.set_preview_visible, ["F3"])
         self.preview_action.setCheckable(True)
-        self.log_action = action("Protokoll", self.set_log_visible, ["F4"])
+        self.log_action = action(tr("Log"), self.set_log_visible, ["F4"])
         self.log_action.setCheckable(True)
         self.log_action.setChecked(True)
-        self.drop_zone.add_button.setToolTip("IFC-Dateien auswählen (Strg+O). Ordner: Datei → Ordner hinzufügen…")
+        self.drop_zone.add_button.setToolTip(tr("Choose IFC files (Ctrl+O). Folders: File → Add folder…"))
 
         menus = self.menuBar()
-        file_menu = menus.addMenu("&Datei")
+        file_menu = menus.addMenu(tr("&File"))
         file_menu.addActions([self.add_files_action, self.add_folder_action])
         file_menu.addSeparator()
         file_menu.addActions([self.convert_action, self.cancel_action])
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
-        edit_menu = menus.addMenu("&Bearbeiten")
+        edit_menu = menus.addMenu(tr("&Edit"))
         edit_menu.addActions([self.remove_action, self.clear_action])
-        view_menu = menus.addMenu("&Ansicht")
+        view_menu = menus.addMenu(tr("&View"))
         view_menu.addActions([self.preview_action, self.log_action])
-        tools_menu = menus.addMenu("E&xtras")
+        tools_menu = menus.addMenu(tr("&Tools"))
         tools_menu.addAction(self.settings_action)
-        help_menu = menus.addMenu("&Hilfe")
+        self._build_language_menu(tools_menu)
+        help_menu = menus.addMenu(tr("&Help"))
         help_menu.addActions([self.open_output_action, self.open_log_action, self.save_log_action])
         help_menu.addSeparator()
         help_menu.addAction(self.about_action)
+
+    def _build_language_menu(self, menu: QMenu) -> None:
+        """Tools → Language: every language in its own name, the current one checked (see choose_language)."""
+        self.language_menu = menu.addMenu(tr("Language"))
+        self.language_group = QActionGroup(self)
+        self.language_group.setExclusive(True)
+        self.language_actions: dict[str, QAction] = {}
+        for code, name in i18n.LANGUAGES.items():
+            act = QAction(name, self)
+            act.setCheckable(True)
+            act.setChecked(code == i18n.language())
+            act.setData(code)
+            act.triggered.connect(lambda _checked=False, code=code: self.choose_language(code))
+            self.language_group.addAction(act)
+            self.language_menu.addAction(act)
+            self.language_actions[code] = act
+
+    def choose_language(self, code: str) -> None:
+        """Save ``code`` as the language of the user interface; it applies when the program starts again,
+        so the user is asked (in the new language) whether to restart now."""
+        code = i18n.normalize(code)
+        self.settings.setValue("language", code)
+        self.settings.sync()
+        self.language_actions[code].setChecked(True)
+        previous = i18n.language()
+        if code == previous:
+            return
+        i18n.set_language(code)
+        box = QMessageBox(QMessageBox.Icon.Question, APP_NAME,
+                          tr("The user interface switches to {language} when the program is restarted. Restart now?",
+                             language=i18n.LANGUAGES[code]), parent=self)
+        restart = box.addButton(tr("Restart now"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(tr("Later"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(restart)
+        box.exec()
+        if box.clickedButton() is restart and self.close():  # close() asks first if a conversion runs
+            self.restart()
+        else:
+            i18n.set_language(previous)  # keeps running in the old language
+
+    def restart(self) -> None:
+        """Start the program again (with the same arguments) and quit this one."""
+        server = self.findChild(InstanceServer)
+        if server is not None:
+            server.server.close()  # else the new start would hand its files to this one and exit
+        program, arguments = restart_command()
+        log.info("Neustart: %s %s", program, arguments)
+        QProcess.startDetached(program, arguments)
+        QApplication.instance().quit()
 
     def _build_geometry_options(self) -> QWidget:
         """Sub-options under 3DM: polysurfaces or meshes."""
@@ -964,10 +1040,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.geometry_box)
         layout.setContentsMargins(22, 0, 0, 4)
         layout.setSpacing(4)
-        layout.addWidget(muted(QLabel("Geometrie")))
+        layout.addWidget(muted(QLabel(tr("Geometry"))))
         self.geometry_group = QButtonGroup(self)
         self.geometry_buttons: dict[str, QRadioButton] = {}
-        for mode, (label, hint) in GEOMETRY_INFO.items():
+        for mode, (label, hint) in geometry_info().items():
             button = QRadioButton(label)
             button.setToolTip(hint)
             self.geometry_group.addButton(button)
@@ -1058,13 +1134,13 @@ class MainWindow(QMainWindow):
     def _update_hint(self) -> None:
         # For 3DM the geometry choice is what matters, so its hint replaces the format hint.
         if self.fmt == "3dm":
-            self.format_hint.setText(GEOMETRY_INFO[self.geometry][1])
+            self.format_hint.setText(geometry_info()[self.geometry][1])
         else:
-            self.format_hint.setText(FORMAT_INFO[self.fmt][1])
+            self.format_hint.setText(format_info()[self.fmt][1])
 
     def _set_output_dir(self, path: Path, save: bool = True) -> None:
         self.output_edit.setText(str(path))
-        self.output_edit.setToolTip(f"Ausgabeordner: {path}\n\nVorhandene Dateien werden nie überschrieben: (2), (3) … wird angehängt.")
+        self.output_edit.setToolTip(tr("Output folder: {path}\n\nExisting files are never overwritten: (2), (3) … is appended.", path=path))
         self.output_edit.setCursorPosition(0)
         if save:
             self.settings.setValue("output_dir", str(path))
@@ -1088,7 +1164,7 @@ class MainWindow(QMainWindow):
         AboutDialog(self).exec()
 
     def choose_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Ausgabeordner wählen", str(self.output_dir))
+        path = QFileDialog.getExistingDirectory(self, tr("Choose output folder"), str(self.output_dir))
         if path:
             self._set_output_dir(Path(path))
 
@@ -1104,17 +1180,17 @@ class MainWindow(QMainWindow):
                 self._pending_rows.append(start + offset)
             self._insert_row(start + offset)
         for path in result.rejected:
-            self.log(f"✗ Keine IFC-Datei gefunden: {path} – nur .ifc- und .ifczip-Dateien und Ordner damit "
-                     "(ifcXML kann nicht gelesen werden)")
+            self.log(tr("✗ No IFC file found: {path} – only .ifc and .ifczip files and folders holding them "
+                        "(ifcXML cannot be read)", path=path))
         if result.duplicates:
             names = ", ".join(p.name for p in result.duplicates[:3])
             more = " …" if len(result.duplicates) > 3 else ""
-            self.log(f"• Schon in der Liste: {names}{more}")
+            self.log(tr("• Already in the list: {names}", names=names + more))
         if result.added and self.is_running:
-            self.log(f"+ {files_text(len(result.added))} vorgemerkt: Konvertierung gleich nach der laufenden, "
-                     "mit denselben Einstellungen.")
+            self.log(tr("+ {files} queued: converted right after the running batch, with the same settings.",
+                        files=files_text(len(result.added))))
         elif result.added:
-            self.log(f"+ {files_text(len(result.added))} hinzugefügt")
+            self.log(tr("+ {files} added", files=files_text(len(result.added))))
         if result.added and not self.table.selectionModel().selectedRows():
             self.table.selectRow(start)  # its preview shows right away
         self._update_actions()
@@ -1123,8 +1199,8 @@ class MainWindow(QMainWindow):
     def browse_files(self) -> None:
         start = self.settings.value("last_input_dir", str(Path.home()))
         files, _ = QFileDialog.getOpenFileNames(
-            self, "IFC-Dateien hinzufügen", str(start),
-            "IFC-Dateien (*.ifc *.IFC *.ifczip *.ifcZIP);;Alle Dateien (*)",
+            self, tr("Add IFC files"), str(start),
+            tr("IFC files (*.ifc *.IFC *.ifczip *.ifcZIP);;All files (*)"),
         )
         if files:
             self.settings.setValue("last_input_dir", str(Path(files[0]).parent))
@@ -1132,7 +1208,7 @@ class MainWindow(QMainWindow):
 
     def browse_folder(self) -> None:
         start = self.settings.value("last_input_dir", str(Path.home()))
-        folder = QFileDialog.getExistingDirectory(self, "Ordner mit IFC-Dateien hinzufügen", str(start))
+        folder = QFileDialog.getExistingDirectory(self, tr("Add a folder with IFC files"), str(start))
         if folder:
             self.settings.setValue("last_input_dir", folder)
             self.add_paths([folder])
@@ -1152,7 +1228,7 @@ class MainWindow(QMainWindow):
         self.queue.clear()
         self.table.setRowCount(0)
         self.overall_progress.setValue(0)
-        self.overall_progress.setFormat("Bereit")
+        self.overall_progress.setFormat(tr("Ready"))
         self._update_actions()
 
     def _insert_row(self, row: int) -> None:
@@ -1175,15 +1251,15 @@ class MainWindow(QMainWindow):
         cell.setIcon(status_icon(item.status))
         if item.status is Status.DONE:
             cell.setForeground(DONE_COLOR)
-            tooltip = f"Geschrieben: {item.output}"
+            tooltip = tr("Written: {path}", path=item.output)
             if item.crashed:
-                tooltip += f"\n\n⚠ {len(item.crashed)} übersprungen (Geometriekern abgestürzt oder hängen geblieben)"
+                tooltip += "\n\n" + tr("⚠ {count} skipped (geometry kernel crashed or hung)", count=len(item.crashed))
             if item.skipped > 0:
                 tooltip += f"\n\n⚠ {skipped_count(item.skipped)}: {SKIPPED_HINT}"
             if item.inside > 0:
-                tooltip += f"\n\nNur Gebäudehülle: {inside_text(item.inside)} (innen liegende Bauteile)"
+                tooltip += "\n\n" + tr("Only the building hull: {inside} (interior elements)", inside=inside_text(item.inside))
             if item.has_details:
-                tooltip += "\n\nListe zum Kopieren: Rechtsklick → „Übersprungene Bauteile…“"
+                tooltip += "\n\n" + tr("List to copy: right-click → “Skipped elements…”")
         elif item.status is Status.FAILED:
             cell.setForeground(ERROR_COLOR)
             tooltip = f"{item.error}\n\n{failure_hint(item.internal_error)}"
@@ -1224,25 +1300,31 @@ class MainWindow(QMainWindow):
             try:
                 out_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                QMessageBox.warning(self, APP_NAME, f"Ausgabeordner kann nicht angelegt werden:\n{exc}")
+                QMessageBox.warning(self, APP_NAME, tr("The output folder cannot be created:\n{error}", error=exc))
                 return False
         for row in rows:
             self._refresh_row(row)
         self._run_rows, self._run_done, self._run_failed = rows, 0, 0
 
         fmt = self.fmt
-        target = "neben den IFC-Dateien" if out_dir is None else str(out_dir)
+        target = tr("next to the IFC files") if out_dir is None else str(out_dir)
         geometry = self.geometry
-        label = f"3DM ({GEOMETRY_INFO[geometry][0].split(' (')[0]})" if fmt == "3dm" else fmt.upper()
         prefs = self.preferences
-        kernel = "" if prefs.kernel == DEFAULT_KERNEL else f", Geometriekern {KERNEL_INFO[prefs.kernel][0]}"
-        blocks = ", gleiche Bauteile als Blöcke" if fmt == "3dm" and prefs.blocks else ""
         envelope = self.envelope
-        hull = ", nur Gebäudehülle" if envelope else ""
-        self.log(f"▶ {files_text(len(rows))} → {label}{blocks}{hull}, Ziel: {target}{kernel}")
+        # E.g. "▶ 3 files → 3DM (Polysurfaces), only the building hull, output: C:\Out, geometry kernel Hybrid"
+        what = [f"3DM ({geometry_info()[geometry][0].split(' (')[0]})" if fmt == "3dm" else fmt.upper()]
+        if fmt == "3dm" and prefs.blocks:
+            what.append(tr("identical elements as blocks"))
+        if envelope:
+            what.append(tr("only the building hull"))
+        details = [tr("output: {target}", target=target)]
+        if prefs.kernel != DEFAULT_KERNEL:
+            details.append(tr("geometry kernel {kernel}", kernel=KERNEL_INFO[prefs.kernel][0]))
+        self.log(tr("▶ {files} → {what}, {details}", files=files_text(len(rows)), what=", ".join(what),
+                    details=", ".join(details)))
         threads = prefs.effective_threads
         resources = resource_text(threads, prefs.low_priority, rhino_workers(threads) if fmt == "3dm" else 0)
-        self.log(f"• Rechenleistung: {resources}")
+        self.log(tr("• Computing power: {resources}", resources=resources))
 
         jobs = [(row, self.queue[row].path) for row in rows]
         self._worker = ConversionWorker(
@@ -1267,7 +1349,7 @@ class MainWindow(QMainWindow):
 
         self._update_overall(0)
         self._update_actions()
-        self._set_status("Konvertierung läuft …")
+        self._set_status(tr("Conversion running …"))
         self._started_at = time.monotonic()
         self._thread.start()
         return True
@@ -1276,8 +1358,8 @@ class MainWindow(QMainWindow):
         if self._worker is not None and not self._worker.cancelled:
             self._worker.cancel()
             self._update_actions()
-            self._set_status("Wird abgebrochen …")
-            self.log("■ Abbruch angefordert")
+            self._set_status(tr("Cancelling …"))
+            self.log(tr("■ Cancel requested"))
 
     def _on_file_started(self, row: int, target: Path) -> None:
         item = self.queue[row]
@@ -1287,7 +1369,7 @@ class MainWindow(QMainWindow):
         self._update_overall(0)
         # Reading gives no progress at all, so show a busy bar to make clear the app is not frozen.
         self.overall_progress.setRange(0, 0)
-        self._set_activity(f"IFC wird gelesen ({format_size(item.size)}) – kann einige Minuten dauern …")
+        self._set_activity(tr("Reading IFC ({size}) – may take a few minutes …", size=format_size(item.size)))
         self.log(f"… {item.path.name} ({format_size(item.size)}) → {target.name}")
 
     def _on_file_retrying(self, row: int, message: str = RETRY_MESSAGE) -> None:
@@ -1299,7 +1381,7 @@ class MainWindow(QMainWindow):
         self._refresh_row(row)
         self._update_overall(0)
         self.overall_progress.setRange(0, 0)
-        self._set_activity(f"{item.path.name}: neuer Versuch – IFC wird gelesen …")
+        self._set_activity(tr("{file}: new attempt – reading IFC …", file=item.path.name))
         self.log(f"⚠ {item.path.name}: {message}")
 
     def _on_file_status(self, row: int, phase: str, text: str) -> None:
@@ -1333,7 +1415,7 @@ class MainWindow(QMainWindow):
         if item.status is not Status.RUNNING:
             return
         if item.progress == READING:
-            self._set_activity(f"{item.path.name} wird konvertiert …")
+            self._set_activity(tr("Converting {file} …", file=item.path.name))
         item.progress = percent
         self._refresh_row(row)
         self._update_overall(percent)
@@ -1347,7 +1429,7 @@ class MainWindow(QMainWindow):
         self._run_done += 1
         self._last_output_dir = result.output.parent
         self._update_overall(0)
-        counts = count_text(result.elements, 'Bauteil', 'Bauteile')
+        counts = elements_text(result.elements)
         if result.inside > 0:
             counts += f", {inside_text(result.inside)}"
         self.log(f"✓ {item.path.name} → {result.output}  ({counts})")
@@ -1356,7 +1438,7 @@ class MainWindow(QMainWindow):
         if result.skipped > 0:
             self.log(f"⚠ {item.path.name}: {skipped_warning(result.skipped)}")
         if item.has_details:
-            self.log("   → Liste zum Kopieren: Rechtsklick auf die Datei → „Übersprungene Bauteile…“")
+            self.log(tr("   → List to copy: right-click the file → “Skipped elements…”"))
         self._update_actions()
 
     def _on_file_failed(self, row: int, message: str, internal: bool = False) -> None:
@@ -1365,7 +1447,7 @@ class MainWindow(QMainWindow):
         self._refresh_row(row)
         self._run_failed += 1
         self._update_overall(0)
-        self.log(f"✗ Fehler bei {item.path.name}: {message}")
+        self.log(tr("✗ Error in {file}: {error}", file=item.path.name, error=message))
         self.log(f"   → {failure_hint(internal)}")
 
     def _on_file_cancelled(self, row: int) -> None:
@@ -1381,11 +1463,12 @@ class MainWindow(QMainWindow):
         self._worker = None
 
         seconds = time.monotonic() - self._started_at
-        summary = f"{self._run_done} von {files_text(len(self._run_rows))} fertig"
+        parts = [tr("{done} of {files} done", done=self._run_done, files=files_text(len(self._run_rows)))]
         if self._run_failed:
-            summary += f", {self._run_failed} mit Fehler"
+            parts.append(tr("{count} with errors", count=self._run_failed))
+        summary = ", ".join(parts)
         if cancelled:
-            summary += " – abgebrochen"
+            summary += f" – {tr('cancelled')}"
         summary += f" ({duration_text(seconds)})"
         self.overall_progress.setRange(0, 100)
         self.overall_progress.setFormat(summary.split(" (")[0])
@@ -1412,22 +1495,28 @@ class MainWindow(QMainWindow):
         if not pending:
             return False
         if cancelled:
-            noun = "vorgemerkte Datei" if len(pending) == 1 else "vorgemerkte Dateien"
-            self.log(f"• {len(pending)} {noun} nicht konvertiert – „Konvertieren“ startet sie.")
+            if len(pending) == 1:
+                self.log(tr("• 1 queued file not converted – “Convert” starts it."))
+            else:
+                self.log(tr("• {count} queued files not converted – “Convert” starts them.", count=len(pending)))
             return False
-        self.log(f"▶ Weiter mit {files_text(len(pending))}, hinzugefügt während der Konvertierung")
+        self.log(tr("▶ Continuing with {files}, added during the conversion", files=files_text(len(pending))))
         return self._start_run(pending)
 
     def _notify_finished(self, cancelled: bool, seconds: float) -> None:
         """Say that the batch is over: in the window, its title and, if it is in the background, the taskbar."""
         duration = duration_text(seconds)
         if cancelled:
-            text, state, title = f"Abgebrochen nach {duration}", "", "Abgebrochen"
+            text, state, title = tr("Cancelled after {duration}", duration=duration), "", tr("Cancelled")
         elif self._chain_failed:
-            done = f"{self._chain_done} fertig, " if self._chain_done else ""
-            text, state, title = f"✗ {done}{self._chain_failed} mit Fehler – nach {duration}", "failed", "Fehler"
+            if self._chain_done:
+                text = tr("✗ {done} done, {failed} with errors – after {duration}",
+                          done=self._chain_done, failed=self._chain_failed, duration=duration)
+            else:
+                text = tr("✗ {failed} with errors – after {duration}", failed=self._chain_failed, duration=duration)
+            state, title = "failed", tr("Error")
         else:
-            text, state, title = f"✓ Fertig nach {duration}", "done", "✓ Fertig"
+            text, state, title = tr("✓ Done after {duration}", duration=duration), "done", tr("✓ Done")
         self._set_status(text, state)
         if self.isActiveWindow():
             self._set_title()
@@ -1458,7 +1547,7 @@ class MainWindow(QMainWindow):
         self.overall_progress.setRange(0, 100)
         value = min(100, int((finished * 100 + (current_percent if finished < total else 0)) / total))
         self.overall_progress.setValue(value)
-        self.overall_progress.setFormat(f"{finished} von {files_text(total)} fertig – %p{NNBSP}%")
+        self.overall_progress.setFormat(tr("{done} of {files} done – %p%", done=finished, files=files_text(total)))
         self._set_title(f"{value} %")  # visible in the taskbar while the window is in the background
 
     # --------------------------------------------------------------- helpers
@@ -1468,7 +1557,7 @@ class MainWindow(QMainWindow):
         if folder.is_dir():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
         else:
-            self.log(f"✗ Ausgabeordner gibt es (noch) nicht: {folder}")
+            self.log(tr("✗ The output folder does not exist (yet): {path}", path=folder))
 
     def _selected_details_row(self) -> int | None:
         """The selected row if it is the only one and has skipped elements to list."""
@@ -1496,14 +1585,14 @@ class MainWindow(QMainWindow):
             return
         item = self.queue[row]
         menu = QMenu(self)
-        details = menu.addAction("Übersprungene Bauteile…")
+        details = menu.addAction(tr("Skipped elements…"))
         details.setEnabled(item.has_details)
         details.triggered.connect(lambda: self.show_details(row))
-        folder = menu.addAction("Ausgabeordner öffnen")
+        folder = menu.addAction(tr("Open output folder"))
         folder.setEnabled(item.status is Status.DONE and item.output is not None)
         folder.triggered.connect(lambda: self._open_row_folder(row, 0))
         if item.status is Status.FAILED:
-            menu.addAction("Logdatei öffnen").triggered.connect(open_log)
+            menu.addAction(tr("Open log file")).triggered.connect(open_log)
         menu.popup(self.table.viewport().mapToGlobal(position))
 
     def _open_row_folder(self, row: int, _column: int) -> None:
@@ -1543,9 +1632,10 @@ class MainWindow(QMainWindow):
         self.output_button.setEnabled(not running and not beside)
         count = len(self.queue)
         done = sum(1 for item in self.queue if item.status is Status.DONE)
-        self.count_label.setText(f"{done} von {files_text(count)} fertig" if done else files_text(count))
+        self.count_label.setText(tr("{done} of {files} done", done=done, files=files_text(count)) if done
+                                 else files_text(count))
         if not running and not self.status_label.text():
-            self._set_status("Dateien hinzufügen und auf „Konvertieren“ klicken.")
+            self._set_status(tr("Add files and click “Convert”."))
 
     @staticmethod
     def _set_highlight(button: QPushButton, on: bool) -> None:
@@ -1591,16 +1681,16 @@ class MainWindow(QMainWindow):
         """E.g. "„Modell.ifc“ wird seit 42 min 3 s umgewandelt (89 %)."."""
         running = next((item for item in self.queue if item.status is Status.RUNNING), None)
         if running is None:
-            return "Die Konvertierung läuft noch."
+            return tr("The conversion is still running.")
         since = duration_text(time.monotonic() - self._started_at)
-        return f"„{running.path.name}“ wird konvertiert, die Konvertierung läuft seit {since} ({max(running.progress, 0)} %)."
+        return tr("“{file}” is being converted; the conversion has been running for {since} ({percent}%).",
+                  file=running.path.name, since=since, percent=max(running.progress, 0))
 
     def closeEvent(self, event):
         if self.is_running:
             answer = QMessageBox.question(
                 self, APP_NAME,
-                f"{self._running_text()}\n\nBeim Beenden wird die Konvertierung abgebrochen, ihr Fortschritt geht "
-                "verloren. Trotzdem beenden?",
+                f"{self._running_text()}\n\n{tr('Quitting cancels the conversion and its progress is lost. Quit anyway?')}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,  # Enter keeps it running
             )
@@ -1682,6 +1772,19 @@ def open_settings(path: Path | None = None, legacy: QSettings | None = None) -> 
             settings.sync()
             log.info("%d Einstellungen von %s übernommen", len(keys), legacy.fileName())
     return settings
+
+
+def restart_command() -> tuple[str, list[str]]:
+    """The program and arguments that start this app again, for the three ways it is started: a frozen
+    build (PyInstaller: the executable itself), ``python -m ifc_converter.gui``, or the ifc-converter-gui
+    entry point script."""
+    arguments = sys.argv[1:]
+    if getattr(sys, "frozen", False):
+        return sys.executable, arguments
+    script = sys.argv[0]
+    if Path(script).name == "gui.py":
+        return sys.executable, ["-m", "ifc_converter.gui", *arguments]
+    return sys.executable, [script, *arguments]
 
 
 def instance_name() -> str:
@@ -1800,7 +1903,12 @@ def main(argv: list[str] | None = None) -> int:
     removed = remove_stale_temp_files()
     if removed:
         log.info("%d alte Zwischendateien im Temp-Ordner gelöscht", removed)
-    window = MainWindow()
+    # The language of the window (Tools → Language), before any of its texts are built; without a choice,
+    # IFC_CONVERTER_LANG from the environment, else English.
+    settings = open_settings()
+    i18n.set_language(str(settings.value("language", "") or "") or i18n.language_from_environment())
+    log.info("Sprache der Oberfläche: %s", i18n.language())
+    window = MainWindow(settings)
     server = InstanceServer(parent=window)
     server.paths_received.connect(window.receive_paths)
     if not server.listen():

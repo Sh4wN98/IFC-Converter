@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 
 from ifc_converter.converter import size_text
 from ifc_converter.dialogs import ElidedLabel, muted
+from ifc_converter.i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +26,11 @@ log = logging.getLogger(__name__)
 # about 10 s); larger ones on request.
 AUTO_PREVIEW_SIZE = 150 * 1024 ** 2
 
-NO_FILE = "Eine Datei in der Liste auswählen – ihre Vorschau erscheint hier."
+
+
+def no_file_text() -> str:
+    """What the pane says while no file is selected."""
+    return tr("Select a file in the list – its preview appears here.")
 
 
 def _number(value) -> str:
@@ -80,7 +85,7 @@ class _MessageView(QLabel):
 
     def set_mesh(self, mesh) -> None:
         if mesh is not None:
-            self.setText("Die 3D-Ansicht ist auf diesem PC nicht verfügbar.")
+            self.setText(tr("The 3D view is not available on this PC."))
 
     def set_message(self, text: str) -> None:
         self.setText(text)
@@ -126,18 +131,18 @@ class PreviewPane(QWidget):
         header.setSpacing(8)
         # Title and info line shorten long file names with "…" instead of widening the window, and the
         # info line keeps its height when empty, so the view does not jump when another file is chosen.
-        self.title = ElidedLabel("Vorschau")
+        self.title = ElidedLabel(tr("Preview"))
         self.title.setObjectName("PreviewTitle")
-        self.compute_button = QPushButton("Vorschau berechnen")
+        self.compute_button = QPushButton(tr("Compute preview"))
         self.compute_button.setToolTip(
-            "Berechnet die Vorschau dieser Datei jetzt (niedrige Priorität, höchstens 4 Threads); sie wird gemerkt."
+            tr("Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.")
         )
         self.compute_button.clicked.connect(self.compute)
-        self.cancel_button = QPushButton("Abbrechen")
-        self.cancel_button.setToolTip("Berechnung der Vorschau abbrechen")
+        self.cancel_button = QPushButton(tr("Cancel"))
+        self.cancel_button.setToolTip(tr("Stop computing the preview"))
         self.cancel_button.clicked.connect(self.cancel)
-        self.reset_button = QPushButton("Ansicht zurücksetzen")
-        self.reset_button.setToolTip("Startansicht: ganzes Modell schräg von Südwesten (Pos1; Doppelklick: ganzes Modell)")
+        self.reset_button = QPushButton(tr("Reset view"))
+        self.reset_button.setToolTip(tr("Start view: the whole model from the south-west above (Home; double-click: whole model)"))
         header.addWidget(self.title, stretch=1)
         for button in (self.compute_button, self.cancel_button, self.reset_button):
             header.addWidget(button)
@@ -154,7 +159,7 @@ class PreviewPane(QWidget):
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.info.setMinimumHeight(self.info.fontMetrics().height() + 2)
         layout.addWidget(self.info)
-        self._show_state(NO_FILE)
+        self._show_state(no_file_text())
 
     # ------------------------------------------------------------------ API
 
@@ -167,12 +172,12 @@ class PreviewPane(QWidget):
         if self._task is not None and not self._task_requested and self._task_path != path:
             self._task.cancel()  # computed for a file no longer selected, unasked
         if path is None:
-            self.title.setText("Vorschau")
-            self._show_state(NO_FILE)
+            self.title.setText(tr("Preview"))
+            self._show_state(no_file_text())
             return
-        self.title.setText(f"Vorschau – {path.name}")
+        self.title.setText(tr("Preview – {file}", file=path.name))
         if self._task is not None and self._task_path == path:
-            self._show_state("Vorschau wird berechnet …", running=True)
+            self._show_state(tr("Computing preview …"), running=True)
             return
         from ifc_converter.preview import cached_preview
 
@@ -181,26 +186,26 @@ class PreviewPane(QWidget):
             self._load(cached)
             return
         if path in self._failed:
-            self._show_state(f"Keine Vorschau möglich: {self._failed[path]}", can_compute=True)
+            self._show_state(tr("No preview possible: {error}", error=self._failed[path]), can_compute=True)
             return
         try:
             size = path.stat().st_size
         except OSError:
-            self._show_state("Die Datei ist nicht (mehr) erreichbar.")
+            self._show_state(tr("The file is not (or no longer) accessible."))
             return
         if self._busy():
             self._show_state(
-                "Während einer Konvertierung wird keine Vorschau berechnet, damit sie nicht gebremst wird.",
+                tr("No preview is computed while a conversion runs, so as not to slow it down."),
                 can_compute=True,
             )
         elif size > AUTO_PREVIEW_SIZE:
             self._show_state(
-                f"Große Datei ({size_text(size)}): Die Vorschau braucht einige Minuten. "
-                "Sie läuft mit niedriger Priorität und wird danach gemerkt.",
+                tr("Large file ({size}): the preview takes a few minutes. "
+                   "It runs at low priority and is kept for next time.", size=size_text(size)),
                 can_compute=True,
             )
         elif self._task is not None:
-            self._show_state("Wartet, bis die laufende Vorschau fertig ist …", can_compute=True)
+            self._show_state(tr("Waiting for the running preview to finish …"), can_compute=True)
         else:
             self.compute(requested=False)
 
@@ -225,7 +230,7 @@ class PreviewPane(QWidget):
         self._failed.pop(source, None)
         self._task_path, self._task_requested = source, requested
         self._start(_Task(work), self._computed)
-        self._show_state("Vorschau wird berechnet: IFC-Datei wird gelesen …", running=True)
+        self._show_state(tr("Computing preview: reading the IFC file …"), running=True)
 
     def cancel(self) -> None:
         if self._task is not None:
@@ -264,7 +269,7 @@ class PreviewPane(QWidget):
 
         self._task_path, self._task_requested = self.path, False
         self._start(_Task(lambda progress, status, cancelled: load_preview(path)), self._loaded)
-        self._show_state("Vorschau wird geladen …")
+        self._show_state(tr("Loading preview …"))
 
     @Slot(object, str)
     def _computed(self, target, error: str) -> None:
@@ -275,9 +280,9 @@ class PreviewPane(QWidget):
             return
         if error:
             self._failed[source] = error
-            self._show_state(f"Keine Vorschau möglich: {error}", can_compute=True)
+            self._show_state(tr("No preview possible: {error}", error=error), can_compute=True)
         elif target is None:
-            self._show_state("Vorschau abgebrochen.", can_compute=True)
+            self._show_state(tr("Preview cancelled."), can_compute=True)
         else:
             self._load(target)
 
@@ -289,9 +294,9 @@ class PreviewPane(QWidget):
             self.show_file(self.path) if self.path else None
             return
         if mesh is None:
-            self._show_state("Die Vorschau ließ sich nicht laden.", can_compute=True)
+            self._show_state(tr("The preview could not be loaded."), can_compute=True)
         elif not mesh.triangle_count:
-            self._show_state("Die Datei enthält keine darstellbare Geometrie.")
+            self._show_state(tr("The file contains no geometry that can be shown."))
         else:
             self._mesh = mesh
             self.view.set_mesh(mesh)
@@ -305,12 +310,12 @@ class PreviewPane(QWidget):
     @Slot(int)
     def _progress(self, percent: int) -> None:
         if self._task is not None and self._task_path == self.path and self._mesh is None:
-            self.view.set_message(f"Vorschau wird berechnet … {max(percent, 0)} %")
+            self.view.set_message(tr("Computing preview … {percent}%", percent=max(percent, 0)))
 
     @Slot(str)
     def _status(self, text: str) -> None:
         if self._task is not None and self._task_path == self.path and self._mesh is None and text:
-            self.view.set_message(f"Vorschau: {text}")
+            self.view.set_message(tr("Preview: {status}", status=text))
 
     @Slot(str)
     def _element_clicked(self, label: str) -> None:
@@ -321,7 +326,7 @@ class PreviewPane(QWidget):
         self.view.set_mesh(None)
         self.view.set_message(text)
         self.info.setText("")
-        self.compute_button.setText("Erneut versuchen" if self.path in self._failed else "Vorschau berechnen")
+        self.compute_button.setText(tr("Try again") if self.path in self._failed else tr("Compute preview"))
         self._show_buttons(compute=can_compute, cancel=running)
 
     def _show_buttons(self, compute: bool = False, cancel: bool = False, reset: bool = False) -> None:
@@ -331,8 +336,8 @@ class PreviewPane(QWidget):
 
     def _info_text(self, mesh) -> str:
         info = mesh.info
-        parts = [f"{_number(info.get('elements', len(mesh.elements)))} Bauteile"]
+        parts = [tr("{count} elements", count=_number(info.get("elements", len(mesh.elements))))]
         if info.get("left_out"):
-            parts.append(f"{_number(info['left_out'])} kleine Bauteile ausgelassen")
-        parts.append(f"Darstellung: {getattr(self.view, 'renderer_name', '–')}")
-        return " · ".join(parts) + " – Klick auf ein Bauteil zeigt Klasse, GlobalId und Name"
+            parts.append(tr("{count} small elements left out", count=_number(info["left_out"])))
+        parts.append(tr("Renderer: {renderer}", renderer=getattr(self.view, "renderer_name", "–")))
+        return " · ".join(parts) + " – " + tr("Click an element to see its class, GlobalId and name")
