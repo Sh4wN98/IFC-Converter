@@ -122,8 +122,8 @@ def test_products_without_coarse_geometry_are_kept(house_ifc, monkeypatch):
 
 
 def test_a_huge_model_coarsens_its_grid(house_ifc, monkeypatch):
-    # The house samples about 15,600 cells at 0.2 m: 8,000 force one doubling while sampling, and
-    # 5,000 cells of grid (the house needs 10,500 at 0.4 m) one more for the fill.
+    # The house samples about 62,000 cells at 0.1 m: 8,000 force two doublings while sampling (to
+    # 0.4 m, 4,000 cells), and 5,000 cells of grid (the house needs 10,500 at 0.4 m) one more.
     monkeypatch.setattr(envelope, "MAX_SAMPLED", 8000)
     monkeypatch.setattr(envelope, "MAX_VOXELS", 5_000)
     model = ifcopenshell.open(str(house_ifc))
