@@ -640,3 +640,91 @@ def test_progress_line_shows_the_envelope_phase():
     line.phase("geometry", "Geometrie wird berechnet (4 Threads) …")
     line.percent(30)
     assert terminal.getvalue().rstrip().endswith("\ra: 30 %")
+
+
+# ----------------------------------------------------------------------------- English texts
+# The helpers the window and the command line share follow the user-interface language (i18n);
+# the tests above run in German (conftest), these switch to English.
+
+
+@pytest.fixture
+def english():
+    from ifc_converter import i18n
+
+    i18n.set_language("en")
+    yield
+    i18n.set_language("de")
+
+
+def test_helper_texts_in_english(english):
+    cores = process.cpu_count()
+    assert interactive.skipped_count(1) == "1 element without geometry"
+    assert interactive.skipped_count(3) == "3 elements without geometry"
+    assert interactive.skipped_warning(3).startswith("3 elements without geometry. These elements have geometry")
+    assert interactive.SKIPPED_HINT.startswith("These elements have geometry")
+    assert interactive.inside_text(1) == "1 interior element left out"
+    assert interactive.inside_text(2431) == "2,431 interior elements left out"
+    assert interactive.number_text(117137) == "117,137" and interactive.number_text(999) == "999"
+    assert interactive.number_text(1234567) == "1,234,567" and interactive.number_text(-1000) == "-1,000"
+    assert interactive.duration_text(12.34) == "12.3 s" and interactive.duration_text(3122) == "52 min 2 s"
+    assert interactive.duration_text(3900) == "1 h 5 min"
+    assert interactive.resource_text(1, True) == (
+        f"up to 1 thread (of {cores} logical cores), low priority – other programs take precedence")
+    assert interactive.resource_text(6, False, workers=3) == (
+        f"up to 6 threads (of {cores} logical cores), plus up to 3 helper processes for the Rhino geometry "
+        "with large 3DM models, normal priority")
+    assert interactive.crashed_warning(["IfcWall 2O2Fr$t4X7Zf8NOew3FLOH „Wand“"]) == (
+        "1 element skipped because the geometry kernel crashed or hung on it: IfcWall 2O2Fr$t4X7Zf8NOew3FLOH „Wand“. "
+        "In the CAD program it can be found by its GlobalId.")
+    many = interactive.crashed_warning([f"IfcWall {n:022d}" for n in range(12)])
+    assert many.startswith("12 elements skipped because the geometry kernel crashed or hung on them: IfcWall 00")
+    assert " … and 2 more (all of them in the log file). In the CAD program they can be found" in many
+
+
+def test_error_texts_in_english(english):
+    from ifc_converter.interactive import error_message, failure_hint
+
+    assert error_message(process.ConversionFailed("KeyError", "'Name'")) == "Internal error (KeyError): 'Name'"
+    assert error_message(process.ConversionFailed("KeyError", "")) == "Internal error (KeyError)"
+    assert error_message(process.ConversionFailed("MemoryError", "")) == "There was not enough memory"
+    assert error_message(process.ConversionFailed("Error", "Unable to parse")) == (
+        "The file could not be read as IFC (damaged or not an IFC file): Unable to parse")
+    assert error_message(process.ConversionFailed("PermissionError", "[Errno 13] Permission denied: 'x.3dm'")) == (
+        "File or network error: [Errno 13] Permission denied: 'x.3dm'")
+    assert failure_hint(True) == "Please attach the log file (Help → Open log file) when reporting the error."
+    assert failure_hint(False, "C:\\log.txt") == "Details are in the log file (C:\\log.txt)."
+
+
+def test_german_helper_texts_are_the_old_ones():
+    # The fixture in conftest switches to German: the texts asserted all over this file.
+    assert interactive.duration_text(12.34) == "12,3 s"
+    assert interactive.number_text(1234567) == "1.234.567"
+
+
+def test_cli_lang_flag_sets_the_language_before_anything_runs(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter import i18n
+    from ifc_converter.cli import main
+
+    use_child_func(monkeypatch, child_helpers.report_skipped)
+    assert main([str(wall_ifc), "-d", str(tmp_path), "--lang", "en"]) == 0
+    err = capsys.readouterr().err
+    assert "⚠ wall.ifc: 3 elements without geometry. These elements have geometry" in err
+    assert i18n.language() == "en" and os.environ[i18n.ENV] == "en"  # the child processes inherit it
+
+    assert main([str(wall_ifc), "-d", str(tmp_path / "de"), "--lang", "de"]) == 0
+    assert "⚠ wall.ifc: 3 Bauteile ohne Geometrie." in capsys.readouterr().err
+    assert i18n.language() == "de"
+
+
+def test_cli_lang_defaults_to_the_environment(monkeypatch):
+    from ifc_converter.cli import build_parser
+
+    monkeypatch.setenv("IFC_CONVERTER_LANG", "fr")
+    assert build_parser().parse_args([]).lang == "fr"
+    monkeypatch.setenv("IFC_CONVERTER_LANG", "klingon")
+    assert build_parser().parse_args([]).lang == "en"
+    monkeypatch.delenv("IFC_CONVERTER_LANG")
+    assert build_parser().parse_args([]).lang == "en"
+    assert build_parser().parse_args(["--lang", "pl"]).lang == "pl"
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--lang", "xx"])

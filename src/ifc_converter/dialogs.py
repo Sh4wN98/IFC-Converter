@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,27 +50,45 @@ from ifc_converter import __version__
 from ifc_converter import app as app_info
 from ifc_converter.app import APP_NAME, LICENSES, REPOSITORY, component_versions
 from ifc_converter.converter import DEFAULT_KERNEL, KERNELS
+from ifc_converter.i18n import tr
 from ifc_converter.interactive import inside_text, resource_text, split_label
 from ifc_converter.process import auto_threads, cpu_count
 
 RESOURCES = Path(__file__).resolve().parent / "resources"
 
-# Geometry kernel -> (label, hint) in the settings.
-KERNEL_INFO = {
-    "accurate": (
-        "Genau (empfohlen)",
-        "Jedes Bauteil vollständig und bei jedem Lauf gleich; nur große Dreiecksnetze (Gelände) nimmt der "
-        "schnelle Kern, der sie unverändert übernimmt.",
-    ),
-    "hybrid": (
-        "Schnell",
-        "3- bis 13-mal schneller, kann aber bei einzelnen Bauteilen Flächen weglassen oder doppelt erzeugen.",
-    ),
-    "opencascade": (
-        "Nur OpenCASCADE",
-        "Alles mit OpenCASCADE, auch Geländemodelle: dort sehr langsam (über 20 Minuten für ein großes Gelände).",
-    ),
-}
+
+
+class _KernelInfo(Mapping[str, tuple[str, str]]):
+    """Geometry kernel -> (label, hint) in the settings, translated whenever it is read (see i18n)."""
+
+    _ENTRIES: dict[str, Callable[[], tuple[str, str]]] = {
+        "accurate": lambda: (
+            tr("Accurate (recommended)"),
+            tr("Every element complete and the same on every run; only large triangle meshes (terrain) go to the "
+               "fast kernel, which takes them over unchanged."),
+        ),
+        "hybrid": lambda: (
+            tr("Fast"),
+            tr("3 to 13 times faster, but may drop or duplicate faces of some elements."),
+        ),
+        "opencascade": lambda: (
+            tr("OpenCASCADE only"),
+            tr("Everything with OpenCASCADE, terrain models too: very slow there (over 20 minutes for a large "
+               "terrain)."),
+        ),
+    }
+
+    def __getitem__(self, kernel: str) -> tuple[str, str]:
+        return self._ENTRIES[kernel]()
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._ENTRIES)
+
+    def __len__(self) -> int:
+        return len(self._ENTRIES)
+
+
+KERNEL_INFO = _KernelInfo()
 
 
 def app_icon() -> QIcon:
@@ -95,11 +114,15 @@ def open_log() -> bool:
 
 # Name of the anonymised copy of the log, saved on the desktop by default.
 ANONYMIZED_LOG_NAME = "ifc-converter-log-anonym.txt"
-ANONYMIZE_HINT = (
-    "Ersetzt Benutzer- und Rechnernamen, Server und Freigaben von Netzlaufwerken, Ordnernamen "
-    "(<Ordner>) und Dateinamen (Datei-1.ifc, Datei-1.3dm …) und lässt Bauteilnamen weg. Erhalten bleiben "
-    "IFC-Klasse und GlobalId, Zeiten, Größen, Versionen und Fehlermeldungen."
-)
+
+
+def anonymize_hint() -> str:
+    """What the anonymised log leaves out and what it keeps (see anonymize)."""
+    return tr(
+        "Replaces user and computer names, servers and shares of network drives, folder names (<folder>) and "
+        "file names (File-1.ifc, File-1.3dm …) and leaves out element names. IFC class and GlobalId, times, "
+        "sizes, versions and error messages are kept."
+    )
 
 
 def save_anonymized_log(parent: QWidget | None = None) -> Path | None:
@@ -107,23 +130,28 @@ def save_anonymized_log(parent: QWidget | None = None) -> Path | None:
     from ifc_converter.interactive import desktop_dir
 
     if not app_info.log_files():
-        QMessageBox.information(parent, APP_NAME, f"Es gibt noch keine Logdatei in {app_info.log_dir()}.")
+        QMessageBox.information(
+            parent, APP_NAME, tr("There is no log file yet in {folder}.", folder=app_info.log_dir()),
+        )
         return None
     path, _ = QFileDialog.getSaveFileName(
-        parent, "Anonymisierte Logdatei speichern", str(desktop_dir() / ANONYMIZED_LOG_NAME),
-        "Textdateien (*.txt);;Alle Dateien (*)",
+        parent, tr("Save anonymised log file"), str(desktop_dir() / ANONYMIZED_LOG_NAME),
+        tr("Text files (*.txt);;All files (*)"),
     )
     if not path:
         return None
     try:
         target = app_info.write_anonymized_log(Path(path))
     except OSError as exc:
-        QMessageBox.warning(parent, APP_NAME, f"Die anonymisierte Logdatei konnte nicht gespeichert werden:\n{exc}")
+        QMessageBox.warning(
+            parent, APP_NAME, tr("The anonymised log file could not be saved:\n{error}", error=exc),
+        )
         return None
     answer = QMessageBox.question(
         parent, APP_NAME,
-        f"Die anonymisierte Logdatei wurde gespeichert:\n{target}\n\n{ANONYMIZE_HINT}\n\n"
-        "Bitte vor dem Versenden kurz durchsehen. Ordner jetzt öffnen?",
+        tr("The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
+           "Please look through it briefly before sending. Open the folder now?",
+           path=target, hint=anonymize_hint()),
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes,
     )
     if answer == QMessageBox.StandardButton.Yes:
@@ -284,7 +312,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, preferences: Preferences, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Einstellungen")
+        self.setWindowTitle(tr("Settings"))
         self.setMinimumSize(600, 460)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -293,10 +321,10 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(False)
         layout.addWidget(self.tabs, stretch=1)
-        self.tabs.addTab(self._performance_tab(), "Leistung")
-        self.tabs.addTab(self._kernel_tab(), "Geometriekern")
-        self.tabs.addTab(self._output_tab(), "Ausgabe")
-        self.tabs.addTab(self._log_tab(), "Logdatei")
+        self.tabs.addTab(self._performance_tab(), tr("Performance"))
+        self.tabs.addTab(self._kernel_tab(), tr("Geometry kernel"))
+        self.tabs.addTab(self._output_tab(), tr("Output"))
+        self.tabs.addTab(self._log_tab(), tr("Log file"))
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -304,9 +332,9 @@ class SettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.RestoreDefaults
         )
         for which, text, tooltip in (
-            (QDialogButtonBox.StandardButton.Ok, "OK", "Einstellungen übernehmen und speichern"),
-            (QDialogButtonBox.StandardButton.Cancel, "Abbrechen", "Änderungen verwerfen"),
-            (QDialogButtonBox.StandardButton.RestoreDefaults, "Standardwerte", "Alle Einstellungen auf die Vorgaben zurücksetzen"),
+            (QDialogButtonBox.StandardButton.Ok, tr("OK"), tr("Apply and save the settings")),
+            (QDialogButtonBox.StandardButton.Cancel, tr("Cancel"), tr("Discard changes")),
+            (QDialogButtonBox.StandardButton.RestoreDefaults, tr("Defaults"), tr("Reset all settings to their defaults")),
         ):
             self.buttons.button(which).setText(text)
             self.buttons.button(which).setToolTip(tooltip)
@@ -332,30 +360,30 @@ class SettingsDialog(QDialog):
         page, layout = self._page()
         row = QHBoxLayout()
         row.setSpacing(8)
-        row.addWidget(QLabel("Höchstens so viele Threads:"))
+        row.addWidget(QLabel(tr("At most this many threads:")))
         self.threads_spin = QSpinBox()
         self.threads_spin.setRange(0, cpu_count())
-        self.threads_spin.setSpecialValueText(f"Automatisch ({auto_threads()})")
+        self.threads_spin.setSpecialValueText(tr("Automatic ({threads})", threads=auto_threads()))
         self.threads_spin.setMinimumWidth(170)
-        self.threads_spin.setToolTip("0 bzw. „Automatisch“ lässt einige Kerne frei und nimmt bei wenig freiem RAM weniger.")
+        self.threads_spin.setToolTip(tr("0 or “Automatic” leaves some cores free and takes fewer when little RAM is free."))
         row.addWidget(self.threads_spin)
         row.addStretch()
         layout.addLayout(row)
-        layout.addWidget(_hint(
-            "So viele Prozessorkerne berechnen die Geometrie gleichzeitig. Weniger Threads bremsen andere "
-            "Programme weniger, die Konvertierung dauert dafür länger. "
-            f"„Automatisch“ nutzt bis zu {auto_threads()} der {cpu_count()} logischen Kerne dieses PCs (mit den "
-            "Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte) und bei wenig freiem RAM weniger; jeder Thread "
-            "kann bei großen Bauteilen bis ca. 1 GB brauchen."
-        ))
+        layout.addWidget(_hint(tr(
+            "This many processor cores compute the geometry at the same time. Fewer threads slow other programs "
+            "down less, but the conversion takes longer. “Automatic” uses up to {threads} of the {cores} logical "
+            "cores of this PC (about half, counting the helper processes of the Rhino output) and fewer when "
+            "little RAM is free; each thread can need up to about 1 GB with large elements.",
+            threads=auto_threads(), cores=cpu_count(),
+        )))
         layout.addSpacing(4)
-        self.priority_check = QCheckBox("Mit niedriger Priorität konvertieren (empfohlen)")
+        self.priority_check = QCheckBox(tr("Convert at low priority (recommended)"))
         layout.addWidget(self.priority_check)
-        layout.addWidget(_hint(
-            "Die Konvertierung läuft mit der Windows-Priorität „Niedriger als normal“: Rhino, Revit & Co. haben "
-            "Vorrang und bleiben flüssig bedienbar; die Konvertierung nutzt nur die Rechenzeit, die sie übrig "
-            "lassen. Ohne diese Einstellung konkurriert sie gleichberechtigt mit ihnen."
-        ))
+        layout.addWidget(_hint(tr(
+            "The conversion runs at the Windows priority “Below normal”: Rhino, Revit and the like take precedence "
+            "and stay responsive; the conversion only uses the processing time they leave over. Without this "
+            "setting it competes with them on equal terms."
+        )))
         layout.addSpacing(4)
         self.threads_usage = _hint("")
         layout.addWidget(self.threads_usage)
@@ -366,9 +394,9 @@ class SettingsDialog(QDialog):
 
     def _kernel_tab(self) -> QWidget:
         page, layout = self._page()
-        layout.addWidget(_hint(
-            "Womit die Geometrie der Bauteile berechnet wird. Gilt für alle Zielformate."
-        ))
+        layout.addWidget(_hint(tr(
+            "What the geometry of the elements is computed with. Applies to all output formats."
+        )))
         layout.addSpacing(4)
         self.kernel_group = QButtonGroup(self)
         self.kernel_buttons: dict[str, QRadioButton] = {}
@@ -386,32 +414,32 @@ class SettingsDialog(QDialog):
 
     def _output_tab(self) -> QWidget:
         page, layout = self._page()
-        self.open_output_check = QCheckBox("Ausgabeordner nach der Konvertierung öffnen")
-        self.open_output_check.setToolTip("Öffnet den Ordner im Explorer, sobald alle Dateien konvertiert sind.")
+        self.open_output_check = QCheckBox(tr("Open the output folder after the conversion"))
+        self.open_output_check.setToolTip(tr("Opens the folder in Explorer as soon as all files are converted."))
         layout.addWidget(self.open_output_check)
-        layout.addWidget(_hint(
-            "Vorhandene Dateien werden nie überschrieben – gibt es den Namen schon, wird (2), (3) … "
-            "angehängt. Die IFC-Dateien selbst werden nie verändert."
-        ))
+        layout.addWidget(_hint(tr(
+            "Existing files are never overwritten – if the name exists already, (2), (3) … is appended. "
+            "The IFC files themselves are never changed."
+        )))
         layout.addSpacing(8)
         rhino = QLabel("Rhino (.3dm)")
         rhino_font = rhino.font()
         rhino_font.setWeight(QFont.Weight.DemiBold)
         rhino.setFont(rhino_font)
         layout.addWidget(rhino)
-        self.blocks_check = QCheckBox("Gleiche Bauteile als Blöcke (kleinere Datei)")
-        self.blocks_check.setToolTip(
-            "Bauteile mit derselben Typ-Geometrie (Fenster, Türen, Möbel …) werden Instanzen eines Rhino-Blocks.\n"
-            "Die Datei wird kleiner, aber Blockinstanzen verhalten sich anders als normale Objekte:\n"
-            "Zum Bearbeiten der Geometrie muss eine Instanz erst aufgelöst werden (_Explode).\n"
-            "Benutzertexte, Layer und Farbe stehen an der Instanz."
-        )
-        layout.addWidget(self.blocks_check)
-        layout.addWidget(_hint(
-            "Typ-Geometrie, die mehrere Bauteile teilen (Fenster, Türen, Möbel …), wird einmal als Block gespeichert "
-            "und je Bauteil als Instanz eingefügt: Datei 20–45 % kleiner. Zum Bearbeiten in Rhino muss eine "
-            "Blockinstanz erst aufgelöst werden (_Explode)."
+        self.blocks_check = QCheckBox(tr("Identical elements as blocks (smaller file)"))
+        self.blocks_check.setToolTip(tr(
+            "Elements with the same type geometry (windows, doors, furniture …) become instances of a Rhino block.\n"
+            "The file gets smaller, but block instances behave differently from normal objects:\n"
+            "To edit the geometry, an instance has to be exploded first (_Explode).\n"
+            "User texts, layer and colour are on the instance."
         ))
+        layout.addWidget(self.blocks_check)
+        layout.addWidget(_hint(tr(
+            "Type geometry shared by several elements (windows, doors, furniture …) is stored once as a block and "
+            "inserted as an instance per element: file 20–45 % smaller. To edit it in Rhino, a block instance "
+            "has to be exploded first (_Explode)."
+        )))
         layout.addStretch()
         return page
 
@@ -421,38 +449,39 @@ class SettingsDialog(QDialog):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(6)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.addRow("Logdatei:", _selectable(str(app_info.log_dir())))
-        form.addRow("Einstellungen:", _selectable(str(app_info.settings_path())))
+        form.addRow(tr("Log file:"), _selectable(str(app_info.log_dir())))
+        form.addRow(tr("Settings:"), _selectable(str(app_info.settings_path())))
         layout.addLayout(form)
         button_row = QHBoxLayout()
         button_row.setSpacing(8)
-        open_log_button = QPushButton("Logdatei öffnen")
-        open_log_button.setToolTip("Öffnet die aktuelle Logdatei im Standardprogramm für Textdateien.")
+        open_log_button = QPushButton(tr("Open log file"))
+        open_log_button.setToolTip(tr("Opens the current log file in the default program for text files."))
         open_log_button.clicked.connect(open_log)
-        save_log_button = QPushButton("Anonymisiert speichern…")
-        save_log_button.setToolTip(ANONYMIZE_HINT)
+        save_log_button = QPushButton(tr("Save anonymised…"))
+        save_log_button.setToolTip(anonymize_hint())
         save_log_button.clicked.connect(lambda: save_anonymized_log(self))
         button_row.addWidget(open_log_button)
         button_row.addWidget(save_log_button)
         button_row.addStretch()
         layout.addLayout(button_row)
         layout.addSpacing(8)
-        self.anonymize_check = QCheckBox("Logdatei anonymisieren")
-        self.anonymize_check.setToolTip(ANONYMIZE_HINT)
+        self.anonymize_check = QCheckBox(tr("Anonymise log file"))
+        self.anonymize_check.setToolTip(anonymize_hint())
         layout.addWidget(self.anonymize_check)
-        layout.addWidget(_hint(
-            "Die Logdatei bleibt auf diesem PC; nichts wird automatisch versendet. Eingeschaltet, enthält sie "
-            "ab jetzt keine Benutzer-, Rechner-, Server-, Ordner-, Datei- und Bauteilnamen mehr."
-        ))
+        layout.addWidget(_hint(tr(
+            "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
+            "no user, computer, server, folder, file or element names."
+        )))
         layout.addStretch()
         return page
 
     def _show_usage(self) -> None:
         """What a conversion takes of the PC with the settings shown (as at the start of a conversion)."""
         threads = self.threads_spin.value() or auto_threads()
-        self.threads_usage.setText(
-            f"Eine Konvertierung nutzt damit {resource_text(threads, self.priority_check.isChecked())}."
-        )
+        self.threads_usage.setText(tr(
+            "With this, a conversion uses {resources}.",
+            resources=resource_text(threads, self.priority_check.isChecked()),
+        ))
 
     def set_preferences(self, preferences: Preferences) -> None:
         self.threads_spin.setValue(preferences.threads)
@@ -494,7 +523,7 @@ def _licence_of(component: str) -> str:
 class AboutDialog(_Dialog):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle(f"Über {APP_NAME}")
+        self.setWindowTitle(tr("About {app}", app=APP_NAME))
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -514,20 +543,20 @@ class AboutDialog(_Dialog):
         title_font.setWeight(QFont.Weight.DemiBold)
         title.setFont(title_font)
         title_box.addWidget(title)
-        title_box.addWidget(_selectable(f"Version {__version__}"))
+        title_box.addWidget(_selectable(tr("Version {version}", version=__version__)))
         title_box.addSpacing(4)
-        title_box.addWidget(_hint(
-            "Konvertiert IFC-Gebäudemodelle in Rhino-Dateien (3DM), GLB und OBJ. Läuft vollständig lokal: "
-            "keine Internetverbindung, keine Telemetrie, keine automatischen Updates."
-        ))
+        title_box.addWidget(_hint(tr(
+            "Converts IFC building models to Rhino files (3DM), GLB and OBJ. Runs entirely locally: "
+            "no internet connection, no telemetry, no automatic updates."
+        )))
         header.addLayout(title_box, stretch=1)
         layout.addLayout(header)
 
-        components = QGroupBox("Komponenten")
+        components = QGroupBox(tr("Components"))
         grid = QGridLayout(components)
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(4)
-        for column, heading in enumerate(("Komponente", "Version", "Lizenz")):
+        for column, heading in enumerate((tr("Component"), tr("Version"), tr("Licence"))):
             label = _hint(heading)
             label.setWordWrap(False)
             grid.addWidget(label, 0, column)
@@ -541,32 +570,32 @@ class AboutDialog(_Dialog):
             grid.addWidget(_selectable(version), row, 1)
             grid.addWidget(QLabel(licence), row, 2)
         grid.setColumnStretch(1, 1)
-        note = _hint(
-            "Die Bibliotheken sind unverändert enthalten. Die vollständigen Lizenztexte stehen im "
-            "Programmordner in THIRD-PARTY-NOTICES.txt und im Ordner „licenses“."
-        )
+        note = _hint(tr(
+            "The libraries are included unchanged. The full licence texts are in the program folder in "
+            "THIRD-PARTY-NOTICES.txt and in the folder “licenses”."
+        ))
         grid.addWidget(note, len(rows) + 1, 0, 1, 3)
         layout.addWidget(components)
 
         links = QFormLayout()
         links.setHorizontalSpacing(12)
         links.setVerticalSpacing(4)
-        links.addRow("Quellcode:", _selectable(REPOSITORY))
-        links.addRow("Logdatei:", _selectable(str(app_info.log_dir())))
+        links.addRow(tr("Source code:"), _selectable(REPOSITORY))
+        links.addRow(tr("Log file:"), _selectable(str(app_info.log_dir())))
         layout.addLayout(links)
 
         buttons = QDialogButtonBox()
-        self.copy_button = buttons.addButton("Versionsinfo kopieren", QDialogButtonBox.ButtonRole.ActionRole)
-        self.copy_button.setToolTip("Kopiert Programm- und Komponentenversionen als Text, z. B. für eine Fehlermeldung.")
+        self.copy_button = buttons.addButton(tr("Copy version info"), QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_button.setToolTip(tr("Copies the program and component versions as text, e.g. for a bug report."))
         self.copy_button.clicked.connect(self._copy)
-        close = buttons.addButton("Schließen", QDialogButtonBox.ButtonRole.AcceptRole)
+        close = buttons.addButton(tr("Close"), QDialogButtonBox.ButtonRole.AcceptRole)
         close.setDefault(True)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(version_report())
-        self.copy_button.setText("Kopiert ✓")
+        self.copy_button.setText(tr("Copied ✓"))
 
 
 # ------------------------------------------------------------------------- error
@@ -578,7 +607,7 @@ class ErrorDialog(_Dialog):
     def __init__(self, summary: str, details: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.details = details
-        self.setWindowTitle(f"{APP_NAME} – Unerwarteter Fehler")
+        self.setWindowTitle(tr("{app} – Unexpected error", app=APP_NAME))
         self.setMinimumWidth(700)  # four buttons in a row
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -590,11 +619,11 @@ class ErrorDialog(_Dialog):
         icon.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical).pixmap(40, 40))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
         header.addWidget(icon)
-        text = QLabel(
-            "<b>Es ist ein unerwarteter Fehler aufgetreten.</b><br>"
-            "Das Programm läuft weiter. Falls etwas nicht mehr funktioniert, bitte neu starten.<br>"
-            "Zum Melden des Problems die Details kopieren und mitschicken."
-        )
+        text = QLabel(tr(
+            "<b>An unexpected error occurred.</b><br>"
+            "The program keeps running. If something no longer works, please restart it.<br>"
+            "To report the problem, copy the details and send them along."
+        ))
         text.setWordWrap(True)
         header.addWidget(text, stretch=1)
         layout.addLayout(header)
@@ -608,21 +637,21 @@ class ErrorDialog(_Dialog):
         layout.addWidget(self.details_view, stretch=1)
 
         buttons = QDialogButtonBox()
-        self.copy_button = buttons.addButton("Details kopieren", QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_button = buttons.addButton(tr("Copy details"), QDialogButtonBox.ButtonRole.ActionRole)
         self.copy_button.clicked.connect(self.copy_details)
-        log_button = buttons.addButton("Logdatei öffnen", QDialogButtonBox.ButtonRole.ActionRole)
+        log_button = buttons.addButton(tr("Open log file"), QDialogButtonBox.ButtonRole.ActionRole)
         log_button.clicked.connect(open_log)
-        save_log_button = buttons.addButton("Anonymisiert speichern…", QDialogButtonBox.ButtonRole.ActionRole)
-        save_log_button.setToolTip(ANONYMIZE_HINT)
+        save_log_button = buttons.addButton(tr("Save anonymised…"), QDialogButtonBox.ButtonRole.ActionRole)
+        save_log_button.setToolTip(anonymize_hint())
         save_log_button.clicked.connect(lambda: save_anonymized_log(self))
-        close = buttons.addButton("Schließen", QDialogButtonBox.ButtonRole.AcceptRole)
+        close = buttons.addButton(tr("Close"), QDialogButtonBox.ButtonRole.AcceptRole)
         close.setDefault(True)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 
     def copy_details(self) -> None:
         QGuiApplication.clipboard().setText(self.details)
-        self.copy_button.setText("Kopiert ✓")
+        self.copy_button.setText(tr("Copied ✓"))
 
 
 class ErrorReporter(QObject):
@@ -660,14 +689,25 @@ class ErrorReporter(QObject):
 
 # ----------------------------------------------------------------------- skipped
 
-# The reasons in SkippedDialog, for ConversionResult.crashed and .no_geometry.
-CRASHED_REASON = "Übersprungen (Geometriekern abgestürzt)"
-NO_GEOMETRY_REASON = "Ohne Geometrie"
-FIND_HINT = (
-    "So finden Sie ein Bauteil im CAD-Programm: GlobalId kopieren und danach suchen – in ArchiCAD mit "
-    "„Suchen & Auswählen“ (Strg+F) über die IFC-Eigenschaft GlobalId bzw. „Archicad IFC ID“, in Revit über "
-    "den Parameter „IfcGUID“ (z. B. in einer Bauteilliste oder mit einem Filter), sonst in jedem IFC-Viewer."
-)
+
+
+def crashed_reason() -> str:
+    """The reason in SkippedDialog for ConversionResult.crashed."""
+    return tr("Skipped (geometry kernel crashed)")
+
+
+def no_geometry_reason() -> str:
+    """The reason in SkippedDialog for ConversionResult.no_geometry."""
+    return tr("Without geometry")
+
+
+def find_hint() -> str:
+    """How to find a skipped element in the CAD program."""
+    return tr(
+        "How to find an element in the CAD program: copy the GlobalId and search for it – in ArchiCAD with "
+        "“Find & Select” (Ctrl+F) by the IFC property GlobalId or “Archicad IFC ID”, in Revit by the parameter "
+        "“IfcGUID” (e.g. in a schedule or with a filter), otherwise in any IFC viewer."
+    )
 
 
 class SkippedDialog(_Dialog):
@@ -678,14 +718,17 @@ class SkippedDialog(_Dialog):
     "Nur Gebäudehülle"); they are only counted, not listed.
     """
 
-    COLUMNS = ("Grund", "Klasse", "GlobalId", "Name")
+    @staticmethod
+    def columns() -> tuple[str, str, str, str]:
+        """The column headings (reason, class, GlobalId, name), in the user's language."""
+        return (tr("Reason"), tr("Class"), tr("GlobalId"), tr("Name"))
 
     def __init__(
         self, file_name: str, crashed: list[str], no_geometry: list[str], skipped: int = 0,
         inside: int = 0, parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle(f"Übersprungene Bauteile – {file_name}")
+        self.setWindowTitle(tr("Skipped elements – {file}", file=file_name))
         self.setMinimumSize(720, 420)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -693,17 +736,17 @@ class SkippedDialog(_Dialog):
 
         counts = []
         if crashed:
-            counts.append(f"{len(crashed)} übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb")
+            counts.append(tr("{count} skipped because the geometry kernel crashed or hung on them", count=len(crashed)))
         if no_geometry or skipped:
-            counts.append(f"{max(skipped, len(no_geometry))} ohne Geometrie (nicht konvertierbar)")
+            counts.append(tr("{count} without geometry (not convertible)", count=max(skipped, len(no_geometry))))
         if inside:
-            counts.append(f"{inside_text(inside)} (nur Gebäudehülle)")
+            counts.append(tr("{inside} (building hull only)", inside=inside_text(inside)))
         layout.addWidget(_selectable(f"<b>{html.escape(file_name)}</b>: " + "; ".join(counts) + "."))
 
-        self.rows = [(CRASHED_REASON, *split_label(label)) for label in crashed]
-        self.rows += [(NO_GEOMETRY_REASON, *split_label(label)) for label in no_geometry]
-        self.table = QTableWidget(len(self.rows), len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.rows = [(crashed_reason(), *split_label(label)) for label in crashed]
+        self.rows += [(no_geometry_reason(), *split_label(label)) for label in no_geometry]
+        self.table = QTableWidget(len(self.rows), len(self.columns()))
+        self.table.setHorizontalHeaderLabels(self.columns())
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -717,7 +760,7 @@ class SkippedDialog(_Dialog):
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSortingEnabled(True)
-        copy = QAction("Kopieren", self.table)
+        copy = QAction(tr("Copy"), self.table)
         copy.setShortcut(QKeySequence.StandardKey.Copy)
         copy.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
         copy.triggered.connect(self.copy_selection)
@@ -725,39 +768,40 @@ class SkippedDialog(_Dialog):
         layout.addWidget(self.table, stretch=1)
 
         if skipped > len(no_geometry):
-            layout.addWidget(_hint(
-                f"{skipped - len(no_geometry)} weitere Bauteile ohne Geometrie ließen sich nicht einzeln benennen."
-            ))
+            layout.addWidget(_hint(tr(
+                "{count} more elements without geometry could not be named individually.",
+                count=skipped - len(no_geometry),
+            )))
         if inside:
-            layout.addWidget(_hint(
-                "Die innen liegenden Bauteile, die wegen „Nur Gebäudehülle“ weggelassen wurden, werden nicht "
-                "einzeln aufgeführt; ohne die Option werden sie mit umgewandelt."
-            ))
+            layout.addWidget(_hint(tr(
+                "The interior elements left out because of “Building hull only” are not listed individually; "
+                "without the option they are converted too."
+            )))
         layout.addWidget(_hint(
-            "Markieren und Strg+C kopiert die gewählten Zeilen (Strg+A: alle), als Tabelle zum Einfügen in Excel "
-            "oder eine E-Mail. " + FIND_HINT
+            tr("Select and Ctrl+C copies the chosen rows (Ctrl+A: all), as a table to paste into Excel or an "
+               "e-mail.") + " " + find_hint()
         ))
 
         buttons = QDialogButtonBox()
-        self.copy_button = buttons.addButton("Alles kopieren", QDialogButtonBox.ButtonRole.ActionRole)
-        self.copy_button.setToolTip("Kopiert die ganze Tabelle, zum Einfügen in Excel oder eine E-Mail.")
+        self.copy_button = buttons.addButton(tr("Copy all"), QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_button.setToolTip(tr("Copies the whole table, to paste into Excel or an e-mail."))
         self.copy_button.clicked.connect(self.copy_all)
-        close = buttons.addButton("Schließen", QDialogButtonBox.ButtonRole.RejectRole)
+        close = buttons.addButton(tr("Close"), QDialogButtonBox.ButtonRole.RejectRole)
         close.setDefault(True)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def _text(self, rows: list[tuple[str, ...]]) -> str:
         """Tab-separated with a header line: pastes as a table into Excel, readable as plain text."""
-        return "\n".join("\t".join(values) for values in [self.COLUMNS, *rows]) + "\n"
+        return "\n".join("\t".join(values) for values in [self.columns(), *rows]) + "\n"
 
     def copy_all(self) -> None:
         QGuiApplication.clipboard().setText(self._text(self.rows))
-        self.copy_button.setText("Kopiert ✓")
+        self.copy_button.setText(tr("Copied ✓"))
 
     def copy_selection(self) -> None:
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         if not rows:
             return
-        values = [tuple(self.table.item(row, column).text() for column in range(len(self.COLUMNS))) for row in rows]
+        values = [tuple(self.table.item(row, column).text() for column in range(len(self.columns()))) for row in rows]
         QGuiApplication.clipboard().setText(self._text(values))

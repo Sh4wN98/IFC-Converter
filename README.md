@@ -192,6 +192,14 @@ Die alte Konsolen-Variante gibt es weiterhin: `IFC_CONVERTER_CLI=1 ./start.sh` (
 
 Voraussetzung: Python 3.10 oder neuer ([python.org](https://www.python.org/downloads/), unter Windows den Haken bei „Add python.exe to PATH“ setzen).
 
+## Sprache der Oberfläche
+
+Das Programmfenster, die Dialoge, Statuszeilen, Tooltips und die Meldungen im Protokollfenster gibt es in mehreren Sprachen; **Englisch ist die Voreinstellung**. Umschalten über das Menü Extras → Sprache (Language): Englisch, Deutsch, Französisch, Spanisch, Italienisch, Portugiesisch, Niederländisch, Polnisch, Türkisch. Die Wahl wird in den Einstellungen gespeichert (`language` in `settings.ini`) und gilt nach dem nächsten Programmstart für das ganze Programm, auch für die Hinweise, die die Konvertierungsprozesse melden. Eine Sprache ohne vollständige Übersetzung zeigt die fehlenden Texte auf Englisch.
+
+Ohne gespeicherte Einstellung – und für die Kommandozeile – zählt die Umgebungsvariable `IFC_CONVERTER_LANG` (`de`, `fr`, …; auch `de-DE` oder `de_AT.UTF-8`). Für `ifc-convert` gibt es außerdem `--lang {en,de,fr,es,it,pt,nl,pl,tr}`; es betrifft die Hinweise zu den Umwandlungen (übersprungene Bauteile, Fehlermeldungen); die Hilfe und die Ergebniszeilen bleiben englisch, der Terminal-Modus deutsch. Die Platzhalter der anonymisierten Logdatei folgen der Sprache: auf Englisch `<user>`, `<folder>`, `File-1.ifc` statt `<Benutzer>`, `<Ordner>`, `Datei-1.ifc`.
+
+Nicht übersetzt werden Layer- und Attributnamen in den Rhino-Dateien und die Protokolldatei selbst: sie bleiben, wie sie sind.
+
 ## Logdatei und Datenschutz
 
 - Der Converter schreibt ein Protokoll nach `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (Linux: `~/.local/state/ifc-converter/logs/ifc-converter.log`; höchstens ca. 4 MB, ältere Teile werden überschrieben); Hilfe → Logdatei öffnen. Es bleibt auf diesem PC: Der Converter versendet nichts, er braucht keine Internetverbindung.
@@ -237,6 +245,7 @@ Optionen:
 - `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: automatisch wie im Programmfenster – zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte der Kerne, siehe „Rücksicht auf andere Programme“; `ifc-convert --help` zeigt die Zahl für diesen PC)
 - `--normal-priority`: mit normaler statt niedriger Priorität umwandeln
 - `--kernel {accurate,hybrid,opencascade}`: Geometriekern (Standard: `accurate`, siehe „Geometriekern“)
+- `--lang {en,de,fr,es,it,pt,nl,pl,tr}`: Sprache der Hinweise zu den Umwandlungen (Standard: `IFC_CONVERTER_LANG`, sonst Englisch; siehe „Sprache der Oberfläche“)
 
 Strg+C (bzw. Strg+Untbr) bricht ab: Exit-Code 130, halbe Ausgabedateien und Zwischendateien werden entfernt.
 

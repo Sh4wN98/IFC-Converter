@@ -7,7 +7,7 @@ import signal
 import sys
 from pathlib import Path
 
-from ifc_converter import __version__
+from ifc_converter import __version__, i18n
 from ifc_converter.app import log_path
 from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
 from ifc_converter.interactive import (
@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="geometry kernel: accurate (default: OpenCASCADE, the hybrid kernel only for large triangle meshes), "
              "hybrid (3-13x faster, may drop or duplicate faces of some elements) or opencascade (everything)",
     )
+    parser.add_argument(
+        "--lang", choices=list(i18n.LANGUAGES), default=i18n.language_from_environment(),
+        help="language of the messages about the conversions (default: the IFC_CONVERTER_LANG environment "
+             "variable, else en); the help and the result lines stay English",
+    )
     return parser
 
 
@@ -93,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Before anything prints or starts a child process: the children inherit the language.
+    i18n.set_language(args.lang)
     if argv is None:  # a real command line, not a call from Python code (tests, scripts)
         from ifc_converter.app import hold_app_mutex, setup_logging
         from ifc_converter.process import remove_stale_temp_files
