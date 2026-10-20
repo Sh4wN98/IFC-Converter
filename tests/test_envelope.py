@@ -82,6 +82,7 @@ def test_is_external_keeps_an_element_the_fill_cannot_see(house_ifc):
     pset = ifcopenshell.util.element.get_psets(inner)["Pset_WallCommon"]
     api.run("pset.edit_pset", model, pset=model.by_id(pset["id"]), properties={"IsExternal": True})
     assert envelope.external_flags(model) == {inner.id(), next(c.id() for c in model.by_type("IfcColumn"))}
+    assert envelope.external_marks(model) == {inner.id(): True, next(c.id() for c in model.by_type("IfcColumn")): True}
     selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
     assert "Inner" in _names(model, selection.keep) and selection.flagged == 1 and selection.inside == 1
     assert "1 als außen gekennzeichnete" in selection.note
@@ -95,15 +96,30 @@ def test_is_external_of_the_type_counts(house_ifc):
     pset = api.run("pset.add_pset", model, product=table_type, name="Pset_FurnitureTypeCommon")
     api.run("pset.edit_pset", model, pset=pset, properties={"IsExternal": True})
     assert table.id() in envelope.external_flags(model)
+    # An own property set wins over the type's.
+    own = api.run("pset.add_pset", model, product=table, name="Pset_FurnitureCommon")
+    api.run("pset.edit_pset", model, pset=own, properties={"IsExternal": False})
+    assert envelope.external_marks(model)[table.id()] is False
 
 
-def test_without_a_roof_everything_is_kept(house_ifc):
+def test_without_a_roof_the_property_sets_decide(house_ifc):
+    # Outside air reaches everything, so the fill alone would keep all 8 products: then IsExternal
+    # and the furniture classes decide.
     model = ifcopenshell.open(str(house_ifc))
     roof = next(slab for slab in model.by_type("IfcSlab") if slab.Name == "Roof")
     api.run("root.remove_product", model, product=roof)
     selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
-    assert selection.inside == 0 and len(selection.keep) == 8
-    assert "keine geschlossene Hülle" in selection.note
+    assert selection.open_hull and (selection.marked, selection.fittings, selection.inside) == (1, 1, 2)
+    assert _names(model, selection.keep) == {"South", "North", "West", "East", "Floor", "Column"}
+    assert "keine geschlossene Hülle" in selection.note and "6 von 8 Bauteilen" in selection.note
+    assert "1 als innen gekennzeichnete" in selection.note and "1 Möbel" in selection.note
+
+
+def test_a_closed_hull_with_few_interior_products_is_not_taken_as_open(house_ifc, monkeypatch):
+    monkeypatch.setattr(envelope, "OPEN_HULL_SHARE", 0.0)
+    model = ifcopenshell.open(str(house_ifc))
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert not selection.open_hull and selection.inside == 2
 
 
 def test_products_without_coarse_geometry_are_kept(house_ifc, monkeypatch):
