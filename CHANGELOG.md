@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.7.0 – 2026-10-20
+
+- **Mehrsprachige Oberfläche:** Fenster, Dialoge, Dateiliste, Meldungen im Protokoll und die Statustexte der Konvertierung gibt es jetzt in Englisch (Standard), Deutsch, Französisch, Spanisch, Italienisch, Portugiesisch, Niederländisch, Polnisch und Türkisch. Umschalten unter Extras → Sprache (Tools → Language); die Wahl wird gemerkt und nach einem Neustart übernommen, den das Programm anbietet. Im Terminal `--lang de` bzw. die Umgebungsvariable `IFC_CONVERTER_LANG`. Die deutschen Texte sind unverändert; Logdatei und Konvertierungsmeldungen erscheinen in der gewählten Sprache, Rhino-Layer und Benutzertexte bleiben wie bisher.
+
 ## 0.6.3 – 2026-10-20
 
 - **Nur Gebäudehülle: Spalte bleiben offen.** Bei großen Modellen wurde das Raster bisher auf 20 cm oder mehr vergröbert; ein Spalt unter einem Sturz oder zwischen Fensterrahmen und Decke, der schmaler als eine Zelle ist, galt dann als dicht, und das Bauteil dahinter fiel als „innen“ weg – zu sehen als Loch in der Hülle (Rückmeldung aus einem 316-MB-Modell). Jetzt wird das ganze Modell auf dem groben Raster gefüllt und rund um die Außenluft, zwölf Zellen tief, mit der viermal feineren Abtastung nachgefüllt: Spalte von der Breite einer feinen Zelle an bleiben offen, was sie auskleidet, zählt als außen. Die Speicherbudgets richten sich nach dem freien RAM des Rechners, auf dem Arbeitsplatz-PC bleibt das feine Raster damit auch bei großen Modellen bei 5 cm. Das Protokoll nennt beide Rastermaße („Raster 0,05 m, grob 0,2 m“).

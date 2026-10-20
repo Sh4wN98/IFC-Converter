@@ -198,7 +198,7 @@ Das Programmfenster, die Dialoge, Statuszeilen, Tooltips und die Meldungen im Pr
 
 Ohne gespeicherte Einstellung – und für die Kommandozeile – zählt die Umgebungsvariable `IFC_CONVERTER_LANG` (`de`, `fr`, …; auch `de-DE` oder `de_AT.UTF-8`). Für `ifc-convert` gibt es außerdem `--lang {en,de,fr,es,it,pt,nl,pl,tr}`; es betrifft die Hinweise zu den Umwandlungen (übersprungene Bauteile, Fehlermeldungen); die Hilfe und die Ergebniszeilen bleiben englisch, der Terminal-Modus deutsch. Die Platzhalter der anonymisierten Logdatei folgen der Sprache: auf Englisch `<user>`, `<folder>`, `File-1.ifc` statt `<Benutzer>`, `<Ordner>`, `Datei-1.ifc`.
 
-Nicht übersetzt werden Layer- und Attributnamen in den Rhino-Dateien und die Protokolldatei selbst: sie bleiben, wie sie sind.
+Die Meldungen der Konvertierung (auch in der Logdatei) erscheinen in der gewählten Sprache. Nicht übersetzt werden Layer- und Attributnamen in den Rhino-Dateien und die Ausgabedateien selbst: sie bleiben, wie sie sind.
 
 ## Logdatei und Datenschutz
 
