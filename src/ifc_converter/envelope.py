@@ -7,8 +7,9 @@ only the hull. ``select`` decides which products of a model are part of the hull
 1. A coarse pass computes every product's geometry (hybrid kernel, coarse tolerance) and samples
    its surfaces into a voxel grid of VOXEL metres (coarser for very large models, see MAX_VOXELS).
 2. The outside air is found by a flood fill from the grid's border through empty voxels.
-3. A product is part of the hull when a share of at least EXPOSURE of its voxels touches outside
-   air, or when its property set says IsExternal = True.
+3. A product is part of the hull when any of its voxels touches outside air (so nothing that is
+   left out borders on the outside: the hull stays closed), or when its property set says
+   IsExternal = True.
 
 Everything uncertain is kept: products whose geometry the coarse pass could not build, and models
 without a closed hull (no roof, say) simply keep more. Products are never changed, only left out,
@@ -43,12 +44,17 @@ log = logging.getLogger(__name__)
 
 # The grid cell of the flood fill, in metres. Only surfaces are sampled, so an element thinner than
 # a cell is a single layer of cells: whatever pokes into that layer from inside (a table foot in a
-# 127 mm slab on grade) touches the outside air behind it. 0.1 m resolves slabs, walls and roofs;
-# glass and cladding stay thinner, which only ever keeps more.
-VOXEL = 0.1
+# 127 mm slab on grade) touches the outside air behind it, and a gap narrower than a cell is sealed,
+# hiding what is seen through it. 5 cm resolves slabs, walls, roofs and most gaps; glass and
+# cladding stay thinner, which only ever keeps more. Large models get coarser cells (MAX_SAMPLED,
+# MAX_VOXELS), which again only keeps more.
+VOXEL = 0.05
 # The grid is coarsened (cell doubled) until it fits: 1 byte per cell for each of two boolean grids.
 MAX_VOXELS = 150_000_000
-EXPOSURE = 0.05  # share of a product's voxels next to outside air that makes it part of the hull
+# Share of a product's voxels next to outside air above which it is part of the hull: any of them.
+# A threshold would leave out products with a small visible part (a lintel seen through a gap) and
+# open the hull there.
+EXPOSURE = 0.0
 # When the fill leaves out less than this share of the products, the hull is taken as open and the
 # property sets decide (a closed building has interior walls, doors and fittings well above it).
 OPEN_HULL_SHARE = 0.02
@@ -91,6 +97,7 @@ class Selection:
     marked: int = 0  # open hull: products left out as IsExternal = False
     fittings: int = 0  # open hull: products left out by class (INTERIOR_CLASSES, INTERIOR_COVERINGS)
     masses: int = 0  # massing volumes the fill looked through (see MASS_TRIANGLES)
+    dropped_classes: dict[str, int] = field(default_factory=dict)  # IFC class -> products left out
 
     @property
     def note(self) -> str:
@@ -100,7 +107,8 @@ class Selection:
                     f"oder Wände, z. B. ein Teilmodell ohne Rohbau): die Außenluft erreicht fast alle Bauteile "
                     f"(Raster {voxel} m). Stattdessen weggelassen: {_count(self.marked)} als innen gekennzeichnete "
                     f"Bauteile (IsExternal = Nein) sowie {_count(self.fittings)} Möbel, Einrichtungen, Leitungen, "
-                    f"Decken- und Bodenbeläge; {kept} von {_count(self.total)} Bauteilen werden umgewandelt.")
+                    f"Decken- und Bodenbeläge; {kept} von {_count(self.total)} Bauteilen werden umgewandelt."
+                    + self.dropped_text)
         text = (f"Nur Gebäudehülle: {kept} von {_count(self.total)} Bauteilen liegen außen und werden umgewandelt, "
                 f"{_count(self.inside)} innen liegende weggelassen (Raster {voxel} m)")
         if self.unknown:
@@ -109,7 +117,18 @@ class Selection:
             text += f"; {_count(self.flagged)} als außen gekennzeichnete (IsExternal) übernommen"
         if self.masses:
             text += f"; {_count(self.masses)} Baumassen (Hüllkörper um das Modell) nicht als undurchsichtig gewertet"
-        return text + "."
+        return text + "." + self.dropped_text
+
+    @property
+    def dropped_text(self) -> str:
+        """" Weggelassen: 34 IfcWallStandardCase, 16 IfcSlab, …" (the eight largest classes)."""
+        if not self.dropped_classes:
+            return ""
+        ranked = sorted(self.dropped_classes.items(), key=lambda item: (-item[1], item[0]))
+        parts = [f"{_count(number)} {name}" for name, number in ranked[:8]]
+        if len(ranked) > 8:
+            parts.append(f"{_count(sum(number for _, number in ranked[8:]))} weitere")
+        return " Weggelassen: " + ", ".join(parts) + "."
 
 
 def _count(number: int) -> str:
@@ -144,7 +163,7 @@ def select(
         if share is None:
             selection.unknown += 1
             selection.keep.add(product_id)
-        elif share >= EXPOSURE:
+        elif share > EXPOSURE:
             selection.keep.add(product_id)
         elif marks.get(product_id):
             selection.flagged += 1
@@ -153,6 +172,9 @@ def select(
             selection.inside += 1
     if selection.inside < OPEN_HULL_SHARE * selection.total:
         _select_by_marks(selection, products, marks)
+    for product in products:
+        if product.id() not in selection.keep:
+            selection.dropped_classes[product.is_a()] = selection.dropped_classes.get(product.is_a(), 0) + 1
     converter._release_memory()
     log.info("Gebäudehülle: %d von %d Bauteilen außen (%d ohne Vorab-Geometrie, %d per IsExternal), Raster %g m, "
              "%d Rasterzellen, Vorab-Geometrie %.0f s, Hülle %.0f s", len(selection.keep), selection.total,
