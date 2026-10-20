@@ -28,6 +28,7 @@ from PySide6.QtGui import QColor, QImage, QMatrix4x4, QOffscreenSurface, QOpenGL
     QVector3D
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QStackedLayout, QWidget
 
+from ifc_converter.i18n import tr
 from ifc_converter.preview import PreviewMesh
 
 log = logging.getLogger("ifc_converter.viewer")
@@ -47,12 +48,18 @@ VIEWS = {
     "front": (90.0, 0.0),  # from the south
     "side": (180.0, 0.0),  # from the east
 }
-VIEW_BUTTONS = [  # (view, button text, tooltip)
-    ("iso", "Iso", "Isometrie von Südwesten (1)"),
-    ("top", "Oben", "Draufsicht, Norden oben (2)"),
-    ("front", "Vorne", "Ansicht von Süden (3)"),
-    ("side", "Seite", "Ansicht von Osten (4)"),
-]
+
+
+def view_buttons() -> list[tuple[str, str, str]]:
+    """(view, button text, tooltip) of the view buttons, in the user interface language."""
+    return [
+        ("iso", tr("Iso"), tr("Isometric view from the south-west (1)")),
+        ("top", tr("Top"), tr("Plan view, north up (2)")),
+        ("front", tr("Front"), tr("View from the south (3)")),
+        ("side", tr("Side"), tr("View from the east (4)")),
+    ]
+
+
 VIEW_KEYS = {Qt.Key.Key_1: "iso", Qt.Key.Key_2: "top", Qt.Key.Key_3: "front", Qt.Key.Key_4: "side"}
 ORBIT_DEGREES_PER_PIXEL = 0.4
 ZOOM_STEP = 0.85  # distance factor per wheel notch
@@ -926,8 +933,8 @@ class PreviewView(QWidget):
         row = QHBoxLayout(self._buttons)
         row.setContentsMargins(1, 1, 1, 1)
         row.setSpacing(0)
-        actions = [(text, tooltip, lambda _=False, v=view: self.set_view(v)) for view, text, tooltip in VIEW_BUTTONS]
-        actions.append(("Alles", "Ganzes Modell zeigen (F, Doppelklick)", self.fit_view))
+        actions = [(text, tooltip, lambda _=False, v=view: self.set_view(v)) for view, text, tooltip in view_buttons()]
+        actions.append((tr("All"), tr("Show the whole model (F, double-click)"), self.fit_view))
         for text, tooltip, slot in actions:
             button = QPushButton(text, self._buttons)  # flat by the style sheet; tool buttons get wide margins
             button.setToolTip(tooltip)

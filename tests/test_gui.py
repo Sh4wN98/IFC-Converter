@@ -415,7 +415,7 @@ def test_geometry_is_not_passed_for_other_formats(window, wall_ifc, fake_convert
 def test_geometry_options_match_converter():
     from ifc_converter.converter import GEOMETRIES
 
-    assert set(gui.GEOMETRY_INFO) == set(GEOMETRIES)
+    assert set(gui.geometry_info()) == set(GEOMETRIES)
     assert gui.DEFAULT_GEOMETRY in GEOMETRIES
 
 
@@ -1327,3 +1327,190 @@ def test_real_conversion_with_envelope_reports_the_inside_count(window, wall_ifc
     log = window.log_view.toPlainText()
     assert "→ GLB, nur Gebäudehülle, Ziel: " in log
     assert "(1 Bauteil, 2 innen liegende weggelassen)" in log
+
+
+# ------------------------------------------------------- user interface language (Extras → Sprache)
+
+
+@pytest.fixture
+def english():
+    """The window in English (the tests otherwise run in German, see conftest.py)."""
+    from ifc_converter import i18n
+
+    i18n.set_language("en")
+    yield
+    i18n.set_language("de")
+
+
+def test_window_shows_english_texts(app, settings, wall_ifc, english):
+    window = gui.MainWindow(settings=settings)
+    try:
+        assert window.windowTitle() == f"IFC Converter {__version__}"
+        assert window.convert_button.text() == "Convert" and window.open_button.text() == "Open output folder"
+        assert window.cancel_button.text() == "Cancel" and window.details_button.text() == "Skipped elements…"
+        assert [action.text() for action in window.menuBar().actions()] == ["&File", "&Edit", "&View", "&Tools", "&Help"]
+        assert [window.table.horizontalHeaderItem(i).text() for i in range(3)] == ["File", "Size", "Status"]
+        assert window.overall_progress.format() == "Ready"
+        assert window.status_label.text() == "Add files and click “Convert”."
+        assert window.envelope_check.text() == "Only the building hull"
+        assert window.geometry_buttons["brep"].text() == "Polysurfaces (recommended)"
+        assert window.preview.title.text() == "Preview" and window.preview.compute_button.text() == "Compute preview"
+        assert window.language_menu.title() == "Language"
+
+        window.add_paths([wall_ifc])
+        assert window.status_text(0) == "Waiting"
+        assert "1 file added" in window.log_view.toPlainText()
+        item = window.queue[0]
+        item.status, item.progress = Status.RUNNING, 7
+        assert item.status_text == "Converting … 7%"
+        item.status, item.elements, item.skipped = Status.DONE, 812, 3
+        assert item.status_text == "Done – 812 elements (3 without geometry)"
+        window._refresh_row(0)
+        assert window.status_text(0) == "Done – 812 elements (3 without geometry)"
+        assert gui.files_text(1) == "1 file" and gui.files_text(3) == "3 files"
+        assert gui.format_size(int(2.2 * 1024 * 1024)) == "2.2 MB"  # decimal point in English
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_format_size_uses_the_decimal_comma_in_german():
+    assert gui.format_size(int(2.2 * 1024 * 1024)) == "2,2 MB"
+
+
+def test_language_menu_lists_every_language_and_saves_the_choice(window, settings, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from ifc_converter import i18n
+
+    menus = {action.text(): action.menu() for action in window.menuBar().actions()}
+    assert window.language_menu.menuAction() in menus["E&xtras"].actions()
+    assert window.language_menu.title() == "Sprache"
+    actions = window.language_menu.actions()
+    assert [action.text() for action in actions] == list(i18n.LANGUAGES.values())
+    assert [action.isChecked() for action in actions] == [code == "de" for code in i18n.LANGUAGES]
+    assert all(action.isCheckable() and action.actionGroup() is window.language_group for action in actions)
+
+    asked = {}
+
+    def exec_(box):
+        asked["text"] = box.text()
+        asked["buttons"] = [button.text() for button in box.buttons()]
+        box.buttons()[1].click()  # "Later"
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", exec_)
+    window.language_actions["en"].trigger()
+    assert settings.value("language") == "en"
+    # The question is asked in the new language.
+    assert asked["text"] == "The user interface switches to English when the program is restarted. Restart now?"
+    assert asked["buttons"] == ["Restart now", "Later"]
+    # "Later": the program keeps running in the old language, the menu shows the choice.
+    assert i18n.language() == "de" and os.environ[i18n.ENV] == "de"
+    assert window.language_actions["en"].isChecked() and not window.language_actions["de"].isChecked()
+    assert window.convert_button.text() == "Konvertieren"
+
+    # Choosing the current language again asks nothing.
+    asked.clear()
+    window.language_actions["de"].trigger()
+    assert settings.value("language") == "de" and not asked
+
+
+def test_restart_now_closes_the_window_and_starts_the_program_again(window, settings, monkeypatch):
+    from PySide6.QtCore import QProcess
+    from PySide6.QtWidgets import QMessageBox
+
+    from ifc_converter import i18n
+
+    started = []
+    monkeypatch.setattr(QProcess, "startDetached", lambda program, arguments: started.append((program, arguments)) or True)
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: box.buttons()[0].click() or 0)  # "Restart now"
+    server = gui.InstanceServer(name="ifc-converter-test-restart", parent=window)
+    assert server.listen()
+    window.show()
+    try:
+        window.language_actions["fr"].trigger()
+        assert settings.value("language") == "fr"
+        assert started == [gui.restart_command()]
+        assert not window.isVisible()  # closed, so its settings are written before the new start reads them
+        assert not server.server.isListening()  # the new start must not hand its files to this one
+        assert i18n.language() == "fr"
+    finally:
+        server.server.close()
+
+
+def test_restart_command_for_every_way_of_starting(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["/opt/app/ifc-converter-gui", "a.ifc"])
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert gui.restart_command() == (sys.executable, ["a.ifc"])  # PyInstaller: the executable itself
+    monkeypatch.delattr(sys, "frozen")
+    assert gui.restart_command() == (sys.executable, ["/opt/app/ifc-converter-gui", "a.ifc"])  # entry point
+    monkeypatch.setattr(sys, "argv", [gui.__file__, "a.ifc"])
+    assert gui.restart_command() == (sys.executable, ["-m", "ifc_converter.gui", "a.ifc"])
+
+
+@pytest.fixture
+def main_stubs(app, settings, monkeypatch):
+    """main() without logging, crash hooks, mutex, single-instance socket and a real window."""
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QObject, Signal
+
+    from ifc_converter import i18n
+
+    seen = {}
+
+    class FakeWindow(QObject):
+        def __init__(self, settings_=None):
+            super().__init__()
+            seen["language"] = i18n.language()
+            seen["settings"] = settings_
+
+        def show(self):
+            pass
+
+        def receive_paths(self, paths):
+            pass
+
+        def add_paths(self, paths):
+            seen["paths"] = paths
+
+    class FakeServer(QObject):
+        paths_received = Signal(list)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+
+        def listen(self):
+            return True
+
+    monkeypatch.setattr(gui, "MainWindow", FakeWindow)
+    monkeypatch.setattr(gui, "InstanceServer", FakeServer)
+    monkeypatch.setattr(gui, "open_settings", lambda *args, **kwargs: settings)
+    monkeypatch.setattr(gui, "send_to_running_instance", lambda paths, *args: False)
+    for name in ("setup_logging", "enable_crash_log", "hold_app_mutex", "install_exception_hooks"):
+        monkeypatch.setattr(gui, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(gui, "ErrorReporter", lambda app: SimpleNamespace(report=lambda *args: None))
+    monkeypatch.setattr(gui, "remove_stale_temp_files", lambda: 0)
+    return seen
+
+
+def test_main_applies_the_saved_language_before_building_the_window(app, settings, main_stubs):
+    settings.setValue("language", "fr")
+    QTimer.singleShot(0, app.quit)
+    assert gui.main([]) == 0
+    assert main_stubs["language"] == "fr" and main_stubs["settings"] is settings
+    assert os.environ["IFC_CONVERTER_LANG"] == "fr"  # conversions inherit it
+
+
+def test_main_falls_back_to_the_environment_then_english(app, settings, main_stubs, monkeypatch):
+    settings.remove("language")
+    monkeypatch.setenv("IFC_CONVERTER_LANG", "pl")
+    QTimer.singleShot(0, app.quit)
+    assert gui.main(["x.ifc"]) == 0
+    assert main_stubs["language"] == "pl" and main_stubs["paths"] == ["x.ifc"]
+
+    monkeypatch.delenv("IFC_CONVERTER_LANG")
+    QTimer.singleShot(0, app.quit)
+    assert gui.main([]) == 0
+    assert main_stubs["language"] == "en"
