@@ -564,3 +564,14 @@ def nested_ifc(tmp_path):
     path = tmp_path / "nested.ifc"
     model.write(str(path))
     return path
+
+
+@pytest.fixture(autouse=True)
+def german_user_interface():
+    """The tests were written against the German texts, so they run in German (the program itself
+    starts in English, see i18n). Child processes inherit the language through the environment."""
+    from ifc_converter import i18n
+
+    i18n.set_language("de")
+    yield
+    i18n.set_language("en")
