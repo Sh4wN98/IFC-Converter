@@ -183,3 +183,22 @@ def test_log_not_anonymised_by_default(user_dirs):
     logging.getLogger("ifc_converter").info("Datei %s", SOURCE)
     app.stop_logging()
     assert SOURCE in path.read_text(encoding="utf-8")
+
+
+def test_placeholders_follow_the_language():
+    from ifc_converter import i18n
+
+    i18n.set_language("en")
+    try:
+        anonymizer = Anonymizer(users=[USER], computers=[COMPUTER])
+        assert anonymizer.line(f"Umwandlung: {SOURCE} -> {TARGET}") == (
+            r"Umwandlung: \\<server>\<share>\<user>\Desktop\<folder>\File-1.ifc -> "
+            r"\\<server>\<share>\<user>\Desktop\<folder>\File-1.3dm")
+        assert anonymizer.file_name("File-1.ifc") == "File-1.ifc"  # already anonymous
+        assert anonymizer.file_name("Datei-1.ifc") == "File-2.ifc"  # in English, a name like any other
+        assert anonymize("Benutzer mmuster auf BUERO-PC17", anonymizer) == "Benutzer <user> auf <computer>"
+    finally:
+        i18n.set_language("de")
+    # An Anonymizer keeps the placeholders of the language it was created in.
+    assert anonymizer.line(r"C:\Users\mmuster\x.ifc") == r"C:\Users\<user>\File-3.ifc"
+    assert Anonymizer(users=[USER], computers=[]).line(r"C:\Users\mmuster\x.ifc") == r"C:\Users\<Benutzer>\Datei-1.ifc"

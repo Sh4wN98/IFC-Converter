@@ -1,17 +1,19 @@
 """Remove personal data from log text, so that a log can be sent to the developer.
 
-Replaced: the user name (USERNAME, the profile folder in paths) by <Benutzer>, the computer name by
-<Rechner>, server and share of network paths by <Server> and <Freigabe>, folder names by <Ordner>
+Replaced: the user name (USERNAME, the profile folder in paths) by <user>, the computer name by
+<computer>, server and share of network paths by <server> and <share>, folder names by <folder>
 and file names by pseudonyms that keep the extension: the same name always gets the same number
-within one Anonymizer, so "Haus A.ifc" and "Haus A.3dm" become "Datei-1.ifc" and "Datei-1.3dm" and
+within one Anonymizer, so "Haus A.ifc" and "Haus A.3dm" become "File-1.ifc" and "File-1.3dm" and
 stay recognisable as input and output. Whether a path was local (C:\\…) or on the network
-(\\\\<Server>\\<Freigabe>\\…) is kept, as are generic folders (Desktop, AppData\\Local\\Temp, …), the
+(\\\\<server>\\<share>\\…) is kept, as are generic folders (Desktop, AppData\\Local\\Temp, …), the
 names of program files in tracebacks, and element labels without their names ("IfcWall 2O2Fr…").
-Everything else stays: times, sizes, counts, versions, error codes.
+Everything else stays: times, sizes, counts, versions, error codes. The placeholders are in the
+language of the user interface (German: <Benutzer>, <Rechner>, <Server>, <Freigabe>, <Ordner>, Datei-1.ifc).
 """
 
 from __future__ import annotations
 
+import functools
 import getpass
 import os
 import platform
@@ -19,12 +21,33 @@ import re
 import socket
 from collections.abc import Iterable
 
-USER = "<Benutzer>"
-COMPUTER = "<Rechner>"
-SERVER = "<Server>"
-SHARE = "<Freigabe>"
-FOLDER = "<Ordner>"
-FILE = "Datei"
+from ifc_converter.i18n import tr
+
+
+# The placeholders, translated when an Anonymizer is created (the language is set at start, see i18n).
+def user_placeholder() -> str:
+    return tr("<user>")
+
+
+def computer_placeholder() -> str:
+    return tr("<computer>")
+
+
+def server_placeholder() -> str:
+    return tr("<server>")
+
+
+def share_placeholder() -> str:
+    return tr("<share>")
+
+
+def folder_placeholder() -> str:
+    return tr("<folder>")
+
+
+def file_placeholder() -> str:
+    """The stem of the file pseudonyms: "File" -> File-1.ifc, File-2.3dm …"""
+    return tr("File")
 
 # Folder names that tell where a file is without telling anything about the user or the project.
 GENERIC_FOLDERS = {
@@ -64,7 +87,12 @@ _KNOWN_SUFFIX = re.compile(r"\.(?:%s)(?=$|[\s,;:)\]'\"“”.])" % "|".join(FILE
 _ANY_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,8}(?=$|[\s,;:)\]'\"“”])")
 _SUFFIX_CHAIN = re.compile(r"\.(?:%s)(?:\.|$)" % "|".join(FILE_SUFFIXES), re.IGNORECASE)
 _COPY_NUMBER = re.compile(r" \(\d+\)$")
-_PSEUDONYM = re.compile(rf"^{FILE}-\d+(?: \(\d+\))?(?:\.|$)")
+
+
+@functools.lru_cache(maxsize=None)
+def _pseudonym_pattern(file_word: str) -> re.Pattern[str]:
+    """Matches a name that is a pseudonym already ("File-1.ifc", "File-1 (2).3dm")."""
+    return re.compile(rf"^{re.escape(file_word)}-\d+(?: \(\d+\))?(?:\.|$)")
 # A file name without a folder, e.g. in a message "Haus_A.ifc wird umgewandelt".
 _BARE_FILE = re.compile(
     r"(?<![\w\\/<>.$~-])[\w$~-][^\s\\/\"„“”'<>|:*?,;()]*?\.(?:ifczip|ifcxml|ifc|3dm|glb|gltf|obj|mtl)(?![\w.])",
@@ -108,7 +136,11 @@ class Anonymizer:
         self.users = {name.casefold() for name in users if name}
         self.computers = {name.casefold() for name in computers if name}
         self._files: dict[str, int] = {}
-        names = [(name, USER) for name in self.users] + [(name, COMPUTER) for name in self.computers]
+        # The placeholders of the language at this moment: one anonymised text uses the same ones throughout.
+        self.user, self.computer = user_placeholder(), computer_placeholder()
+        self.server, self.share, self.folder = server_placeholder(), share_placeholder(), folder_placeholder()
+        self.file = file_placeholder()
+        names = [(name, self.user) for name in self.users] + [(name, self.computer) for name in self.computers]
         names = sorted((n for n in names if len(n[0]) >= 3), key=lambda n: -len(n[0]))
         self._identity = [
             (re.compile(rf"(?<![\w$-]){re.escape(name)}(?![\w$])", re.IGNORECASE), token) for name, token in names
@@ -130,8 +162,8 @@ class Anonymizer:
     # ----------------------------------------------------------------- names
 
     def file_name(self, name: str) -> str:
-        """"Datei-<n>" with the extension(s) of ``name``; the same stem always gets the same number."""
-        if _PSEUDONYM.match(name):
+        """"File-<n>" with the extension(s) of ``name``; the same stem always gets the same number."""
+        if _pseudonym_pattern(self.file).match(name):
             return name
         chain = _SUFFIX_CHAIN.search(name)
         if chain and chain.start() > 0:
@@ -142,17 +174,17 @@ class Anonymizer:
         if copy:  # "Haus (2).3dm", the converter's name for a second output: same file, same number
             stem, rest = stem[:copy.start()], copy.group(0) + rest
         number = self._files.setdefault(stem.casefold(), len(self._files) + 1)
-        return f"{FILE}-{number}{rest}"
+        return f"{self.file}-{number}{rest}"
 
     def _folder(self, name: str, parent: str | None) -> str:
         key = name.casefold()
         if (parent is not None and parent.casefold() in PROFILE_PARENTS) or key in self.users:
-            return USER
+            return self.user
         if key in self.computers:
-            return COMPUTER
+            return self.computer
         if key in GENERIC_FOLDERS or key.startswith(OWN_TEMP_PREFIXES):
             return name
-        return FOLDER
+        return self.folder
 
     # ----------------------------------------------------------------- paths
 
@@ -197,10 +229,10 @@ class Anonymizer:
     def _join(self, prefix: str, separator: str, segments: list[str]) -> str:
         if prefix.startswith("\\\\"):  # \\server\share\...: the share may be the profiles ("Users$")
             server, *names = segments
-            head = [COMPUTER if server.casefold() in self.computers else SERVER]
+            head = [self.computer if server.casefold() in self.computers else self.server]
             parent = None
             if names:
-                head.append(SHARE)
+                head.append(self.share)
                 parent, names = names[0], names[1:]
             lead = "\\\\"
         else:

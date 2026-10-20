@@ -147,3 +147,15 @@ def test_icon_files_exist_with_all_sizes():
     assert (reserved, kind) == (0, 1)
     sizes = {ico[6 + 16 * i] or 256 for i in range(count)}
     assert {16, 24, 32, 48, 256} <= sizes
+
+
+def test_component_versions_say_not_available_in_the_language(monkeypatch):
+    from ifc_converter import i18n
+
+    monkeypatch.setitem(sys.modules, "rhino3dm", None)  # import fails
+    assert app.component_versions()["rhino3dm"] == "nicht verfügbar"
+    i18n.set_language("en")
+    try:
+        assert app.component_versions()["rhino3dm"] == "not available"
+    finally:
+        i18n.set_language("de")
