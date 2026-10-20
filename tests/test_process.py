@@ -13,9 +13,8 @@ import child_helpers
 import ifcopenshell
 import pytest
 
-from ifc_converter import process
+from ifc_converter import i18n, process
 from ifc_converter.process import (
-    MEMORY_MESSAGE,
     Cancelled,
     ConversionCrashed,
     ConversionFailed,
@@ -66,7 +65,7 @@ def test_killed_child_is_reported_as_out_of_memory(tmp_path):
     with pytest.raises(ConversionCrashed) as info:
         convert_in_child(crash, tmp_path / "crash.glb", func=child_helpers.killed_if_named_crash)
     assert info.value.exitcode == -9
-    assert str(info.value) == MEMORY_MESSAGE
+    assert str(info.value) == process.memory_message()
 
 
 def test_hard_exit_is_reported_as_crash_with_code(wall_ifc, tmp_path):
@@ -75,11 +74,30 @@ def test_hard_exit_is_reported_as_crash_with_code(wall_ifc, tmp_path):
 
 
 def test_crash_messages():
-    assert crash_message(-9) == MEMORY_MESSAGE
-    assert crash_message(0xC0000017) == MEMORY_MESSAGE  # Windows STATUS_NO_MEMORY
+    assert crash_message(-9) == process.memory_message() == process.MEMORY_MESSAGE
+    assert crash_message(0xC0000017) == process.memory_message()  # Windows STATUS_NO_MEMORY
     assert crash_message(-11) == "Umwandlung abgestürzt: Speicherzugriffsfehler (Code -11)"
     assert crash_message(0xC0000005) == "Umwandlung abgestürzt: Speicherzugriffsfehler (Code 0xC0000005)"
     assert crash_message(0) == "Umwandlung wurde ohne Ergebnis beendet"
+    i18n.set_language("en")
+    assert crash_message(-11) == "Conversion crashed: memory access violation (code -11)"
+    assert crash_message(-9) == process.MEMORY_MESSAGE
+    assert process.MEMORY_MESSAGE == "The memory was not enough (the process was ended by the system)"
+
+
+def test_the_child_reports_in_the_language_of_the_parent(wall_ifc, tmp_path):
+    # The language is handed down through the environment (i18n.ENV); the texts are made in the child.
+    texts = []
+    i18n.set_language("en")
+    assert os.environ[i18n.ENV] == "en"
+    result = convert_in_child(wall_ifc, tmp_path / "wall.glb", "glb", status=lambda phase, text: texts.append(text))
+    assert result.elements == 1
+    assert texts[0].startswith("Reading IFC file (") and "Writing GLB file …" in texts
+    assert not any("wird" in text for text in texts)
+    i18n.set_language("de")
+    texts.clear()
+    convert_in_child(wall_ifc, tmp_path / "wall.glb", "glb", status=lambda phase, text: texts.append(text))
+    assert texts[0].startswith("IFC-Datei wird gelesen (") and "GLB-Datei wird geschrieben …" in texts
 
 
 def test_cancel_terminates_child_while_it_is_reading(wall_ifc, tmp_path):
@@ -267,7 +285,7 @@ def test_no_retry_after_out_of_memory_or_python_error(tmp_path, monkeypatch):
     crash = tmp_path / "crash.ifc"
     crash.write_text("x")
     no_retry = lambda message: pytest.fail("retried")  # noqa: E731
-    with pytest.raises(ConversionCrashed, match=re.escape(MEMORY_MESSAGE)):
+    with pytest.raises(ConversionCrashed, match=re.escape(process.memory_message())):
         convert_in_child(crash, tmp_path / "crash.glb", on_retry=no_retry, func=child_helpers.killed_if_named_crash)
     with pytest.raises(ConversionFailed):
         convert_in_child(crash, tmp_path / "x.glb", on_retry=no_retry, func=child_helpers.raise_error)

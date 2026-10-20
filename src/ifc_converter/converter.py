@@ -21,6 +21,7 @@ import ifcopenshell.util.element
 import ifcopenshell.util.unit
 
 from ifc_converter import schema_bridge
+from ifc_converter.i18n import tr
 
 # Output formats: "3dm" has its own writer (rhino.py), the others are IfcOpenShell's serializers
 # (serializers.py, which says why e.g. glTF, USD and IGES are not among them).
@@ -226,23 +227,26 @@ def convert(
     """
     fmt = fmt.lower()
     if fmt not in FORMATS + INTERNAL_FORMATS:
-        raise ValueError(f"Nicht unterstütztes Format „{fmt}“, möglich sind: {', '.join(FORMATS)}")
+        raise ValueError(tr('Unsupported format "{fmt}"; possible formats: {formats}', fmt=fmt,
+                            formats=", ".join(FORMATS)))
     geometry = geometry.lower()
     if geometry not in GEOMETRIES:
-        raise ValueError(f"Nicht unterstützte Geometrieart „{geometry}“, möglich sind: {', '.join(GEOMETRIES)}")
+        raise ValueError(tr('Unsupported geometry kind "{geometry}"; possible kinds: {kinds}', geometry=geometry,
+                            kinds=", ".join(GEOMETRIES)))
 
     kernel = (kernel or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL).lower()
     if kernel not in KERNELS:
-        raise ValueError(f"Unbekannter Geometriekern „{kernel}“, möglich sind: {', '.join(KERNELS)}")
+        raise ValueError(tr('Unknown geometry kernel "{kernel}"; possible kernels: {kernels}', kernel=kernel,
+                            kernels=", ".join(KERNELS)))
 
     input_path = Path(input_path)
     if not input_path.is_file():
-        raise FileNotFoundError(f"IFC-Datei nicht gefunden: {input_path}")
+        raise FileNotFoundError(tr("IFC file not found: {path}", path=input_path))
     if input_path.suffix.lower() in (".ifcxml", ".xml"):
-        raise ValueError(
-            f"ifcXML-Dateien kann IfcOpenShell nicht lesen ({input_path.name}). Bitte das Modell im "
-            "Autorenprogramm als .ifc (STEP-Textformat) oder .ifczip exportieren."
-        )
+        raise ValueError(tr(
+            "IfcOpenShell cannot read ifcXML files ({name}). Please export the model from the authoring program "
+            "as .ifc (STEP text format) or .ifczip.", name=input_path.name,
+        ))
     suffix = ".npz" if fmt == "preview" else f".{fmt}"
     output_path = Path(output_path) if output_path else input_path.with_suffix(suffix)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,7 +255,7 @@ def convert(
         if status:
             status(phase, text)
 
-    report("read", f"IFC-Datei wird gelesen ({size_text(input_path.stat().st_size)}) …")
+    report("read", tr("Reading IFC file ({size}) …", size=size_text(input_path.stat().st_size)))
     read_started = time.monotonic()
     # Schemas IfcOpenShell does not know (IFC2x2, the IFC4x4 draft) are read as the closest it knows,
     # from a rewritten copy (see schema_bridge); a .ifczip is read as it is.
@@ -261,14 +265,16 @@ def convert(
         model = ifcopenshell.open(str(bridged.path if bridged else input_path))
     except ifcopenshell.SchemaError as exc:
         supported = ", ".join(s for s in ifcopenshell.ifcopenshell_wrapper.schema_names() if s.startswith("IFC"))
-        bridges = ", ".join(sorted({b.label for b in schema_bridge.BRIDGES.values()}))
-        raise ValueError(f"IFC-Version wird nicht unterstützt ({exc}). Unterstützt werden: {supported}; "
-                         f"außerdem werden {bridges} als nächstverwandtes Schema gelesen.") from exc
+        bridges = ", ".join(sorted({b.label() for b in schema_bridge.BRIDGES.values()}))
+        raise ValueError(tr(
+            "IFC version is not supported ({error}). Supported: {supported}; {bridges} are also read as the "
+            "closest related schema.", error=exc, supported=supported, bridges=bridges,
+        )) from exc
     finally:
         if bridged:
             bridged.remove()  # the model is in memory now
     if bridged:
-        report("note", f"{bridged.note} Maße und Lage bleiben unverändert.")
+        report("note", tr("{note} Dimensions and positions stay unchanged.", note=bridged.note))
     repair_units(model)
     repair_extrusions(model)
     merge_projects(model)
@@ -293,7 +299,7 @@ def convert(
     if envelope and fmt != "preview":
         from ifc_converter import envelope as hull
 
-        report("envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …")
+        report("envelope", tr("Determining the building hull (geometry roughly precomputed) …"))
         selection = hull.select(
             model, threads, shape_products(model, EXCLUDED_CLASSES), report,
             (lambda percent: progress(percent * ENVELOPE_SHARE // 100)) if progress else None,
@@ -303,7 +309,7 @@ def convert(
         if progress:
             inner = progress
             progress = lambda percent: inner(ENVELOPE_SHARE + percent * (100 - ENVELOPE_SHARE) // 100)
-    report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
+    report("geometry", tr("Computing geometry ({threads} threads) …", threads=threads))
 
     with _staging(output_path, input_path.stat().st_size, staging_dir) as target:
         try:
@@ -333,11 +339,11 @@ def convert(
             for path in _output_files(target, fmt):
                 path.unlink(missing_ok=True)
             if candidates[0]:
-                raise ValueError(
-                    f"Keine Geometrie erzeugt: keines der {candidates[0]} Bauteile mit Geometrie ließ sich "
-                    "umwandeln (vermutlich nicht unterstützte Geometrietypen)."
-                )
-            raise ValueError("Die Datei enthält keine Bauteile mit Geometrie.")
+                raise ValueError(tr(
+                    "No geometry produced: none of the {count} elements with geometry could be converted "
+                    "(probably unsupported geometry types).", count=candidates[0],
+                ))
+            raise ValueError(tr("The file contains no elements with geometry."))
         if target != output_path:
             _deliver(target, output_path, fmt, report)
 
@@ -409,7 +415,7 @@ def _deliver(staged: Path, output_path: Path, fmt: str, report: Callable[[str, s
     files = [(source, output_path.with_suffix(source.suffix)) for source in _output_files(staged, fmt)]
     files = [(source, target) for source, target in files if source.exists()]
     total = sum(source.stat().st_size for source, _ in files)
-    report("copy", f"Wird ins Zielverzeichnis kopiert ({size_text(total)}) …")
+    report("copy", tr("Copying to the target folder ({size}) …", size=size_text(total)))
     done = 0
     for source, target in files:
         for attempt, wait in enumerate((*COPY_RETRY_WAITS, None), 1):
@@ -419,8 +425,8 @@ def _deliver(staged: Path, output_path: Path, fmt: str, report: Callable[[str, s
             except OSError as exc:
                 if wait is None:
                     raise _rescue(files, output_path, exc) from exc
-                report("copy", f"Kopieren fehlgeschlagen ({exc.strerror or exc}) – neuer Versuch {attempt + 1} "
-                               f"in {wait} s …")
+                report("copy", tr("Copying failed ({error}) – attempt {attempt} in {seconds} s …",
+                                  error=exc.strerror or exc, attempt=attempt + 1, seconds=wait))
                 time.sleep(wait)
         done += source.stat().st_size
 
@@ -435,7 +441,8 @@ def _copy(source: Path, target: Path, done: int, total: int, report: Callable[[s
                 copied += len(block)
                 if time.monotonic() - last >= 1:
                     last = time.monotonic()
-                    report("copy", f"Wird ins Zielverzeichnis kopiert … {size_text(copied)} von {size_text(total)}")
+                    report("copy", tr("Copying to the target folder … {copied} of {total}",
+                                      copied=size_text(copied), total=size_text(total)))
         os.replace(part, target)
     except OSError:
         try:
@@ -458,11 +465,12 @@ def _rescue(files: list[tuple[Path, Path]], output_path: Path, error: OSError) -
             shutil.move(source, destination)
             kept.append(destination)
     except OSError:
-        return OSError(f"Die fertige Datei konnte nicht nach {output_path.parent} kopiert werden ({error}).")
-    return OSError(
-        f"Die fertige Datei konnte nicht nach {output_path.parent} kopiert werden ({error.strerror or error}). "
-        f"Sie liegt hier: {kept[0]} – bitte von Hand kopieren."
-    )
+        return OSError(tr("The finished file could not be copied to {folder} ({error}).",
+                          folder=output_path.parent, error=error))
+    return OSError(tr(
+        "The finished file could not be copied to {folder} ({error}). It is here: {path} – please copy it by hand.",
+        folder=output_path.parent, error=error.strerror or error, path=kept[0],
+    ))
 
 
 def _free_name(path: Path) -> Path:
@@ -554,7 +562,7 @@ def repair_extrusions(model: ifcopenshell.file) -> int:
         solid.Depth = -depth
         repaired += 1
     if repaired:
-        log.info("%d Extrusionen mit negativer Tiefe umgedreht", repaired)
+        log.info(tr("{count} extrusions with negative depth turned around", count=repaired))
     return repaired
 
 
@@ -657,8 +665,8 @@ def iter_shapes(
         if replayed:
             products = [product for product in products if product.id() not in replayed]
             if status:
-                status("note", f"{finished} Bauteile aus dem vorigen Versuch übernommen, "
-                               f"{len(products)} werden berechnet")
+                status("note", tr("{finished} elements taken over from the previous attempt, {count} are computed",
+                                  finished=finished, count=len(products)))
 
     def keep(shape):
         if checkpoint is not None:
@@ -687,14 +695,18 @@ def iter_shapes(
         label = product_label(product)
         if depth >= CYCLIC:
             if status:
-                status("note", f"Geometrie enthält sich selbst (fehlerhafte Datei), nicht umgewandelt: {label}")
+                status("note", tr("Geometry contains itself (faulty file), not converted: {label}", label=label))
             continue
         if position:
             position("element", [product.id()], label)
         if status:
-            kind = f"Tief verschachteltes Bauteil ({depth} Ebenen)" if depth else "Bauteil"
             # One phase for all of them: the log gets the first line, the window each one.
-            status("deep", f"{kind} {number} von {len(deep)} wird einzeln berechnet: {label} …")
+            if depth:
+                status("deep", tr("Deeply nested element ({depth} levels) {number} of {total} is computed on its own: "
+                                  "{label} …", depth=depth, number=number, total=len(deep), label=label))
+            else:
+                status("deep", tr("Element {number} of {total} is computed on its own: {label} …",
+                                  number=number, total=len(deep), label=label))
         shape = _deep_shape(settings, product, strategy)
         if shape is not None:
             yield keep(shape)
@@ -703,7 +715,7 @@ def iter_shapes(
     if deep:
         yield from chunk_end([product.id() for product, _ in deep])
         if status:
-            status("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
+            status("geometry", tr("Computing geometry ({threads} threads) …", threads=threads))
 
     rescue, rescued = [RESCUE_SECONDS if second_attempts else 0], 0  # time left for second attempts, products saved
     chunks = [products[start:start + size] for start in range(0, len(products), size)]
@@ -758,10 +770,11 @@ def iter_shapes(
         pipeline.close()
 
     if rescued and status:
-        status("note", f"{rescued} Bauteile erst im zweiten Versuch berechnet (feinere Toleranz bzw. anderer Kern)")
+        status("note", tr("{count} elements only computed in the second attempt (finer tolerance or other kernel)",
+                          count=rescued))
     if rescue[0] <= 0 and second_attempts and status:
-        status("note", f"Zweite Versuche nach {RESCUE_SECONDS} s beendet; weitere Bauteile ohne Geometrie "
-                       "wurden nicht mehr einzeln versucht")
+        status("note", tr("Second attempts ended after {seconds} s; further elements without geometry were not "
+                          "tried on their own any more", seconds=RESCUE_SECONDS))
     without = [product for product in candidates if product.id() not in produced]
     # An aggregate whose parts became geometry (e.g. a curtain wall of plates and members, whose own
     # body ArchiCAD leaves empty) misses nothing: it is neither reported nor counted as without.
@@ -952,8 +965,8 @@ class _Pipeline:
             thread.join(max(0.0, deadline - time.monotonic()))
         left = sum(thread.is_alive() for thread in self._threads)
         if left:
-            log.warning("%d Geometrie-Berechnungen laufen nach %d s noch und werden im Hintergrund beendet",
-                        left, CLOSE_WAIT)
+            log.warning(tr("{count} geometry computations are still running after {seconds} s and are ended in "
+                           "the background", count=left, seconds=int(CLOSE_WAIT)))
         self._alive.clear()
         self._threads.clear()
 
@@ -1351,10 +1364,10 @@ def memory_warning(input_path: str | Path) -> str | None:
     available = available_memory()
     if available is None or needed <= available:
         return None
-    return (
-        f"{Path(input_path).name} braucht voraussichtlich ca. {_gb(needed)} GB Arbeitsspeicher, "
-        f"frei sind nur {_gb(available)} GB. Andere Programme schließen, sonst wird es sehr langsam "
-        f"oder die Umwandlung bricht ab."
+    return tr(
+        "{name} will probably need about {needed} GB of memory, only {available} GB are free. Close other "
+        "programs, otherwise it gets very slow or the conversion breaks off.",
+        name=Path(input_path).name, needed=_gb(needed), available=_gb(available),
     )
 
 

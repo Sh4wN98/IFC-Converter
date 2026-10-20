@@ -21,8 +21,11 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ifc_converter.i18n import tr
 
 # The header is within the first bytes of any STEP file; 16 KB covers long FILE_DESCRIPTIONs.
 HEADER_BYTES = 16 * 1024
@@ -33,19 +36,27 @@ _ENTITY = re.compile(rb"^(#\d+\s*=\s*)([A-Z0-9_]+)(\s*\()")
 @dataclass(frozen=True)
 class Bridge:
     target: str  # the schema the copy declares
-    label: str  # German name of the source schema for messages
+    label: Callable[[], str]  # name of the source schema for messages, in the user's language when called
     renamed: dict[bytes, bytes] = field(default_factory=dict)  # entity name -> IFC counterpart
     dropped: frozenset[bytes] = frozenset()  # entities without a counterpart, left out
-    note: str = ""  # what the user should know
+    note: Callable[[], str] = lambda: ""  # what the user should know, in the user's language when called
+
+
+def _ifc2x2_note() -> str:
+    return tr("IFC2x2 (2003) is read as IFC2x3, which took over its entities and attributes.")
+
+
+def _ifc4x4_note() -> str:
+    return tr("IFC4x4 is an unpublished draft (tunnels) and is read as IFC4.3: IfcTunnel as IfcFacility, "
+              "IfcTunnelPart as IfcFacilityPart, IfcUndergroundExcavation and IfcArchElement as "
+              "IfcBuildingElementProxy; dataset references (IfcDataSetInformation) are dropped.")
 
 
 BRIDGES: dict[str, Bridge] = {
-    "IFC2X2_FINAL": Bridge("IFC2X3", "IFC2x2", note="IFC2x2 (2003) wird als IFC2x3 gelesen, das seine Bauteile und "
-                           "Attribute übernommen hat."),
-    "IFC2X2": Bridge("IFC2X3", "IFC2x2", note="IFC2x2 (2003) wird als IFC2x3 gelesen, das seine Bauteile und "
-                     "Attribute übernommen hat."),
+    "IFC2X2_FINAL": Bridge("IFC2X3", lambda: "IFC2x2", note=_ifc2x2_note),
+    "IFC2X2": Bridge("IFC2X3", lambda: "IFC2x2", note=_ifc2x2_note),
     "IFC4X4": Bridge(
-        "IFC4X3_ADD2", "IFC4x4 (Entwurf)",
+        "IFC4X3_ADD2", lambda: tr("IFC4x4 (draft)"),
         renamed={
             b"IFCTUNNEL": b"IFCFACILITY",
             b"IFCTUNNELPART": b"IFCFACILITYPART",
@@ -53,9 +64,7 @@ BRIDGES: dict[str, Bridge] = {
             b"IFCARCHELEMENT": b"IFCBUILDINGELEMENTPROXY",
         },
         dropped=frozenset({b"IFCDATASETINFORMATION", b"IFCRELASSOCIATESDATASET"}),
-        note="IFC4x4 ist ein unveröffentlichter Entwurf (Tunnel) und wird als IFC4.3 gelesen: IfcTunnel als "
-             "IfcFacility, IfcTunnelPart als IfcFacilityPart, IfcUndergroundExcavation und IfcArchElement als "
-             "IfcBuildingElementProxy; Datensatz-Verweise (IfcDataSetInformation) entfallen.",
+        note=_ifc4x4_note,
     ),
 }
 
@@ -87,10 +96,10 @@ class Bridged:
     def note(self) -> str:
         counts = []
         if self.renamed:
-            counts.append(f"{self.renamed} Entitäten umbenannt")
+            counts.append(tr("{count} entities renamed", count=self.renamed))
         if self.dropped:
-            counts.append(f"{self.dropped} ausgelassen")
-        return self.bridge.note + (f" ({', '.join(counts)})." if counts else "")
+            counts.append(tr("{count} left out", count=self.dropped))
+        return self.bridge.note() + (f" ({', '.join(counts)})." if counts else "")
 
     def remove(self) -> None:
         try:
