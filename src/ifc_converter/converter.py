@@ -78,6 +78,10 @@ _missing: ContextVar[list | None] = ContextVar("missing", default=None)
 _recovery: ContextVar[tuple | None] = ContextVar("recovery", default=None)
 # Number of elements iter_shapes was asked to process during the current conversion.
 _candidates: ContextVar[list[int] | None] = ContextVar("candidates", default=None)
+# Option "Nur Gebäudehülle": the ids of the products shape_products returns (None: all of them).
+_selected: ContextVar[set[int] | None] = ContextVar("selected", default=None)
+# Share of the progress the hull's coarse geometry pass takes (the conversion gets the rest).
+ENVELOPE_SHARE = 25
 
 # The measure type of a conversion factor per unit type, for repair_units.
 UNIT_MEASURES = {
@@ -186,6 +190,8 @@ class ConversionResult:
     no_geometry: list[str] = field(default_factory=list)
     # Elements left out because the geometry kernel crashed or hung on them (filled in by process).
     crashed: list[str] = field(default_factory=list)
+    # Elements left out as interior (option "Nur Gebäudehülle", see envelope).
+    inside: int = 0
 
 
 def convert(
@@ -203,6 +209,7 @@ def convert(
     skip_ids: list[int] | None = None,
     blocks: bool = False,
     checkpoint_dir: str | Path | None = None,
+    envelope: bool = False,
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl), Rhino 3DM or DAE and return what was written.
 
@@ -210,7 +217,8 @@ def convert(
     preview.write_preview instead; the app calls it through preview.compute_preview.
 
     ``geometry`` ("brep" or "mesh") and ``blocks`` (type geometry placed several times as Rhino
-    blocks) only affect the Rhino export. ``kernel`` picks the geometry
+    blocks) only affect the Rhino export. With ``envelope`` only the building hull is converted:
+    products inside the building are left out (see envelope.select). ``kernel`` picks the geometry
     kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL. ``status`` gets the
     phases (see StatusCallback). Output for a network folder is written in ``staging_dir`` (or a
     temp folder) first and then copied. ``position``, ``isolate_ids`` and ``skip_ids`` let a caller
@@ -278,9 +286,24 @@ def convert(
 
         checkpoint = Checkpoint(checkpoint_dir)
     checkpoint_token = _checkpoint.set(checkpoint)
-    report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
+    selection = None
+    selected_token = None
     if progress:
         progress(0)
+    if envelope and fmt != "preview":
+        from ifc_converter import envelope as hull
+
+        report("envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …")
+        selection = hull.select(
+            model, threads, shape_products(model, EXCLUDED_CLASSES), report,
+            (lambda percent: progress(percent * ENVELOPE_SHARE // 100)) if progress else None,
+        )
+        selected_token = _selected.set(selection.keep)
+        report("note", selection.note)
+        if progress:
+            inner = progress
+            progress = lambda percent: inner(ENVELOPE_SHARE + percent * (100 - ENVELOPE_SHARE) // 100)
+    report("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
 
     with _staging(output_path, input_path.stat().st_size, staging_dir) as target:
         try:
@@ -302,6 +325,8 @@ def convert(
             _recovery.reset(recovery_token)
             _missing.reset(missing_token)
             _checkpoint.reset(checkpoint_token)
+            if selected_token is not None:
+                _selected.reset(selected_token)
 
         if elements == 0:
             # An empty file reported as success would look like a finished conversion.
@@ -320,6 +345,7 @@ def convert(
         progress(100)
     return ConversionResult(
         output=output_path, elements=elements, skipped=max(0, candidates[0] - elements), no_geometry=missing,
+        inside=selection.inside if selection else 0,
     )
 
 
@@ -572,10 +598,12 @@ class ChunkEnd:
 
 
 def shape_products(model: ifcopenshell.file, exclude: list[str]) -> list[ifcopenshell.entity_instance]:
-    """The products ``iter_shapes`` computes shapes for."""
+    """The products ``iter_shapes`` computes shapes for (only the hull's with option "Nur Gebäudehülle")."""
+    selected = _selected.get()
     return [
         product for product in model.by_type("IfcProduct")
         if _has_3d_shape(product) and not any(product.is_a(name) for name in exclude)
+        and (selected is None or product.id() in selected)
     ]
 
 
