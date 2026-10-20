@@ -16,6 +16,10 @@ from __future__ import annotations
 import importlib
 import os
 
+# The package imports every language module by name, so that PyInstaller packs them: set_language
+# loads them by their code, which the build cannot see.
+import ifc_converter.languages  # noqa: F401
+
 # Code -> the language's own name, in the order shown in the menu.
 LANGUAGES = {
     "en": "English",
