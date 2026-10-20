@@ -34,6 +34,8 @@ from pathlib import Path
 import ifcopenshell.geom as geom
 import ifcopenshell.ifcopenshell_wrapper as wrapper
 
+from ifc_converter.i18n import tr
+
 GB = 1024 ** 3
 
 
@@ -48,20 +50,20 @@ class Serializer:
     native: bool = False  # exact B-rep (NATIVE iterator output), OpenCASCADE only
     streams: bool = True  # elements are written as they come, else kept until the end
     max_bytes: int | None = None  # the largest file the format can hold
-    phase: str = ""  # the German text of the "write" phase
+    phase: Callable[[], str] = lambda: ""  # the text of the "write" phase, in the user's language when called
 
 
 SERIALIZERS: dict[str, Serializer] = {
     "glb": Serializer(
         "glb", ".glb", temp_names=(".indices.tmp", ".vertices.tmp"), max_bytes=4 * GB,
-        phase="GLB-Datei wird geschrieben …",
+        phase=lambda: tr("Writing GLB file …"),
     ),
-    "obj": Serializer("obj", ".obj", side_suffixes=(".mtl",), phase="OBJ-Datei wird geschrieben …"),
+    "obj": Serializer("obj", ".obj", side_suffixes=(".mtl",), phase=lambda: tr("Writing OBJ file …")),
     "stp": Serializer(
         "step", ".stp", native=True, streams=False,
-        phase="STEP-Datei wird geschrieben (exakte Flächen, dauert bei großen Modellen Minuten) …",
+        phase=lambda: tr("Writing STEP file (exact surfaces, takes minutes for large models) …"),
     ),
-    "dae": Serializer("collada", ".dae", streams=False, phase="DAE-Datei wird geschrieben …"),
+    "dae": Serializer("collada", ".dae", streams=False, phase=lambda: tr("Writing DAE file …")),
 }
 
 # Native (B-rep) output: the kernel's shapes as OpenCASCADE shapes instead of triangle meshes.
@@ -122,7 +124,7 @@ def write(
                 continue
             writer.write(shape)
             elements += 1
-        report("write", serializer.phase)
+        report("write", serializer.phase())
         writer.finalize()
         # The COLLADA serializer writes its document when it is destroyed, the GLB one removes its
         # temp files then: both must have happened before the output is copied or measured.
@@ -133,6 +135,6 @@ def write(
     if elements and not target.is_file():
         # The STEP writer drops shapes it cannot transfer without a word and writes no file at all
         # when none is left; an empty success would look like a finished conversion.
-        raise ValueError(f"Die {fmt.upper()}-Datei konnte nicht geschrieben werden: der Serializer hat keines "
-                         f"der {elements} Bauteile übernommen.")
+        raise ValueError(tr("The {fmt} file could not be written: the serializer took none of the {count} elements.",
+                            fmt=fmt.upper(), count=elements))
     return elements

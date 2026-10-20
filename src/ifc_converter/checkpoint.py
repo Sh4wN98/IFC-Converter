@@ -21,6 +21,8 @@ from pathlib import Path
 
 import numpy
 
+from ifc_converter.i18n import tr
+
 log = logging.getLogger(__name__)
 
 # Chunk files are named chunk-<number>.bin; a file appears complete or not at all (os.replace).
@@ -52,7 +54,7 @@ class Checkpoint:
                 with open(path, "rb") as file:
                     ids, records = _load(file)
             except (OSError, pickle.UnpicklingError, EOFError, ValueError, TypeError) as exc:
-                log.warning("Zwischenstand %s nicht lesbar (%s), wird neu berechnet", path.name, exc)
+                log.warning(tr("Checkpoint {name} not readable ({error}), computed again", name=path.name, error=exc))
                 return
             yield ids, [_ReplayShape(*record) for record in records] if shapes else []
 
@@ -88,7 +90,7 @@ class Checkpoint:
         except OSError as exc:
             # No checkpoint is no reason to stop the conversion: a restart computes everything again.
             self._broken = True
-            log.warning("Zwischenstand kann nicht gespeichert werden (%s); ohne weiter", exc)
+            log.warning(tr("Checkpoint cannot be saved ({error}); continuing without one", error=exc))
             try:
                 part.unlink(missing_ok=True)
             except OSError:

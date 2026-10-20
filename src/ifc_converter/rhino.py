@@ -23,6 +23,7 @@ import ifcopenshell.util.unit as unit_util
 import numpy
 import rhino3dm
 
+from ifc_converter.i18n import tr
 from ifc_converter.converter import (
     ALIGNMENT_LAYOUT_CLASSES, LINEAR_DEFLECTION, ChunkEnd, ProgressCallback, StatusCallback, available_memory,
     geometry_library, curve_phase, iter_shapes, product_label, shape_products,
@@ -159,9 +160,9 @@ def write_3dm(
     def culprit(element_id: int, fallback: str | None) -> None:
         label = product_label(model.by_id(element_id))
         if fallback:
-            text = f"Rhino-Geometrie ließ einen Hilfsprozess abstürzen, stattdessen als Netz übernommen: {label}"
+            text = tr("Rhino geometry crashed a worker process, taken over as a mesh instead: {label}", label=label)
         else:
-            text = f"Rhino-Geometrie ließ einen Hilfsprozess abstürzen, Bauteil weggelassen: {label}"
+            text = tr("Rhino geometry crashed a worker process, element left out: {label}", label=label)
         if status:
             status("note", text)
         else:
@@ -213,7 +214,7 @@ def write_3dm(
     if status:
         # rhino3dm holds the GIL while it writes, so the progress of this phase (the file growing)
         # can only be watched from another process; process.py does that.
-        status("write", f"Rhino-Datei wird geschrieben ({writer.elements} Objekte) …")
+        status("write", tr("Writing Rhino file ({count} objects) …", count=writer.elements))
     if not writer.rhino.Write(str(output_path), FILE_VERSION):
         raise OSError(f"Could not write Rhino file: {output_path}")
     return writer.elements

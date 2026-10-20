@@ -12,7 +12,7 @@ import numpy
 import pytest
 import rhino3dm
 
-from ifc_converter import convert
+from ifc_converter import convert, i18n
 from ifc_converter.converter import merge_projects, repair_units
 from ifc_converter.cli import main
 
@@ -151,6 +151,10 @@ def test_unsupported_schema_gets_a_clear_message(wall_ifc, tmp_path):
     future = tmp_path / "future.ifc"
     future.write_text(text)
     with pytest.raises(ValueError, match="IFC-Version wird nicht unterstützt.*IFC5.*IFC2X3"):
+        convert(future, fmt="glb")
+    i18n.set_language("en")
+    with pytest.raises(ValueError,
+                       match=r"IFC version is not supported.*IFC5.*IFC2X3.*; IFC2x2, IFC4x4 \(draft\) are also read"):
         convert(future, fmt="glb")
 
 

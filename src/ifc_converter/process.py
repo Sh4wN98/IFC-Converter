@@ -27,9 +27,11 @@ from contextlib import contextmanager
 from multiprocessing.connection import wait
 from pathlib import Path
 
+from ifc_converter import i18n
 from ifc_converter.converter import (
     DEFAULT_KERNEL, MAX_DEFAULT_THREADS, ConversionResult, ProgressCallback, convert, default_threads, size_text,
 )
+from ifc_converter.i18n import tr
 
 # "spawn" starts a fresh interpreter on every platform: no forked copy of the GUI's threads and
 # memory, and the same behaviour on Linux as on Windows and macOS (where it is the only/default way).
@@ -53,7 +55,8 @@ ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 FATAL_STALL_TIMEOUT = 60
 # Only the stack overflow: faulthandler also reports access violations that OpenCASCADE then handles.
-FATAL_MARKERS = {"Windows fatal exception: stack overflow": "Stapelüberlauf"}
+# Marker in the child's stderr -> its name in messages (in the user's language when called).
+FATAL_MARKERS = {"Windows fatal exception: stack overflow": lambda: tr("stack overflow")}
 STALL_CPU = 1.0
 CPU_SAMPLE = 30
 # A pause this long between two samples means the computer was suspended, not the conversion stuck.
@@ -61,17 +64,10 @@ SUSPEND_GAP = 5 * 60
 # Temp files of conversions untouched for this long are leftovers of a killed app.
 STALE_TEMP_AGE = 24 * 3600
 
-MEMORY_MESSAGE = "Der Arbeitsspeicher hat nicht gereicht (Prozess wurde vom System beendet)"
 # Windows: the conversion child and its worker processes run in a job object. They end with the app
 # even if it is killed (KILL_ON_JOB_CLOSE), and together they may commit at most JOB_MEMORY_SHARE of
 # the physical memory, so that a runaway conversion cannot push the PC's other programs into paging.
 JOB_MEMORY_SHARE = 0.85
-MEMORY_LIMIT_MESSAGE = (
-    "Der Arbeitsspeicher hat nicht gereicht: Die Umwandlung darf höchstens {limit} GB belegen ({share} % des "
-    "Arbeitsspeichers), damit andere Programme weiterlaufen. Für diese Datei braucht der PC mehr Arbeitsspeicher."
-)
-# Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone.
-RETRY_MESSAGE = "Absturz im schnellen Geometriekern – neuer Versuch nur mit OpenCASCADE …"
 # A checkpoint (see checkpoint.py) is only kept with this many times the IFC size free in the
 # temp folder: the kernel's geometry of a model takes about as much as the 3dm, 1–2x the IFC.
 CHECKPOINT_ROOM = 3
@@ -104,6 +100,27 @@ QUARANTINE_FILES = 50
 QUARANTINE_ELEMENTS = 100
 
 log = logging.getLogger(__name__)
+
+
+def memory_message() -> str:
+    """The error for a child killed for lack of memory (in the user's language)."""
+    return tr("The memory was not enough (the process was ended by the system)")
+
+
+def retry_message() -> str:
+    """Shown when a crash in the hybrid geometry kernel is retried with OpenCASCADE alone."""
+    return tr("Crash in the fast geometry kernel – retrying with OpenCASCADE only …")
+
+
+# The two messages used to be module constants (MEMORY_MESSAGE, RETRY_MESSAGE); as such they could
+# only be in one language. The names still work, in the language current when they are read.
+_MESSAGES = {"MEMORY_MESSAGE": memory_message, "RETRY_MESSAGE": retry_message}
+
+
+def __getattr__(name: str) -> str:
+    if name in _MESSAGES:
+        return _MESSAGES[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class Cancelled(Exception):
@@ -139,14 +156,18 @@ class ConversionStalled(Exception):
 
     def __init__(self, seconds: float, fatal: str = ""):
         if fatal:
-            super().__init__(f"Absturz im Geometriekern ({fatal}), danach hing die Umwandlung fest")
+            super().__init__(tr("Crash in the geometry kernel ({fatal}), after which the conversion was stuck",
+                                fatal=fatal))
         else:
-            super().__init__(f"Die Umwandlung hat {_duration(seconds)} lang nicht mehr gerechnet (sie hing fest)")
+            super().__init__(tr("The conversion has not computed anything for {duration} (it was stuck)",
+                                duration=_duration(seconds)))
         self.fatal = fatal
 
 
 def _duration(seconds: float) -> str:
-    return f"{seconds / 60:.0f} Minuten" if seconds >= 120 else f"{seconds:.0f} Sekunden"
+    if seconds >= 120:
+        return tr("{count} minutes", count=f"{seconds / 60:.0f}")
+    return tr("{count} seconds", count=f"{seconds:.0f}")
 
 
 def cpu_count() -> int:
@@ -160,25 +181,27 @@ def auto_threads() -> int:
     return default_threads()
 
 
-# What the common Windows crash codes mean.
+# What the common Windows crash codes mean (in the user's language when called).
 CRASH_NAMES = {
-    0xC00000FD: "Stapelüberlauf im Geometriekern",
-    0xC0000005: "Speicherzugriffsfehler",
-    0xC0000409: "interner Programmabbruch",
-    -getattr(signal, "SIGSEGV", 11): "Speicherzugriffsfehler",
+    0xC00000FD: lambda: tr("stack overflow in the geometry kernel"),
+    0xC0000005: lambda: tr("memory access violation"),
+    0xC0000409: lambda: tr("internal program abort"),
+    -getattr(signal, "SIGSEGV", 11): lambda: tr("memory access violation"),
 }
 
 
 def crash_message(exitcode: int | None) -> str:
-    """A German message for a child that ended with ``exitcode`` but delivered no result."""
+    """The message for a child that ended with ``exitcode`` but delivered no result."""
     if _out_of_memory(exitcode):
-        return MEMORY_MESSAGE
+        return memory_message()
     if exitcode == 0:
-        return "Umwandlung wurde ohne Ergebnis beendet"
+        return tr("Conversion ended without a result")
     # Windows reports crashes as NTSTATUS codes such as 0xC0000005, which are only readable in hex.
     code = f"0x{exitcode:08X}" if exitcode is not None and exitcode >= 0xC0000000 else exitcode
     name = CRASH_NAMES.get(exitcode)
-    return f"Umwandlung abgestürzt: {name} (Code {code})" if name else f"Umwandlung abgestürzt (Code {code})"
+    if name:
+        return tr("Conversion crashed: {name} (code {code})", name=name(), code=code)
+    return tr("Conversion crashed (code {code})", code=code)
 
 
 def _out_of_memory(exitcode: int | None) -> bool:
@@ -210,33 +233,37 @@ def _recover(
     """
     if isinstance(failure, ConversionCrashed) and (failure.memory_limit or _out_of_memory(failure.exitcode)):
         return None
-    if isinstance(failure, ConversionStalled):
-        what = f"Absturz im Geometriekern ({failure.fatal})" if failure.fatal else "Hänger im Geometriekern"
+    if isinstance(failure, ConversionStalled) and failure.fatal:
+        what = tr("Crash in the geometry kernel ({fatal})", fatal=failure.fatal)
+    elif isinstance(failure, ConversionStalled):
+        what = tr("Hang in the geometry kernel")
     else:
-        what = "Absturz im Geometriekern"
-    again = f"Neuer Versuch ({attempt}. von höchstens {MAX_RECOVERIES + 1})"
+        what = tr("Crash in the geometry kernel")
+    again = tr("New attempt ({attempt}. of at most {max})", attempt=attempt, max=MAX_RECOVERIES + 1)
     kind, ids, label = getattr(failure, "position", None) or (None, [], "")
     if opencascade_first and kind in ("chunk", "element") and _uses_hybrid(options):
         options["kernel"] = "opencascade"
-        return RETRY_MESSAGE
+        return retry_message()
+    # The messages are one sentence on the failure and one on the attempt (see convert_in_child).
     if kind == "curves" and ids and not set(ids) <= skipped.keys():
         labels = label.split("\n") if label else []
         for number, id_ in enumerate(ids):
             skipped[id_] = labels[number] if number < len(labels) else f"#{id_}"
-        return f"{what} bei den Achsen (IfcAlignment, IfcGrid). {again} ohne die Achsen …"
+        return tr("{what} at the axes (IfcAlignment, IfcGrid). {again} without the axes …", what=what, again=again)
     if kind == "element" and ids and ids[0] not in skipped:
         skipped[ids[0]] = label or f"#{ids[0]}"
-        return f"{what} bei {skipped[ids[0]]}. {again}, dieses Bauteil wird übersprungen …"
+        return tr("{what} at {label}. {again}, this element is skipped …", what=what, label=skipped[ids[0]],
+                  again=again)
     if kind == "chunk" and ids and not set(ids) <= isolate:
         isolate.update(ids)
         if len(ids) == 1:
-            return f"{what} bei einem Bauteil. {again}, es wird zuerst und einzeln berechnet …"
-        return (f"{what} bei einem von {len(ids)} Bauteilen. {again}, diese werden zuerst und einzeln "
-                "berechnet, um das betroffene zu finden …")
+            return tr("{what} at one element. {again}, it is computed first and on its own …", what=what, again=again)
+        return tr("{what} at one of {count} elements. {again}, these are computed first and on their own to find "
+                  "the affected one …", what=what, count=len(ids), again=again)
     if kind in ("chunk", "element") and isinstance(failure, ConversionCrashed) \
             and _retry_with_opencascade(failure.exitcode, options) and options.get("kernel") != "opencascade":
         options["kernel"] = "opencascade"
-        return RETRY_MESSAGE
+        return retry_message()
     return None
 
 
@@ -425,6 +452,9 @@ def _child_main(
     low_priority: bool = True,
 ) -> None:
     """Entry point of the child process: run ``func`` and send progress and the outcome to ``conn``."""
+    # The parent's language (handed down in the environment): status texts, notes and error
+    # messages are made here and shown there as they are.
+    i18n.set_language(i18n.language_from_environment())
     _die_with_parent(parent_pid)
     no_crash_dialogs()
     _redirect_stderr(stderr_path)
@@ -485,31 +515,33 @@ def convert_in_child(
     the products of the chunk where it happened one by one (in a thread with a large stack), then
     without a single product that still fails, which is then reported as skipped; a crash with a
     strategy that uses the hybrid kernel, where no chunk was running, is retried with OpenCASCADE.
-    ``on_retry`` gets a German message before each new attempt, and progress starts again from reading.
+    ``on_retry`` gets a message (in the user's language) before each new attempt, and progress starts again
+    from reading.
     With ``opencascade_first`` (the preview) a crash or hang in the hybrid kernel is retried with
     OpenCASCADE right away: where the hybrid kernel crashes on one element of a model it often does on
     many alike (all beams of a bridge), and each step of narrowing it down reads the file again.
 
     ``threads`` defaults to auto_threads(); ``low_priority`` runs the child below normal priority.
-    ``status`` gets the current phase ("read", "geometry", "write", "copy") and a German description
+    ``status`` gets the current phase ("read", "geometry", "write", "copy") and a description
     (while writing with the size written so far). Start, phases, a heartbeat every minute, outcome and
     duration of the conversion are logged.
     """
     threads = threads or auto_threads()
     args = (input_path, output_path, fmt, threads)
-    log.info(
-        "Umwandlung: %s (%s) -> %s, Format %s, %d Threads%s%s", input_path, _size_text(input_path),
-        output_path or "(neben der IFC-Datei)", fmt, threads, "".join(f", {k}={v}" for k, v in options.items()),
-        "" if low_priority else ", normale Priorität",
-    )
+    log.info(tr(
+        "Conversion: {input} ({size}) -> {output}, format {fmt}, {threads} threads{options}{priority}",
+        input=input_path, size=_size_text(input_path), output=output_path or tr("(next to the IFC file)"), fmt=fmt,
+        threads=threads, options="".join(f", {k}={v}" for k, v in options.items()),
+        priority="" if low_priority else tr(", normal priority"),
+    ))
     started = time.monotonic()
     isolate: set[int] = set()
     kernel = (options.get("kernel") or os.environ.get("IFC_CONVERTER_KERNEL") or DEFAULT_KERNEL).lower()
     quarantine = _quarantine_key(input_path, kernel)
     skipped = load_quarantine(quarantine)
     if skipped:
-        log.warning("Bekannt aus früheren Umwandlungen dieser Datei, wird übersprungen (der Geometriekern "
-                    "stürzte daran ab oder blieb hängen) (%d):\n  %s", len(skipped), "\n  ".join(skipped.values()))
+        log.warning(tr("Known from earlier conversions of this file, skipped (the geometry kernel crashed on it or "
+                       "hung) ({count}):\n  {elements}", count=len(skipped), elements="\n  ".join(skipped.values())))
     checkpoint = _checkpoint_dir(input_path) if fmt == "3dm" else None
     try:
         with keep_awake():
@@ -535,8 +567,9 @@ def convert_in_child(
                     if checkpoint and options.get("kernel") != kernel_before:
                         _clear(checkpoint)  # computed with the other kernel: everything again
                     elif checkpoint and any(Path(checkpoint).glob("chunk-*.bin")):
-                        message = message.removesuffix(" …") + ", bereits berechnete Bauteile werden übernommen …"
-                    code = f" (Exit-Code {failure.exitcode})" if isinstance(failure, ConversionCrashed) else ""
+                        message = message.removesuffix(" …") + tr(", already computed elements are taken over …")
+                    code = tr(" (exit code {code})", code=failure.exitcode) if isinstance(failure, ConversionCrashed) \
+                        else ""
                     log.warning("%s%s. %s", failure, code, message.split(". ", 1)[-1])
                     if on_retry:
                         on_retry(message)
@@ -544,37 +577,42 @@ def convert_in_child(
             if skipped:  # remembered as used recently
                 save_quarantine(quarantine, skipped)
     except Cancelled:
-        log.info("Abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
+        log.info(tr("Cancelled after {seconds} s: {path}", seconds=_seconds(started), path=input_path))
         raise
     except ConversionFailed as exc:
-        log.error("Fehler nach %.1f s bei %s: %s: %s\n%s", time.monotonic() - started, input_path,
-                  exc.type_name, exc, exc.details.rstrip())
+        log.error(tr("Error after {seconds} s at {path}: {type}: {error}\n{details}", seconds=_seconds(started),
+                     path=input_path, type=exc.type_name, error=exc, details=exc.details.rstrip()))
         raise
     except ConversionCrashed as exc:
-        log.error("Absturz nach %.1f s bei %s: %s (Exit-Code %s)", time.monotonic() - started, input_path,
-                  exc, exc.exitcode)
+        log.error(tr("Crash after {seconds} s at {path}: {error} (exit code {code})", seconds=_seconds(started),
+                     path=input_path, error=exc, code=exc.exitcode))
         raise
     except ConversionStalled:
-        log.error("Hing fest, abgebrochen nach %.1f s: %s", time.monotonic() - started, input_path)
+        log.error(tr("Stuck, cancelled after {seconds} s: {path}", seconds=_seconds(started), path=input_path))
         raise
     except Exception:
-        log.exception("Umwandlung von %s fehlgeschlagen", input_path)
+        log.exception(tr("Conversion of {path} failed", path=input_path))
         raise
     finally:
         if checkpoint:
             shutil.rmtree(checkpoint, ignore_errors=True)
-    log.info("Fertig nach %.1f s: %s -> %s, %d Bauteile, %d ohne Geometrie, %d übersprungen",
-             time.monotonic() - started, input_path, result.output, result.elements, result.skipped,
-             len(result.crashed))
+    log.info(tr("Finished after {seconds} s: {input} -> {output}, {elements} elements, {missing} without geometry, "
+                "{skipped} skipped", seconds=_seconds(started), input=input_path, output=result.output,
+                elements=result.elements, missing=result.skipped, skipped=len(result.crashed)))
     if result.crashed:
-        log.warning("Übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb (%d):\n  %s",
-                    len(result.crashed), "\n  ".join(result.crashed))
+        log.warning(tr("Skipped because the geometry kernel crashed on them or hung ({count}):\n  {elements}",
+                       count=len(result.crashed), elements="\n  ".join(result.crashed)))
     if result.no_geometry:
         shown = result.no_geometry[:NO_GEOMETRY_LOG_LIMIT]
         more = len(result.no_geometry) - len(shown)
-        log.info("Ohne Geometrie (%d):\n  %s%s", len(result.no_geometry), "\n  ".join(shown),
-                 f"\n  … und {more} weitere" if more else "")
+        log.info(tr("Without geometry ({count}):\n  {elements}{more}", count=len(result.no_geometry),
+                    elements="\n  ".join(shown), more=tr("\n  … and {count} more", count=more) if more else ""))
     return result
+
+
+def _seconds(started: float) -> str:
+    """The time since ``started`` for the log, e.g. "12.3"."""
+    return f"{time.monotonic() - started:.1f}"
 
 
 def _checkpoint_dir(input_path: str | Path) -> str | None:
@@ -583,7 +621,8 @@ def _checkpoint_dir(input_path: str | Path) -> str | None:
     try:
         base = tempfile.gettempdir()
         if shutil.disk_usage(base).free < CHECKPOINT_ROOM * os.path.getsize(input_path) + 1024 ** 3:
-            log.info("Zu wenig Platz im Temp-Ordner für einen Zwischenstand; nach einem Absturz wird neu gerechnet")
+            log.info(tr("Too little room in the temp folder for a checkpoint; after a crash everything is computed "
+                        "again"))
             return None
         return tempfile.mkdtemp(prefix="ifc-converter-checkpoint-")
     except OSError:
@@ -602,7 +641,7 @@ def _size_text(path: str | Path) -> str:
     try:
         return f"{os.path.getsize(path) / 1024 ** 2:.1f} MB"
     except OSError:
-        return "Größe unbekannt"
+        return tr("size unknown")
 
 
 def _run_child(
@@ -685,11 +724,11 @@ def _run_child(
 
     if memory_limit and (outcome is None or outcome[0] == "error"):
         # Allocations failed: as a crash in native code, or as a MemoryError in Python.
-        log.error("Speichergrenze des Umwandlungsprozesses (%s GB) erreicht", _gb(job.limit))
+        log.error(tr("Memory limit of the conversion process ({limit} GB) reached", limit=_gb(job.limit)))
         raise ConversionCrashed(exitcode, _memory_limit_message(job.limit), memory_limit=True)
     if memory_limit:
-        log.warning("Speichergrenze des Umwandlungsprozesses (%s GB) erreicht, die Umwandlung lief trotzdem "
-                    "zu Ende (z. B. ohne Hilfsprozesse)", _gb(job.limit))
+        log.warning(tr("Memory limit of the conversion process ({limit} GB) reached, the conversion still ran to the "
+                       "end (e.g. without worker processes)", limit=_gb(job.limit)))
     if outcome is None:
         crash = ConversionCrashed(exitcode)
         crash.position = watch.suspects()
@@ -704,7 +743,9 @@ def _gb(size: int) -> str:
 
 
 def _memory_limit_message(limit: int) -> str:
-    return MEMORY_LIMIT_MESSAGE.format(limit=_gb(limit), share=round(JOB_MEMORY_SHARE * 100))
+    return tr("The memory was not enough: The conversion may use at most {limit} GB ({share} % of the memory), so "
+              "that other programs keep running. For this file the PC needs more memory.",
+              limit=_gb(limit), share=round(JOB_MEMORY_SHARE * 100))
 
 
 def job_memory_limit() -> int | None:
@@ -768,7 +809,8 @@ class _Job:
         try:
             return cls._create(limit, low_priority)
         except (OSError, AttributeError) as exc:
-            log.warning("Job-Objekt für die Umwandlung nicht verfügbar (%s), weiter ohne Speichergrenze", exc)
+            log.warning(tr("Job object for the conversion not available ({error}), continuing without a memory limit",
+                           error=exc))
             return None
 
     @classmethod
@@ -822,8 +864,8 @@ class _Job:
 
         if self._kernel32.AssignProcessToJobObject(self._handle, process_handle):
             return True
-        log.warning("Umwandlungsprozess nicht im Job-Objekt (%s), weiter ohne Speichergrenze",
-                    ctypes.WinError(ctypes.get_last_error()))
+        log.warning(tr("Conversion process not in the job object ({error}), continuing without a memory limit",
+                       error=ctypes.WinError(ctypes.get_last_error())))
         return False
 
     def memory_limit_hit(self) -> bool:
@@ -950,7 +992,7 @@ def save_quarantine(key: str | None, elements: dict[int, str]) -> None:
         part.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(part, path)
     except OSError as exc:
-        log.warning("Übersprungene Bauteile konnten nicht gespeichert werden (%s): %s", path, exc)
+        log.warning(tr("Skipped elements could not be saved ({path}): {error}", path=path, error=exc))
 
 
 def _staging_dir() -> str | None:
@@ -992,7 +1034,8 @@ class _Phases:
         if phase in ("write", "copy"):  # a crash from here on is not in the kernel
             self.locate("done", [], "")
         if phase != self.phase:
-            log.info("%s (nach %.0f s)", text, time.monotonic() - self.started)
+            log.info(tr("{message} (after {seconds} s)", message=text,
+                        seconds=f"{time.monotonic() - self.started:.0f}"))
         self.phase, self.text = phase, text
         self._show(text)
 
@@ -1023,9 +1066,11 @@ class _Phases:
             self._check_stall(now)
         if now - self._logged >= HEARTBEAT:
             self._logged = now
-            log.info("Läuft seit %.0f s, %d %%: %s", now - self.started, self.percent, self.text or "…")
+            log.info(tr("Running for {seconds} s, {percent} %: {message}", seconds=f"{now - self.started:.0f}",
+                        percent=self.percent, message=self.text or "…"))
         if self.phase == "write" and now - self._shown >= 1:
-            self._show(f"{self.text.removesuffix(' …')}: {size_text(self._written())} geschrieben …")
+            self._show(tr("{message}: {size} written …", message=self.text.removesuffix(" …"),
+                          size=size_text(self._written())))
 
     def _check_stall(self, now: float) -> None:
         if self.phase == "copy":  # copying to a slow network folder needs hardly any CPU
@@ -1040,9 +1085,10 @@ class _Phases:
         if self._active_cpu is None or cpu - self._active_cpu >= STALL_CPU:
             self._active, self._active_cpu = now, cpu
         elif now - self._active >= timeout:
-            log.error("Keine Rechenaktivität seit %.0f s (CPU %.1f s)%s, %d %%: %s",
-                      now - self._active, cpu, f" nach {self.fatal}" if self.fatal else "", self.percent,
-                      self.text or "…")
+            log.error(tr("No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}",
+                         seconds=f"{now - self._active:.0f}", cpu=f"{cpu:.1f}",
+                         fatal=tr(" after {fatal}", fatal=self.fatal) if self.fatal else "", percent=self.percent,
+                         message=self.text or "…"))
             stalled = ConversionStalled(now - self._active, self.fatal)
             stalled.position = self.suspects()
             raise stalled
@@ -1061,8 +1107,8 @@ class _Phases:
             return
         for marker, name in FATAL_MARKERS.items():
             if marker in text:
-                self.fatal = name
-                log.warning("Der Umwandlungsprozess meldet einen schweren Fehler: %s", marker)
+                self.fatal = name()
+                log.warning(tr("The conversion process reports a fatal error: {marker}", marker=marker))
                 return
 
     def _written(self) -> int:
@@ -1213,8 +1259,10 @@ def _log_stderr(path: str | None, failed: bool) -> None:
     except OSError:
         text, size = "", 0
     if text:
-        cut = f" (letzte {STDERR_LOG_LIMIT // 1000} KB von {size // 1000} KB)" if size > STDERR_LOG_LIMIT else ""
-        log.log(logging.WARNING if failed else logging.INFO, "Ausgabe des Umwandlungsprozesses%s:\n%s", cut, text)
+        cut = tr(" (last {shown} KB of {size} KB)", shown=STDERR_LOG_LIMIT // 1000, size=size // 1000) \
+            if size > STDERR_LOG_LIMIT else ""
+        log.log(logging.WARNING if failed else logging.INFO,
+                tr("Output of the conversion process{cut}:\n{message}", cut=cut, message=text))
     try:
         os.unlink(path)
     except OSError:
@@ -1237,7 +1285,7 @@ def _stop(process, grace: float = 0) -> int | None:
             process.kill()
             process.join(KILL_WAIT)
     if process.is_alive():
-        log.error("Der Umwandlungsprozess %s ließ sich nicht beenden", process.pid)
+        log.error(tr("The conversion process {pid} could not be ended", pid=process.pid))
         return None
     exitcode = process.exitcode
     process.close()

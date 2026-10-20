@@ -21,6 +21,8 @@ from pathlib import Path
 
 import numpy
 
+from ifc_converter.i18n import tr
+
 # Bumped whenever the stored arrays change; older files are ignored (computed again).
 PREVIEW_FORMAT_VERSION = 1
 
@@ -323,7 +325,7 @@ def write_preview(
         collector.add(shape)
     geometry_seconds = time.monotonic() - started
     if status:
-        status("write", f"Vorschau wird gespeichert ({collector.triangles} Dreiecke) …")
+        status("write", tr("Saving preview ({count} triangles) …", count=collector.triangles))
     mesh = collector.mesh(lambda id_: product_label(model.by_id(id_)))
     mesh.info = {
         "source": source.name if source else "",
@@ -337,8 +339,8 @@ def write_preview(
     }
     if not mesh.elements:
         if collector.left_out:  # each element alone over the budget, e.g. a single huge terrain
-            raise ValueError(f"Zu viele Dreiecke für die Vorschau (mehr als {PREVIEW_TRIANGLES:,} je Bauteil)."
-                             .replace(",", "."))
+            raise ValueError(tr("Too many triangles for the preview (more than {limit} per element).",
+                                limit=f"{PREVIEW_TRIANGLES:,}".replace(",", ".")))
         return 0  # convert() reports a model without any geometry
     save_preview(mesh, output_path)
     return len(mesh.elements) + collector.left_out

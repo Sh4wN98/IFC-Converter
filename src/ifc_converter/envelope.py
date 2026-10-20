@@ -42,6 +42,7 @@ import ifcopenshell.geom as geom
 import numpy
 
 from ifc_converter import converter
+from ifc_converter.i18n import tr
 
 log = logging.getLogger(__name__)
 
@@ -113,22 +114,28 @@ class Selection:
     @property
     def note(self) -> str:
         kept = _count(self.total - self.inside)
-        voxel = f"{self.voxel:g} m, grob {self.coarse:g}".replace(".", ",")
+        voxel = tr("{voxel} m, coarse {coarse}", voxel=_decimal(self.voxel), coarse=_decimal(self.coarse))
         if self.open_hull:
-            return (f"Nur Gebäudehülle: Das Modell hat keine geschlossene Hülle (fehlendes Dach, fehlende Decken "
-                    f"oder Wände, z. B. ein Teilmodell ohne Rohbau): die Außenluft erreicht fast alle Bauteile "
-                    f"(Raster {voxel} m). Stattdessen weggelassen: {_count(self.marked)} als innen gekennzeichnete "
-                    f"Bauteile (IsExternal = Nein) sowie {_count(self.fittings)} Möbel, Einrichtungen, Leitungen, "
-                    f"Decken- und Bodenbeläge; {kept} von {_count(self.total)} Bauteilen werden umgewandelt."
-                    + self.dropped_text)
-        text = (f"Nur Gebäudehülle: {kept} von {_count(self.total)} Bauteilen liegen außen und werden umgewandelt, "
-                f"{_count(self.inside)} innen liegende weggelassen (Raster {voxel} m)")
+            return tr(
+                "Building hull only: The model has no closed hull (missing roof, missing floors or walls, e.g. a "
+                "partial model without the shell): the outside air reaches almost all elements (grid {voxel} m). "
+                "Left out instead: {marked} elements marked as interior (IsExternal = No) and {fittings} furniture, "
+                "fittings, pipes and ducts, ceiling and floor finishes; {kept} of {total} elements are converted.",
+                voxel=voxel, marked=_count(self.marked), fittings=_count(self.fittings), kept=kept,
+                total=_count(self.total),
+            ) + self.dropped_text
+        text = tr(
+            "Building hull only: {kept} of {total} elements are on the outside and are converted, {inside} interior "
+            "ones left out (grid {voxel} m)", kept=kept, total=_count(self.total), inside=_count(self.inside),
+            voxel=voxel,
+        )
         if self.unknown:
-            text += f"; {_count(self.unknown)} ohne Vorab-Geometrie sicherheitshalber übernommen"
+            text += tr("; {count} without pre-computed geometry taken over to be safe", count=_count(self.unknown))
         if self.flagged:
-            text += f"; {_count(self.flagged)} als außen gekennzeichnete (IsExternal) übernommen"
+            text += tr("; {count} marked as exterior (IsExternal) taken over", count=_count(self.flagged))
         if self.masses:
-            text += f"; {_count(self.masses)} Baumassen (Hüllkörper um das Modell) nicht als undurchsichtig gewertet"
+            text += tr("; {count} massing volumes (envelopes around the model) not counted as opaque",
+                       count=_count(self.masses))
         return text + "." + self.dropped_text
 
     @property
@@ -139,12 +146,16 @@ class Selection:
         ranked = sorted(self.dropped_classes.items(), key=lambda item: (-item[1], item[0]))
         parts = [f"{_count(number)} {name}" for name, number in ranked[:8]]
         if len(ranked) > 8:
-            parts.append(f"{_count(sum(number for _, number in ranked[8:]))} weitere")
-        return " Weggelassen: " + ", ".join(parts) + "."
+            parts.append(tr("{count} more", count=_count(sum(number for _, number in ranked[8:]))))
+        return tr(" Left out: {classes}.", classes=", ".join(parts))
 
 
 def _count(number: int) -> str:
     return f"{number:,}".replace(",", ".")
+
+
+def _decimal(number: float) -> str:
+    return f"{number:g}".replace(".", ",")
 
 def select(
     model: ifcopenshell.file,
@@ -164,7 +175,7 @@ def select(
         sampler.add(shape)
     coarse_seconds = time.monotonic() - started
     if report:
-        report("envelope", "Gebäudehülle wird bestimmt (Außenluft wird gesucht) …")
+        report("envelope", tr("Determining the building hull (searching for the outside air) …"))
     exposure = sampler.exposure()
     selection.voxel, selection.coarse = sampler.voxel, sampler.coarse
     selection.exposure = exposure
@@ -188,11 +199,14 @@ def select(
         if product.id() not in selection.keep:
             selection.dropped_classes[product.is_a()] = selection.dropped_classes.get(product.is_a(), 0) + 1
     converter._release_memory()
-    log.info("Gebäudehülle: %d von %d Bauteilen außen (%d ohne Vorab-Geometrie, %d per IsExternal), Raster %g m "
-             "(grob %g m, %d Zellen, feiner Saum %d Zellen), Vorab-Geometrie %.0f s, Hülle %.0f s",
-             len(selection.keep), selection.total, selection.unknown, selection.flagged, sampler.voxel,
-             sampler.coarse, sampler.cells, sampler.band_cells, coarse_seconds,
-             time.monotonic() - started - coarse_seconds)
+    log.info(tr(
+        "Building hull: {kept} of {total} elements outside ({unknown} without pre-computed geometry, {flagged} by "
+        "IsExternal), grid {voxel} m (coarse {coarse} m, {cells} cells, fine band {band} cells), pre-computed "
+        "geometry {coarse_seconds} s, hull {hull_seconds} s",
+        kept=len(selection.keep), total=selection.total, unknown=selection.unknown, flagged=selection.flagged,
+        voxel=f"{sampler.voxel:g}", coarse=f"{sampler.coarse:g}", cells=sampler.cells, band=sampler.band_cells,
+        coarse_seconds=f"{coarse_seconds:.0f}", hull_seconds=f"{time.monotonic() - started - coarse_seconds:.0f}",
+    ))
     return selection
 
 
@@ -303,7 +317,8 @@ class _Sampler:
             keys = numpy.unique(_pack(numpy.floor_divide(_unpack(keys), 2)))
             self.keys[product_id] = keys
             self._stored += len(keys)
-        log.info("Gebäudehülle: Raster auf %g m vergröbert (%d Rasterzellen gespeichert)", self.voxel, self._stored)
+        log.info(tr("Building hull: grid coarsened to {voxel} m ({cells} grid cells stored)",
+                    voxel=f"{self.voxel:g}", cells=self._stored))
 
     def exposure(self) -> dict[int, float]:
         """Product id -> share of its cells next to outside air; sampled products only."""
