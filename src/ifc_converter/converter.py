@@ -617,13 +617,15 @@ def iter_shapes(
     products: list[ifcopenshell.entity_instance] | None = None,
     chunk_ends: bool = False,
     status: StatusCallback | None = None,
+    second_attempts: bool = True,
 ) -> Iterator:
     """Yield the triangulated shape of every product, computed chunk by chunk to cap memory use.
 
     Progress is reported from 0 up to ``progress_share`` percent. ``products`` may pass in
     ``shape_products(model, exclude)`` if already known. With ``chunk_ends`` a ChunkEnd follows
     the shapes of each chunk. Deeply nested products come first, one by one (see DEEP_NESTING);
-    ``status`` hears about each of them.
+    ``status`` hears about each of them. Products without geometry get a second attempt with a
+    finer tolerance (see RESCUE_SECONDS) unless ``second_attempts`` is off (the hull's coarse pass).
     """
     if products is None:
         products = shape_products(model, exclude)
@@ -703,7 +705,7 @@ def iter_shapes(
         if status:
             status("geometry", f"Geometrie wird berechnet ({threads} Threads) …")
 
-    rescue, rescued = [RESCUE_SECONDS], 0  # time left for second attempts, products saved by them
+    rescue, rescued = [RESCUE_SECONDS if second_attempts else 0], 0  # time left for second attempts, products saved
     chunks = [products[start:start + size] for start in range(0, len(products), size)]
     pipeline = _Pipeline(model, settings, threads, position, chunks, strategy, library)
     finished += len(deep)
@@ -757,7 +759,7 @@ def iter_shapes(
 
     if rescued and status:
         status("note", f"{rescued} Bauteile erst im zweiten Versuch berechnet (feinere Toleranz bzw. anderer Kern)")
-    if rescue[0] <= 0 and status:
+    if rescue[0] <= 0 and second_attempts and status:
         status("note", f"Zweite Versuche nach {RESCUE_SECONDS} s beendet; weitere Bauteile ohne Geometrie "
                        "wurden nicht mehr einzeln versucht")
     without = [product for product in candidates if product.id() not in produced]
