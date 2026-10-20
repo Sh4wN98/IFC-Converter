@@ -14,6 +14,11 @@ Everything uncertain is kept: products whose geometry the coarse pass could not 
 without a closed hull (no roof, say) simply keep more. Products are never changed, only left out,
 so dimensions and positions are untouched. Glass counts as opaque: what is behind a window is not
 part of the hull.
+
+A model without a closed hull (an architecture part model without its floors and roof, which sit
+in the structural model) has outside air everywhere, so the fill leaves out next to nothing. Then
+the property sets decide instead (see OPEN_HULL_SHARE): products marked IsExternal = False are left
+out, and so are furniture, fittings and building services (INTERIOR_CLASSES).
 """
 
 from __future__ import annotations
@@ -39,6 +44,13 @@ VOXEL = 0.1
 # The grid is coarsened (cell doubled) until it fits: 1 byte per cell for each of two boolean grids.
 MAX_VOXELS = 150_000_000
 EXPOSURE = 0.05  # share of a product's voxels next to outside air that makes it part of the hull
+# When the fill leaves out less than this share of the products, the hull is taken as open and the
+# property sets decide (a closed building has interior walls, doors and fittings well above it).
+OPEN_HULL_SHARE = 0.02
+# Left out in a model without a closed hull: furniture and fittings, building services (pipes, ducts,
+# cables, terminals, equipment), lifts, fasteners and reinforcement.
+INTERIOR_CLASSES = ("IfcFurnishingElement", "IfcDistributionElement", "IfcDistributionPort", "IfcTransportElement",
+                    "IfcFastener", "IfcMechanicalFastener", "IfcReinforcingElement", "IfcDiscreteAccessory")
 # The sampled voxels of all products are kept until the grid is built (8 bytes each, packed; about
 # three times that while the exposure is computed); above this many the grid cell is doubled.
 MAX_SAMPLED = 30_000_000
@@ -63,18 +75,25 @@ class Selection:
     flagged: int = 0  # products kept because IsExternal = True although not exposed
     voxel: float = VOXEL  # the grid cell actually used
     exposure: dict[int, float] = field(default_factory=dict)  # product id -> exposed share
+    open_hull: bool = False  # the fill found no closed hull: the property sets decided instead
+    marked: int = 0  # open hull: products left out as IsExternal = False
+    fittings: int = 0  # open hull: products left out by class (INTERIOR_CLASSES)
 
     @property
     def note(self) -> str:
         kept, voxel = _count(self.total - self.inside), f"{self.voxel:g}".replace(".", ",")
+        if self.open_hull:
+            return (f"Nur Gebäudehülle: Das Modell hat keine geschlossene Hülle (fehlendes Dach, fehlende Decken "
+                    f"oder Wände, z. B. ein Teilmodell ohne Rohbau): die Außenluft erreicht fast alle Bauteile "
+                    f"(Raster {voxel} m). Stattdessen weggelassen: {_count(self.marked)} als innen gekennzeichnete "
+                    f"Bauteile (IsExternal = Nein) sowie {_count(self.fittings)} Möbel, Einrichtungen und "
+                    f"Leitungen; {kept} von {_count(self.total)} Bauteilen werden umgewandelt.")
         text = (f"Nur Gebäudehülle: {kept} von {_count(self.total)} Bauteilen liegen außen und werden umgewandelt, "
                 f"{_count(self.inside)} innen liegende weggelassen (Raster {voxel} m)")
         if self.unknown:
             text += f"; {_count(self.unknown)} ohne Vorab-Geometrie sicherheitshalber übernommen"
         if self.flagged:
             text += f"; {_count(self.flagged)} als außen gekennzeichnete (IsExternal) übernommen"
-        if self.total and not self.inside:
-            text += "; das Modell hat anscheinend keine geschlossene Hülle (fehlendes Dach oder fehlende Wände?)"
         return text + "."
 
 
@@ -103,7 +122,7 @@ def select(
     exposure = sampler.exposure()
     selection.voxel = sampler.voxel
     selection.exposure = exposure
-    flagged = external_flags(model) & ids
+    marks = external_marks(model)
     for product_id in ids:
         share = exposure.get(product_id)
         if share is None:
@@ -111,17 +130,33 @@ def select(
             selection.keep.add(product_id)
         elif share >= EXPOSURE:
             selection.keep.add(product_id)
-        elif product_id in flagged:
+        elif marks.get(product_id):
             selection.flagged += 1
             selection.keep.add(product_id)
         else:
             selection.inside += 1
+    if selection.inside < OPEN_HULL_SHARE * selection.total:
+        _select_by_marks(selection, products, marks)
     converter._release_memory()
     log.info("Gebäudehülle: %d von %d Bauteilen außen (%d ohne Vorab-Geometrie, %d per IsExternal), Raster %g m, "
              "%d Rasterzellen, Vorab-Geometrie %.0f s, Hülle %.0f s", len(selection.keep), selection.total,
              selection.unknown, selection.flagged, sampler.voxel, sampler.cells, coarse_seconds,
              time.monotonic() - started - coarse_seconds)
     return selection
+
+
+def _select_by_marks(selection: Selection, products: list, marks: dict[int, bool]) -> None:
+    """The hull is open: keep everything except what is marked or furnished as interior."""
+    selection.open_hull = True
+    selection.keep, selection.inside, selection.unknown, selection.flagged = set(), 0, 0, 0
+    for product in products:
+        if marks.get(product.id()) is False:
+            selection.marked += 1
+        elif any(product.is_a(name) for name in INTERIOR_CLASSES):
+            selection.fittings += 1
+        else:
+            selection.keep.add(product.id())
+    selection.inside = selection.marked + selection.fittings
 
 
 def _coarse_shapes(model, threads: int, products: list, report, progress):
@@ -316,20 +351,28 @@ def _outside(solid: numpy.ndarray) -> numpy.ndarray:
 
 def external_flags(model: ifcopenshell.file) -> set[int]:
     """The ids of the products whose property sets (own or of their type) say IsExternal = True."""
-    flagged: set[int] = set()
+    return {product_id for product_id, external in external_marks(model).items() if external}
+
+
+def external_marks(model: ifcopenshell.file) -> dict[int, bool]:
+    """Product id -> its IsExternal property, from its own property sets or those of its type (an own
+    one wins)."""
+    own: dict[int, bool] = {}
+    typed: dict[int, bool] = {}
     for prop in model.by_type("IfcPropertySingleValue"):
         if prop.Name != "IsExternal":
             continue
         value = prop.NominalValue
-        if value is None or not getattr(value, "wrappedValue", False):
+        if value is None or getattr(value, "wrappedValue", None) is None:
             continue
+        external = bool(value.wrappedValue)
         for pset in model.get_inverse(prop):
             if not pset.is_a("IfcPropertySet"):
                 continue
             for owner in model.get_inverse(pset):
                 if owner.is_a("IfcRelDefinesByProperties"):
-                    flagged.update(product.id() for product in owner.RelatedObjects)
+                    own.update((product.id(), external) for product in owner.RelatedObjects)
                 elif owner.is_a("IfcTypeObject"):
                     for rel in getattr(owner, "ObjectTypeOf", None) or getattr(owner, "Types", None) or ():
-                        flagged.update(product.id() for product in rel.RelatedObjects)
-    return flagged
+                        typed.update((product.id(), external) for product in rel.RelatedObjects)
+    return {**typed, **own}
