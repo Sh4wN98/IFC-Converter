@@ -5,9 +5,12 @@ but nothing of its outside; a context model (Umgebungsmodell) of a neighbouring 
 only the hull. ``select`` decides which products of a model are part of the hull:
 
 1. A coarse pass computes every product's geometry (hybrid kernel, coarse tolerance) and samples
-   its surfaces into a voxel grid of VOXEL metres (coarser for very large models, see MAX_VOXELS).
-2. The outside air is found by a flood fill from the grid's border through empty voxels.
-3. A product is part of the hull when any of its voxels touches outside air (so nothing that is
+   its surfaces into cells of VOXEL metres (coarser for very large models, see budgets()).
+2. The outside air is found by a flood fill from the border of a grid of FINE times larger cells
+   through empty cells; around that outside air, BAND_DEPTH cells deep into the hull, the fill is
+   repeated at the sampled resolution, so that gaps narrower than a coarse cell (a reveal under a
+   lintel) stay open and what lines them is seen.
+3. A product is part of the hull when any of its cells touches outside air (so nothing that is
    left out borders on the outside: the hull stays closed), or when its property set says
    IsExternal = True.
 
@@ -42,14 +45,18 @@ from ifc_converter import converter
 
 log = logging.getLogger(__name__)
 
-# The grid cell of the flood fill, in metres. Only surfaces are sampled, so an element thinner than
-# a cell is a single layer of cells: whatever pokes into that layer from inside (a table foot in a
-# 127 mm slab on grade) touches the outside air behind it, and a gap narrower than a cell is sealed,
-# hiding what is seen through it. 5 cm resolves slabs, walls, roofs and most gaps; glass and
-# cladding stay thinner, which only ever keeps more. Large models get coarser cells (MAX_SAMPLED,
-# MAX_VOXELS), which again only keeps more.
+# The sampled cell, in metres. Only surfaces are sampled, so an element thinner than a cell is a
+# single layer of cells: whatever pokes into that layer from inside (a table foot in a 127 mm slab
+# on grade) touches the outside air behind it, and a gap narrower than a cell is sealed, hiding what
+# is seen through it. 5 cm resolves slabs, walls, roofs and most gaps; glass and cladding stay
+# thinner, which only ever keeps more. Large models get coarser cells (budgets()), which again only
+# keeps more.
 VOXEL = 0.05
-# The grid is coarsened (cell doubled) until it fits: 1 byte per cell for each of two boolean grids.
+# The whole model is filled on a grid of FINE x FINE x FINE sampled cells per grid cell (dense, 1 byte
+# per cell for each of two boolean grids); it is coarsened further (doubled) until it fits MAX_VOXELS.
+# The sampled resolution is then only used in the band around the outside air.
+FINE = 4
+BAND_DEPTH = 12  # sampled cells deep into the hull
 MAX_VOXELS = 150_000_000
 # Share of a product's voxels next to outside air above which it is part of the hull: any of them.
 # A threshold would leave out products with a small visible part (a lintel seen through a gap) and
@@ -69,9 +76,12 @@ INTERIOR_COVERINGS = ("CEILING", "FLOORING", "SKIRTINGBOARD")
 # own extent is no yardstick: a terrain dwarfs the building.)
 MASS_TRIANGLES = 200
 MASS_SHARE = 0.5
-# The sampled voxels of all products are kept until the grid is built (8 bytes each, packed; about
-# three times that while the exposure is computed); above this many the grid cell is doubled.
-MAX_SAMPLED = 30_000_000
+# The sampled cells of all products are kept until the grids are built (8 bytes each, packed; about
+# 60 bytes each while the exposure is computed); above this many the cell is doubled. Both limits
+# grow with the free memory of the PC, see budgets().
+MAX_SAMPLED = 20_000_000
+MAX_SAMPLED_CAP = 400_000_000
+MAX_VOXELS_CAP = 1_000_000_000
 # A single product (a terrain, say) is sampled with at most this many points per call; beyond that
 # its sampling gets coarser, which can let outside air leak in: more is kept, never less.
 MAX_POINTS = 4_000_000
@@ -91,7 +101,8 @@ class Selection:
     inside: int = 0  # products left out as interior
     unknown: int = 0  # products without geometry in the coarse pass, kept to be safe
     flagged: int = 0  # products kept because IsExternal = True although not exposed
-    voxel: float = VOXEL  # the grid cell actually used
+    voxel: float = VOXEL  # the sampled cell actually used
+    coarse: float = VOXEL * FINE  # the cell of the whole-model fill
     exposure: dict[int, float] = field(default_factory=dict)  # product id -> exposed share
     open_hull: bool = False  # the fill found no closed hull: the property sets decided instead
     marked: int = 0  # open hull: products left out as IsExternal = False
@@ -101,7 +112,8 @@ class Selection:
 
     @property
     def note(self) -> str:
-        kept, voxel = _count(self.total - self.inside), f"{self.voxel:g}".replace(".", ",")
+        kept = _count(self.total - self.inside)
+        voxel = f"{self.voxel:g} m, grob {self.coarse:g}".replace(".", ",")
         if self.open_hull:
             return (f"Nur Gebäudehülle: Das Modell hat keine geschlossene Hülle (fehlendes Dach, fehlende Decken "
                     f"oder Wände, z. B. ein Teilmodell ohne Rohbau): die Außenluft erreicht fast alle Bauteile "
@@ -147,14 +159,14 @@ def select(
     selection = Selection(keep=set(), total=len(products))
     if not products:
         return selection
-    sampler = _Sampler(VOXEL)
+    sampler = _Sampler(VOXEL, *budgets())
     for shape in _coarse_shapes(model, threads, products, report, progress):
         sampler.add(shape)
     coarse_seconds = time.monotonic() - started
     if report:
         report("envelope", "Gebäudehülle wird bestimmt (Außenluft wird gesucht) …")
     exposure = sampler.exposure()
-    selection.voxel = sampler.voxel
+    selection.voxel, selection.coarse = sampler.voxel, sampler.coarse
     selection.exposure = exposure
     selection.masses = len(sampler.masses)
     marks = external_marks(model)
@@ -176,11 +188,19 @@ def select(
         if product.id() not in selection.keep:
             selection.dropped_classes[product.is_a()] = selection.dropped_classes.get(product.is_a(), 0) + 1
     converter._release_memory()
-    log.info("Gebäudehülle: %d von %d Bauteilen außen (%d ohne Vorab-Geometrie, %d per IsExternal), Raster %g m, "
-             "%d Rasterzellen, Vorab-Geometrie %.0f s, Hülle %.0f s", len(selection.keep), selection.total,
-             selection.unknown, selection.flagged, sampler.voxel, sampler.cells, coarse_seconds,
+    log.info("Gebäudehülle: %d von %d Bauteilen außen (%d ohne Vorab-Geometrie, %d per IsExternal), Raster %g m "
+             "(grob %g m, %d Zellen, feiner Saum %d Zellen), Vorab-Geometrie %.0f s, Hülle %.0f s",
+             len(selection.keep), selection.total, selection.unknown, selection.flagged, sampler.voxel,
+             sampler.coarse, sampler.cells, sampler.band_cells, coarse_seconds,
              time.monotonic() - started - coarse_seconds)
     return selection
+
+
+def budgets() -> tuple[int, int]:
+    """(sampled cells, grid cells) the PC can afford: the defaults, more with more free memory."""
+    available = converter.available_memory() or 0
+    return (min(MAX_SAMPLED_CAP, max(MAX_SAMPLED, available // 150)),
+            min(MAX_VOXELS_CAP, max(MAX_VOXELS, available // 40)))
 
 
 def _select_by_marks(selection: Selection, products: list, marks: dict[int, bool]) -> None:
@@ -234,14 +254,18 @@ class _Sampler:
     """Collects, per product, the voxels its surfaces pass through, and finds the ones next to
     outside air once all products are in."""
 
-    def __init__(self, voxel: float):
+    def __init__(self, voxel: float, max_sampled: int = MAX_SAMPLED, max_voxels: int = MAX_VOXELS):
         self.voxel = voxel
-        self.origin: numpy.ndarray | None = None  # the first point; voxel coordinates are relative to it
-        self.keys: dict[int, numpy.ndarray] = {}  # product id -> packed voxel coordinates (int64)
+        self.coarse = voxel * FINE
+        self.max_sampled = max_sampled
+        self.max_voxels = max_voxels
+        self.origin: numpy.ndarray | None = None  # the first point; cell coordinates are relative to it
+        self.keys: dict[int, numpy.ndarray] = {}  # product id -> packed cell coordinates (int64)
         self.triangles: dict[int, int] = {}  # product id -> coarse triangles
         self.unknown: set[int] = set()  # products placed too far away to sample
         self.masses: set[int] = set()  # massing volumes, see exposure()
-        self.cells = 0
+        self.cells = 0  # cells of the whole-model grid
+        self.band_cells = 0  # sampled cells of the band around the outside air
         self._stored = 0
 
     def add(self, shape) -> None:
@@ -267,12 +291,13 @@ class _Sampler:
         self.keys[shape.id] = keys
         self.triangles[shape.id] = len(triangles)
         self._stored += len(keys)
-        if self._stored > MAX_SAMPLED:
+        if self._stored > self.max_sampled:
             self._coarsen()
 
     def _coarsen(self) -> None:
         """Double the grid cell, re-quantising what is stored (the lead-in of very large models)."""
         self.voxel *= 2
+        self.coarse = self.voxel * FINE
         self._stored = 0
         for product_id, keys in self.keys.items():
             keys = numpy.unique(_pack(numpy.floor_divide(_unpack(keys), 2)))
@@ -281,33 +306,34 @@ class _Sampler:
         log.info("Gebäudehülle: Raster auf %g m vergröbert (%d Rasterzellen gespeichert)", self.voxel, self._stored)
 
     def exposure(self) -> dict[int, float]:
-        """Product id -> share of its voxels next to outside air; sampled products only."""
+        """Product id -> share of its cells next to outside air; sampled products only."""
         if not self.keys:
             return {}
         owners = numpy.concatenate([numpy.full(len(keys), index, numpy.int32)
                                     for index, keys in enumerate(self.keys.values())])
-        cells = _unpack(numpy.concatenate(list(self.keys.values())))
-        low, high = cells.min(axis=0), cells.max(axis=0)
-        factor = 1
-        while numpy.prod((high - low) // factor + 5) > MAX_VOXELS:
+        # Cell coordinates fit int32 (within ±2^20 of the origin, see _RANGE); unpacked per product
+        # so that the int64 triples never exist for all cells at once.
+        fine = numpy.concatenate([_unpack(keys).astype(numpy.int32) for keys in self.keys.values()])
+        fine -= fine.min(axis=0)
+        factor = FINE
+        extent = fine.max(axis=0)
+        while numpy.prod(extent // factor + 5) > self.max_voxels and factor < extent.max():
             factor *= 2
-        if factor > 1:
-            cells = numpy.floor_divide(cells, factor)
-            low, high = cells.min(axis=0), cells.max(axis=0)
-            self.voxel *= factor
-            log.info("Gebäudehülle: Raster für die Füllung auf %g m vergröbert", self.voxel)
+        self.coarse = self.voxel * factor
         # Two empty cells around the model: the outermost ring is the border the fill starts from,
         # the next one keeps every product away from it.
-        shape = tuple(int(n) for n in high - low + 5)
-        cells = cells - low + 2
+        coarse = fine // factor + 2
+        local = (fine - (coarse - 2) * factor).astype(numpy.uint8 if factor < 256 else numpy.int32)
+        del fine
+        shape = tuple(int(n) for n in coarse.max(axis=0) + 3)
         self.cells = int(numpy.prod(shape))
-        flat = numpy.ravel_multi_index((cells[:, 0], cells[:, 1], cells[:, 2]), shape)
+        flat = numpy.ravel_multi_index((coarse[:, 0], coarse[:, 1], coarse[:, 2]), shape)
         # Massing volumes: simple products holding most of the other products are not opaque.
         count = len(self.keys)
         lows = numpy.full((count, 3), numpy.iinfo(numpy.int64).max)
         highs = numpy.full((count, 3), numpy.iinfo(numpy.int64).min)
-        numpy.minimum.at(lows, owners, cells)
-        numpy.maximum.at(highs, owners, cells)
+        numpy.minimum.at(lows, owners, coarse)
+        numpy.maximum.at(highs, owners, coarse)
         centres = (lows + highs) / 2
         opaque = numpy.ones(len(flat), dtype=bool)
         if count > 1:
@@ -318,19 +344,129 @@ class _Sampler:
                 if held >= MASS_SHARE * (count - 1):
                     self.masses.add(product_id)
                     opaque[owners == index] = False
-        del cells
+        del coarse, lows, highs, centres
         solid = numpy.zeros(self.cells, dtype=bool)
         solid[flat[opaque]] = True
         outside = _outside(solid.reshape(shape)).ravel()
-        del solid
-        exposed = numpy.zeros(len(flat), dtype=bool)
-        for stride in (shape[1] * shape[2], shape[2], 1):
-            for step in (stride, -stride):
-                exposed |= outside[flat + step]
+        # Seen from outside: cells lying in outside air of the whole-model grid (a mass), and
+        # cells next to outside air at the sampled resolution. The whole-model grid alone would be
+        # too coarse for that: an interior wall meeting an exterior wall thinner than its cell
+        # would count as exposed through it.
+        exposed = outside[flat].copy()
+        # The band around the outside air, refined to the sampled cells: gaps narrower than a
+        # coarse cell stay open there, and what lines them is seen.
+        near = outside.reshape(shape)
+        for _ in range(max(1, -(-BAND_DEPTH // factor))):
+            near = _dilated(near)
+        band = numpy.flatnonzero(near.ravel() & solid)
+        del near, solid
+        if band.size:
+            position = numpy.searchsorted(band, flat)
+            in_band = (position < band.size) & (band[numpy.minimum(position, band.size - 1)] == flat)
+            fine_ids = (position * factor ** 3 + local[:, 0].astype(numpy.int64) * factor * factor
+                        + local[:, 1] * factor + local[:, 2])
+            del position, local, flat
+            domain = _Band(band, shape, outside, factor)
+            self.band_cells = domain.size
+            fine_solid = numpy.zeros(domain.size, dtype=bool)
+            fine_solid[fine_ids[in_band & opaque]] = True
+            fine_outside = domain.outside(fine_solid)
+            del fine_solid
+            exposed[in_band] |= domain.touching(fine_ids[in_band], fine_outside)
         counts = numpy.bincount(owners, minlength=len(self.keys))
         exposed_counts = numpy.bincount(owners, weights=exposed, minlength=len(self.keys))
         return {product_id: float(exposed_counts[index] / counts[index])
                 for index, product_id in enumerate(self.keys)}
+
+
+class _Band:
+    """The sampled cells of the solid grid cells within the band around the outside air: a sparse
+    fine grid, addressed as band position * factor³ + local offset."""
+
+    CHUNK = 4_000_000
+
+    def __init__(self, band: numpy.ndarray, shape: tuple, outside: numpy.ndarray, factor: int):
+        self.band = band  # sorted flat indices of the grid cells in the band
+        self.air = outside  # outside air of the whole-model grid, flat
+        self.factor = factor
+        self.strides = (shape[1] * shape[2], shape[2], 1)
+        self.local_strides = (factor * factor, factor, 1)
+        self.size = band.size * factor ** 3
+
+    def neighbours(self, ids: numpy.ndarray, with_source: bool = True) -> tuple:
+        """(neighbour ids within the band, the index of their cell in ``ids`` (None unless
+        ``with_source``), whether a cell of ``ids`` borders on outside air of the whole-model grid)."""
+        factor, cube = self.factor, self.factor ** 3
+        position, local = ids // cube, ids % cube
+        found, source = [], []
+        at_outside = numpy.zeros(len(ids), dtype=bool)
+        for axis in range(3):
+            along = (local // self.local_strides[axis]) % factor
+            for step in (1, -1):
+                inside = (along + step >= 0) & (along + step < factor)
+                found.append(ids[inside] + step * self.local_strides[axis])
+                if with_source:
+                    source.append(numpy.flatnonzero(inside))
+                crossing = numpy.flatnonzero(~inside)
+                if not crossing.size:
+                    continue
+                cell = self.band[position[crossing]] + step * self.strides[axis]
+                at_outside[crossing] |= self.air[cell]
+                where = numpy.searchsorted(self.band, cell)
+                hit = (where < self.band.size) & (self.band[numpy.minimum(where, self.band.size - 1)] == cell)
+                wrapped = local[crossing[hit]] - step * (factor - 1) * self.local_strides[axis]
+                found.append(where[hit] * cube + wrapped)
+                if with_source:
+                    source.append(crossing[hit])
+        return numpy.concatenate(found), numpy.concatenate(source) if with_source else None, at_outside
+
+    def outside(self, fine_solid: numpy.ndarray) -> numpy.ndarray:
+        """The free sampled cells of the band reachable from the outside air of the whole-model
+        grid (a flood fill seeded on the faces towards it)."""
+        factor, cube = self.factor, self.factor ** 3
+        local = numpy.arange(cube)
+        visited = numpy.zeros(self.size, dtype=bool)
+        for axis in range(3):
+            along = (local // self.local_strides[axis]) % factor
+            for step in (1, -1):
+                touching = numpy.flatnonzero(self.air[self.band + step * self.strides[axis]])
+                face = numpy.flatnonzero(along == (factor - 1 if step == 1 else 0))
+                for start in range(0, touching.size, self.CHUNK // cube):
+                    seeds = (touching[start:start + self.CHUNK // cube, None] * cube + face[None, :]).ravel()
+                    visited[seeds[~fine_solid[seeds]]] = True
+        frontier = numpy.flatnonzero(visited)
+        while frontier.size:
+            # Chunked: the first fronts (all faces towards the outside air) are large.
+            grown = []
+            for start in range(0, frontier.size, self.CHUNK):
+                found, _, _ = self.neighbours(frontier[start:start + self.CHUNK], with_source=False)
+                found = numpy.unique(found[~fine_solid[found] & ~visited[found]])
+                visited[found] = True
+                grown.append(found)
+            frontier = numpy.concatenate(grown)
+        return visited
+
+    def touching(self, ids: numpy.ndarray, fine_outside: numpy.ndarray) -> numpy.ndarray:
+        """Whether each of the sampled cells ``ids`` borders on outside air (fine or coarse)."""
+        result = numpy.zeros(len(ids), dtype=bool)
+        for start in range(0, len(ids), self.CHUNK):
+            chunk = ids[start:start + self.CHUNK]
+            found, source, at_outside = self.neighbours(chunk)
+            hits = numpy.bincount(source, weights=fine_outside[found], minlength=len(chunk)) > 0
+            result[start:start + self.CHUNK] = hits | at_outside
+        return result
+
+
+def _dilated(mask: numpy.ndarray) -> numpy.ndarray:
+    """``mask`` grown by one cell in the six directions (the outermost layer stays as it is)."""
+    grown = mask.copy()
+    grown[1:, :, :] |= mask[:-1, :, :]
+    grown[:-1, :, :] |= mask[1:, :, :]
+    grown[:, 1:, :] |= mask[:, :-1, :]
+    grown[:, :-1, :] |= mask[:, 1:, :]
+    grown[:, :, 1:] |= mask[:, :, :-1]
+    grown[:, :, :-1] |= mask[:, :, 1:]
+    return grown
 
 
 def _surface_points(a: numpy.ndarray, b: numpy.ndarray, c: numpy.ndarray, spacing: float) -> numpy.ndarray:

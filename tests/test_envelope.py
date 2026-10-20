@@ -91,7 +91,25 @@ def test_a_product_with_the_smallest_visible_part_stays(house_ifc):
     kept = _names(model, selection.keep)
     assert "Lintel" in kept and "Strip" in kept
     exposure = {model.by_id(id_).Name: share for id_, share in selection.exposure.items()}
-    assert 0 < exposure["Strip"] < 0.2
+    assert 0 < exposure["Strip"] < 0.5
+
+
+def test_a_gap_narrower_than_a_coarse_cell_stays_open(house_ifc):
+    # A screen in front of the south wall's cladding with a 12 cm gap between them, lined by a thin
+    # panel: the gap is sealed on the 0.2 m grid but open at 0.05 m, so the panel is seen through it.
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    _box(model, body, "IfcCovering", "Backing", (8, 0.2, 3), (1, -0.2, 0), storey)
+    _box(model, body, "IfcPlate", "Screen", (6, 0.2, 3), (2, -0.52, 0), storey)
+    _box(model, body, "IfcCovering", "Panel", (4, 0.02, 1), (3, -0.22, 1), storey)
+    products = shape_products(model, EXCLUDED_CLASSES)
+    selection = envelope.select(model, 2, products)
+    assert (selection.voxel, selection.coarse) == (0.05, 0.2)
+    kept = _names(model, selection.keep)
+    assert {"Backing", "Screen", "Panel"} <= kept and "Table" not in kept and "Inner" not in kept
+    exposure = {model.by_id(id_).Name: share for id_, share in selection.exposure.items()}
+    assert 0 < exposure["Panel"] <= 0.5  # only the face towards the gap
 
 
 def test_many_dropped_classes_are_summed_up():
@@ -193,12 +211,12 @@ def test_products_without_coarse_geometry_are_kept(house_ifc, monkeypatch):
 
 def test_a_huge_model_coarsens_its_grid(house_ifc, monkeypatch):
     # The house samples about 250,000 cells at 0.05 m: 8,000 force three doublings while sampling
-    # (to 0.4 m, 4,000 cells), and 5,000 cells of grid (the house needs 10,500 at 0.4 m) one more.
-    monkeypatch.setattr(envelope, "MAX_SAMPLED", 8000)
-    monkeypatch.setattr(envelope, "MAX_VOXELS", 5_000)
+    # (to 0.4 m, 4,000 cells); the whole-model grid of 4 x 4 x 4 of them (1.6 m) then has 770 cells
+    # with its padding, and 400 force one more doubling of it (3.2 m, 336 cells); the sampled cell stays.
+    monkeypatch.setattr(envelope, "budgets", lambda: (8000, 400))
     model = ifcopenshell.open(str(house_ifc))
     selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
-    assert selection.voxel == 0.8 and "Raster 0,8 m" in selection.note
+    assert (selection.voxel, selection.coarse) == (0.4, 3.2) and "Raster 0,4 m, grob 3,2 m" in selection.note
     kept = _names(model, selection.keep)
     # Coarser cells keep more, never less: the walls are thinner than a cell now, so the interior
     # wall meeting them looks exposed; the table in the middle of the room does not.

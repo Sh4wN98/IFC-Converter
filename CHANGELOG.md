@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.6.3 – 2026-10-20
+
+- **Nur Gebäudehülle: Spalte bleiben offen.** Bei großen Modellen wurde das Raster bisher auf 20 cm oder mehr vergröbert; ein Spalt unter einem Sturz oder zwischen Fensterrahmen und Decke, der schmaler als eine Zelle ist, galt dann als dicht, und das Bauteil dahinter fiel als „innen“ weg – zu sehen als Loch in der Hülle (Rückmeldung aus einem 316-MB-Modell). Jetzt wird das ganze Modell auf dem groben Raster gefüllt und rund um die Außenluft, zwölf Zellen tief, mit der viermal feineren Abtastung nachgefüllt: Spalte von der Breite einer feinen Zelle an bleiben offen, was sie auskleidet, zählt als außen. Die Speicherbudgets richten sich nach dem freien RAM des Rechners, auf dem Arbeitsplatz-PC bleibt das feine Raster damit auch bei großen Modellen bei 5 cm. Das Protokoll nennt beide Rastermaße („Raster 0,05 m, grob 0,2 m“).
+
 ## 0.6.2 – 2026-10-20
 
 - **Nur Gebäudehülle bleibt geschlossen:** Bisher fiel ein Bauteil weg, wenn weniger als 5 % seiner Rasterzellen an Außenluft grenzten – ein Sturz oder ein Wandstück, das nur durch einen Spalt zu sehen ist, hinterließ dann ein Loch in der Hülle. Jetzt bleibt jedes Bauteil, das irgendwo an Außenluft grenzt; weggelassen wird nur, was von außen an keiner Stelle zu sehen ist. Das Raster ist feiner (5 cm statt 10 cm, bei großen Modellen weiterhin automatisch gröber), damit auch schmale Spalte und dünne Bauteile aufgelöst werden. Das Protokoll nennt die weggelassenen Bauteile nach Klassen („Weggelassen: 34 IfcWallStandardCase, 16 IfcSlab, …“).
