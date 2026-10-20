@@ -18,6 +18,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from ifc_converter import __version__
+from ifc_converter.i18n import tr
 
 APP_NAME = "IFC Converter"
 # Folder name on Linux and macOS, where names without spaces are the custom.
@@ -250,7 +251,7 @@ def component_versions() -> dict[str, str]:
         try:
             versions[name] = str(getter())
         except Exception:  # noqa: BLE001 - a missing component must not break the About dialog
-            versions[name] = "nicht verfügbar"
+            versions[name] = tr("not available")
     versions["System"] = f"{platform.system()} {platform.release()} ({platform.machine()})"
     return versions
 
