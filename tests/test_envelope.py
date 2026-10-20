@@ -74,6 +74,31 @@ def test_the_hull_of_a_house(house_ifc):
     assert exposure["Inner"] == 0 and exposure["Table"] == 0
     assert exposure["Column"] > 0.8 and exposure["Roof"] > 0.4 and exposure["South"] > 0.3
     assert "7 von 9 Bauteilen liegen außen" in selection.note and "2 innen liegende" in selection.note
+    assert selection.note.endswith(" Weggelassen: 1 IfcFurniture, 1 IfcWall.")
+    assert selection.dropped_classes == {"IfcFurniture": 1, "IfcWall": 1}
+
+
+def test_a_product_with_the_smallest_visible_part_stays(house_ifc):
+    # A lintel-like block in the south wall, flush with the inner face and reaching the outer face
+    # only with a 5 cm strip through a slot in the wall: whatever touches outside air is kept, so
+    # the hull never gets a hole where a product with a small visible part was left out.
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    _box(model, body, "IfcBeam", "Lintel", (2, 0.6, 0.3), (4, -0.3, 2.5), storey)  # sticks 0.3 m out of the wall
+    _box(model, body, "IfcBeam", "Strip", (3, 0.35, 0.05), (1, 0.0, 1.0), storey)  # 5 cm beyond the outer face
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    kept = _names(model, selection.keep)
+    assert "Lintel" in kept and "Strip" in kept
+    exposure = {model.by_id(id_).Name: share for id_, share in selection.exposure.items()}
+    assert 0 < exposure["Strip"] < 0.2
+
+
+def test_many_dropped_classes_are_summed_up():
+    selection = envelope.Selection(keep=set(), total=100, inside=60,
+                                   dropped_classes={f"IfcClass{i}": i for i in range(1, 11)})
+    assert selection.dropped_text == (" Weggelassen: 10 IfcClass10, 9 IfcClass9, 8 IfcClass8, 7 IfcClass7, 6 IfcClass6, "
+                                      "5 IfcClass5, 4 IfcClass4, 3 IfcClass3, 3 weitere.")
 
 
 def test_is_external_keeps_an_element_the_fill_cannot_see(house_ifc):
@@ -167,8 +192,8 @@ def test_products_without_coarse_geometry_are_kept(house_ifc, monkeypatch):
 
 
 def test_a_huge_model_coarsens_its_grid(house_ifc, monkeypatch):
-    # The house samples about 62,000 cells at 0.1 m: 8,000 force two doublings while sampling (to
-    # 0.4 m, 4,000 cells), and 5,000 cells of grid (the house needs 10,500 at 0.4 m) one more.
+    # The house samples about 250,000 cells at 0.05 m: 8,000 force three doublings while sampling
+    # (to 0.4 m, 4,000 cells), and 5,000 cells of grid (the house needs 10,500 at 0.4 m) one more.
     monkeypatch.setattr(envelope, "MAX_SAMPLED", 8000)
     monkeypatch.setattr(envelope, "MAX_VOXELS", 5_000)
     model = ifcopenshell.open(str(house_ifc))

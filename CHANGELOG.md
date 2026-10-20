@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.6.2 – 2026-10-20
+
+- **Nur Gebäudehülle bleibt geschlossen:** Bisher fiel ein Bauteil weg, wenn weniger als 5 % seiner Rasterzellen an Außenluft grenzten – ein Sturz oder ein Wandstück, das nur durch einen Spalt zu sehen ist, hinterließ dann ein Loch in der Hülle. Jetzt bleibt jedes Bauteil, das irgendwo an Außenluft grenzt; weggelassen wird nur, was von außen an keiner Stelle zu sehen ist. Das Raster ist feiner (5 cm statt 10 cm, bei großen Modellen weiterhin automatisch gröber), damit auch schmale Spalte und dünne Bauteile aufgelöst werden. Das Protokoll nennt die weggelassenen Bauteile nach Klassen („Weggelassen: 34 IfcWallStandardCase, 16 IfcSlab, …“).
+
 ## 0.6.1 – 2026-10-20
 
 - **Nur Gebäudehülle, Nachbesserungen aus der Prüfung am Testbestand:** Baumassen (z. B. ein Revit-Massenkörper, der das ganze Gebäude umschließt, oder ein als Block modelliertes Gelände) verdecken die Hülle nicht mehr – ohne `IsExternal`-Kennzeichnung wäre im Revit-Bürogebäude sonst das Dach weggefallen; solche Körper bleiben selbst erhalten, das Protokoll nennt sie. Bei Teilmodellen ohne geschlossene Hülle entfallen zusätzlich Decken- und Bodenbeläge (IfcCovering CEILING/FLOORING). Neues Prüfwerkzeug `tools/hull_check.py` (Vergleich mit `IsExternal`, Dateigrößen, Ansichten der behaltenen und weggelassenen Bauteile).
