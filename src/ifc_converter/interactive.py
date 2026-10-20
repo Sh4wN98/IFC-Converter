@@ -244,12 +244,23 @@ def number_text(number: int) -> str:
     return f"{number:,}".replace(",", ".")
 
 
+def inside_text(inside: int) -> str:
+    """"2.431 innen liegende weggelassen" (option "Nur Gebäudehülle", see ConversionResult.inside)."""
+    return f"{number_text(inside)} innen {'liegendes' if inside == 1 else 'liegende'} weggelassen"
+
+
 def check_memory(path: Path) -> str | None:
     """The RAM warning for `path`, or None (also if the file cannot be read; convert() reports that)."""
     try:
         return memory_warning(path)
     except OSError:
         return None
+
+
+# Phases whose description is shown next to the percentage (terminal line and the window's row): the
+# hull's coarse geometry pass ("envelope", the first 25 %), deeply nested elements computed one by one,
+# writing and copying the output. See process.convert_in_child for the phases.
+DETAIL_PHASES = ("envelope", "deep", "write", "copy")
 
 
 class ProgressLine:
@@ -285,8 +296,9 @@ class ProgressLine:
         self.show(f"{value} %" + (f" – {self._detail}" if self._detail else ""))
 
     def phase(self, phase: str, text: str) -> None:
-        """The long final phases (writing, copying) are shown next to the percentage."""
-        self._detail = text if phase in ("write", "copy", "deep") else ""
+        """The long phases in which the percentage says little (the hull's coarse pass, deeply nested
+        elements, writing, copying) are shown next to the percentage."""
+        self._detail = text if phase in DETAIL_PHASES else ""
         if self._percent is not None:
             self.percent(self._percent)
 
@@ -323,12 +335,14 @@ def convert_in_terminal(
     on_retry: Callable[[str], None] | None = None,
     low_priority: bool = True,
     blocks: bool = False,
+    envelope: bool = False,
 ) -> ConversionResult:
     """convert() in a child process with a progress line on stdout.
 
     Running out of memory or a crash in the geometry kernel then only fails this file (as an
     exception), so a batch can go on. Partial output is removed after a failure, but only files this
-    conversion created, never ones that existed before.
+    conversion created, never ones that existed before. ``blocks`` only matters for 3dm; with
+    ``envelope`` only the building hull is converted (option "Nur Gebäudehülle").
     """
     target = Path(target) if target else source.with_suffix(f".{fmt}")
     created = [path for path in output_files(target, fmt) if not path.exists()]
@@ -343,10 +357,15 @@ def convert_in_terminal(
             on_retry(message)
         line.show("IFC wird gelesen …")
 
+    options = {}
+    if blocks and fmt == "3dm":
+        options["blocks"] = True
+    if envelope:
+        options["envelope"] = True
     try:
         return convert_in_child(
             source, target, fmt, threads, line.percent, geometry=geometry, on_retry=retrying,
-            low_priority=low_priority, status=line.phase, **({"blocks": True} if blocks and fmt == "3dm" else {}),
+            low_priority=low_priority, status=line.phase, **options,
         )
     except BaseException:
         for path in created:
@@ -375,7 +394,7 @@ def collect_ifc_files(paths: list[Path]) -> tuple[list[Path], list[Path]]:
 
 def run(
     fmt: str = "glb", output_dir: Path | None = None, geometry: str = "brep", low_priority: bool = True,
-    blocks: bool = False,
+    blocks: bool = False, envelope: bool = False,
 ) -> int:
     output_dir = output_dir or desktop_dir()
     print("=" * 60)
@@ -387,6 +406,9 @@ def run(
     print(f"  Format wechseln: {formats} eingeben.  Beenden: 'q'")
     print("  Abbrechen einer laufenden Umwandlung: Strg+C")
     print(f"  Rechenleistung: {resource_text(auto_threads(), low_priority)}")
+    if envelope:
+        print("  Nur Gebäudehülle: innen liegende Bauteile (Innenwände, Möbel, Einrichtung, Leitungen) werden "
+              "weggelassen.")
     print()
 
     while True:
@@ -426,6 +448,7 @@ def run(
                 result = convert_in_terminal(
                     source, target, fmt, geometry=geometry, label="    ",
                     on_retry=lambda message: print(f"  ⚠ {message}"), low_priority=low_priority, blocks=blocks,
+                    envelope=envelope,
                 )
             except KeyboardInterrupt:
                 rest = len(files) - number - 1
@@ -436,7 +459,8 @@ def run(
                 print(f"    {failure_hint(is_internal_error(exc), str(log_path()))}")
                 continue
             skipped = f", {result.skipped} ohne Geometrie" if result.skipped > 0 else ""
-            print(f"  ✓ Fertig: {result.output}  ({number_text(result.elements)} Bauteile{skipped})")
+            inside = f", {inside_text(result.inside)}" if result.inside > 0 else ""
+            print(f"  ✓ Fertig: {result.output}  ({number_text(result.elements)} Bauteile{skipped}{inside})")
             if result.crashed:
                 print(f"  ⚠ {crashed_warning(result.crashed)}")
             if result.skipped > 0:

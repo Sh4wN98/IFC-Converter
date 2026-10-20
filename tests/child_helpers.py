@@ -402,3 +402,19 @@ def crash_late_on_wall_450(input_path, output_path, fmt, threads, progress=None,
     finally:
         with open(f"{output_path}.computed", "a") as file:
             file.write(f"{len(asked)}\n")
+
+
+def convert_only_hull(input_path, output_path, fmt, threads, progress=None, **options):
+    """convert() with a stand-in for envelope.select (the real selection is not part of these tests):
+    every product is kept, two interior ones are reported as left out, and the coarse pass reports
+    its progress like the real one. Patched here because the child is a fresh process."""
+    from ifc_converter import envelope
+
+    def select(model, threads, products, report=None, progress=None):
+        if progress:
+            progress(0)
+            progress(100)
+        return envelope.Selection(keep={product.id() for product in products}, total=len(products) + 2, inside=2)
+
+    envelope.select = select
+    return convert(input_path, output_path, fmt, threads, progress, **options)

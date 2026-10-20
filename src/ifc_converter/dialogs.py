@@ -49,7 +49,7 @@ from ifc_converter import __version__
 from ifc_converter import app as app_info
 from ifc_converter.app import APP_NAME, LICENSES, REPOSITORY, component_versions
 from ifc_converter.converter import DEFAULT_KERNEL, KERNELS
-from ifc_converter.interactive import resource_text, split_label
+from ifc_converter.interactive import inside_text, resource_text, split_label
 from ifc_converter.process import auto_threads, cpu_count
 
 RESOURCES = Path(__file__).resolve().parent / "resources"
@@ -674,14 +674,15 @@ class SkippedDialog(_Dialog):
     """The elements of one file that were not converted, with class, GlobalId and name, to copy.
 
     ``skipped`` is the number of elements without geometry; it can be larger than ``no_geometry`` when
-    not all of them could be named.
+    not all of them could be named. ``inside`` is the number of elements left out as interior (option
+    "Nur Gebäudehülle"); they are only counted, not listed.
     """
 
     COLUMNS = ("Grund", "Klasse", "GlobalId", "Name")
 
     def __init__(
         self, file_name: str, crashed: list[str], no_geometry: list[str], skipped: int = 0,
-        parent: QWidget | None = None,
+        inside: int = 0, parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle(f"Übersprungene Bauteile – {file_name}")
@@ -695,6 +696,8 @@ class SkippedDialog(_Dialog):
             counts.append(f"{len(crashed)} übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb")
         if no_geometry or skipped:
             counts.append(f"{max(skipped, len(no_geometry))} ohne Geometrie (nicht konvertierbar)")
+        if inside:
+            counts.append(f"{inside_text(inside)} (nur Gebäudehülle)")
         layout.addWidget(_selectable(f"<b>{html.escape(file_name)}</b>: " + "; ".join(counts) + "."))
 
         self.rows = [(CRASHED_REASON, *split_label(label)) for label in crashed]
@@ -724,6 +727,11 @@ class SkippedDialog(_Dialog):
         if skipped > len(no_geometry):
             layout.addWidget(_hint(
                 f"{skipped - len(no_geometry)} weitere Bauteile ohne Geometrie ließen sich nicht einzeln benennen."
+            ))
+        if inside:
+            layout.addWidget(_hint(
+                "Die innen liegenden Bauteile, die wegen „Nur Gebäudehülle“ weggelassen wurden, werden nicht "
+                "einzeln aufgeführt; ohne die Option werden sie mit umgewandelt."
             ))
         layout.addWidget(_hint(
             "Markieren und Strg+C kopiert die gewählten Zeilen (Strg+A: alle), als Tabelle zum Einfügen in Excel "

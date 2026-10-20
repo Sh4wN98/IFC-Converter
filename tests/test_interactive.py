@@ -562,3 +562,81 @@ def test_cli_cancelled_by_signal_cleans_up(wall_ifc, tmp_path):
         while _child_alive(child) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not _child_alive(child)
+
+
+# ------------------------------------------------------------ 0.6.0 Nur Gebäudehülle
+
+
+def test_inside_text():
+    assert interactive.inside_text(1) == "1 innen liegendes weggelassen"
+    assert interactive.inside_text(2431) == "2.431 innen liegende weggelassen"
+
+
+def _record_child_options(monkeypatch, inside=0):
+    calls = []
+
+    def fake(source, target, fmt, threads=None, progress=None, low_priority=True, **options):
+        calls.append(options)
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_text("fake")
+        return process.ConversionResult(output=Path(target), elements=1, inside=inside)
+
+    monkeypatch.setattr(interactive, "convert_in_child", fake)
+    return calls
+
+
+def test_cli_envelope_flag_reaches_the_child_and_the_inside_count_is_printed(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import build_parser, main
+
+    assert "--envelope, --hull" in build_parser().format_help()
+    calls = _record_child_options(monkeypatch, inside=5)
+    assert main([str(wall_ifc), "-d", str(tmp_path)]) == 0
+    assert main([str(wall_ifc), "-d", str(tmp_path), "--envelope"]) == 0
+    assert main([str(wall_ifc), "-d", str(tmp_path), "-f", "3dm", "--hull"]) == 0
+    assert [options.get("envelope") for options in calls] == [None, True, True]
+    assert [options.get("blocks") for options in calls] == [None, None, None]
+    lines = capsys.readouterr().out.rstrip().splitlines()
+    assert all(line.endswith("(1 elements, 5 inside left out)") for line in lines)
+
+
+def test_cli_converts_only_the_hull(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    use_child_func(monkeypatch, child_helpers.convert_only_hull)
+    assert main([str(wall_ifc), "-d", str(tmp_path), "--hull"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.rstrip().endswith("wall.glb (1 elements, 2 inside left out)")
+    assert (tmp_path / "wall.glb").stat().st_size > 0
+    assert "Geometrie" not in captured.err
+
+
+def test_session_summary_names_the_inside_count(wall_ifc, tmp_path, monkeypatch, capsys):
+    calls = _record_child_options(monkeypatch, inside=5)
+    lines = iter([f"'{wall_ifc}'", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert interactive.run(output_dir=tmp_path, envelope=True) == 0
+    assert calls == [{"geometry": "brep", "on_retry": calls[0]["on_retry"], "status": calls[0]["status"],
+                      "envelope": True}]
+    out = capsys.readouterr().out
+    assert "  Nur Gebäudehülle: innen liegende Bauteile" in out
+    assert "(1 Bauteile, 5 innen liegende weggelassen)" in out
+
+
+def test_session_without_the_option_says_nothing_of_the_hull(wall_ifc, tmp_path, monkeypatch, capsys):
+    calls = _record_child_options(monkeypatch)
+    lines = iter([f"'{wall_ifc}'", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert interactive.run(output_dir=tmp_path) == 0
+    assert "envelope" not in calls[0]
+    assert "Gebäudehülle" not in capsys.readouterr().out
+
+
+def test_progress_line_shows_the_envelope_phase():
+    terminal = FakeTerminal()
+    line = interactive.ProgressLine("a: ", stream=terminal)
+    line.percent(10)
+    line.phase("envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …")
+    assert terminal.getvalue().endswith("\ra: 10 % – Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …")
+    line.phase("geometry", "Geometrie wird berechnet (4 Threads) …")
+    line.percent(30)
+    assert terminal.getvalue().rstrip().endswith("\ra: 30 %")
