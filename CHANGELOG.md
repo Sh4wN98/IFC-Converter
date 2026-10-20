@@ -2,7 +2,7 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
-## 0.7.0 – 2026-10-20
+## 0.7.1 – 2026-10-20
 
 - **Mehrsprachige Oberfläche:** Fenster, Dialoge, Dateiliste, Meldungen im Protokoll und die Statustexte der Konvertierung gibt es jetzt in Englisch (Standard), Deutsch, Französisch, Spanisch, Italienisch, Portugiesisch, Niederländisch, Polnisch und Türkisch. Umschalten unter Extras → Sprache (Tools → Language); die Wahl wird gemerkt und nach einem Neustart übernommen, den das Programm anbietet. Im Terminal `--lang de` bzw. die Umgebungsvariable `IFC_CONVERTER_LANG`. Die deutschen Texte sind unverändert; Logdatei und Konvertierungsmeldungen erscheinen in der gewählten Sprache, Rhino-Layer und Benutzertexte bleiben wie bisher.
 

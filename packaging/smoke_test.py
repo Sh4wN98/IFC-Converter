@@ -194,7 +194,8 @@ def check_network_folder(cli: Path, source: Path, out: Path, log: Path) -> None:
     convert(cli, source, target, "-f", "3dm")
     check_3dm(target, rhino3dm.Brep)
     written = log.read_bytes()[offset:].decode("utf-8", "replace") if log.is_file() else ""
-    if "Wird ins Zielverzeichnis kopiert" not in written:
+    # The log is in the user interface language (English unless IFC_CONVERTER_LANG says otherwise).
+    if "Copying to the target folder" not in written and "Wird ins Zielverzeichnis kopiert" not in written:
         raise AssertionError(f"output for {share} was not staged locally:\n{written[-2000:]}")
     print("  UNC folder: written locally, then copied ✓")
 
@@ -295,7 +296,7 @@ def check_cancel(cli: Path, source: Path, out: Path) -> None:
     print(f"  exit code {process.returncode}")
     for line in output.splitlines():
         print(f"  | {line}")
-    if process.returncode != 130 or "abgebrochen" not in output:
+    if process.returncode != 130 or ("abgebrochen" not in output and "cancelled" not in output):
         raise AssertionError(f"Ctrl+Break: exit code {process.returncode} instead of 130 (cancelled)")
     if target.exists():
         raise AssertionError(f"the cancelled conversion left {target.name} behind")
