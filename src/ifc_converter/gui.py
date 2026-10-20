@@ -77,6 +77,7 @@ from ifc_converter.dialogs import (
     save_anonymized_log,
 )
 from ifc_converter.interactive import (
+    DETAIL_PHASES,
     SKIPPED_HINT,
     check_memory,
     collect_ifc_files,
@@ -85,6 +86,7 @@ from ifc_converter.interactive import (
     duration_text,
     error_message,
     failure_hint,
+    inside_text,
     is_internal_error,
     number_text,
     output_files,
@@ -126,6 +128,20 @@ GEOMETRY_INFO = {
     "mesh": ("Netze (Meshes)", "Kleinste Dateien, schnellste Konvertierung. Runde Flächen glatt schattiert, Kanten scharf."),
 }
 
+# Option "Nur Gebäudehülle" (convert(envelope=True)): the checkbox under the formats and its tooltip.
+# The side column has about 560 px at 1080p and the two boxes use 513 of them, so the option gets no
+# group box and no hint of its own; the tooltip tells the whole story, the log says what was left out.
+ENVELOPE_LABEL = "Nur Gebäudehülle"
+ENVELOPE_TOOLTIP = (
+    "Konvertiert nur die Gebäudehülle, also was von außen zu sehen ist: Außenwände, Dächer, Fenster, Türen, "
+    "Balkone, Gelände … Innenwände, Möbel, Einrichtung, Rohre und Kanäle werden weggelassen; die Datei wird "
+    "deutlich kleiner (z. B. für Umgebungsmodelle oder schwächere PCs).\n\n"
+    "Dafür berechnet ein kurzer zusätzlicher Durchgang zuerst eine grobe Geometrie aller Bauteile (die ersten "
+    "25 % des Fortschritts). Bauteile, die in der IFC als außen liegend markiert sind (IsExternal), bleiben "
+    "immer erhalten; im Zweifel wird ein Bauteil eher behalten als weggelassen. Maße und Lage der "
+    "umgewandelten Bauteile ändern sich nicht. Gilt für jedes Zielformat."
+)
+
 DONE_COLOR = QColor("#2e9d57")
 ERROR_COLOR = QColor("#d64545")
 RUNNING_COLOR = QColor("#2f80ed")
@@ -158,6 +174,7 @@ class QueueItem:
     progress: int = 0
     elements: int = 0
     skipped: int = 0  # elements whose geometry could not be converted
+    inside: int = 0  # elements left out as interior (option "Nur Gebäudehülle")
     output: Path | None = None
     error: str = ""
     warning: str = ""  # RAM warning for large files, shown as tooltip
@@ -182,8 +199,13 @@ class QueueItem:
                 return f"Wird konvertiert … {self.progress}{NNBSP}% – {self.detail}"
             return f"Wird konvertiert … {self.progress}{NNBSP}%"
         if self.status is Status.DONE:
-            skipped = f" ({number_text(self.skipped)} ohne Geometrie)" if self.skipped > 0 else ""
-            return f"Fertig – {count_text(self.elements, 'Bauteil', 'Bauteile')}{skipped}"
+            notes = []
+            if self.skipped > 0:
+                notes.append(f"{number_text(self.skipped)} ohne Geometrie")
+            if self.inside > 0:
+                notes.append(inside_text(self.inside))
+            details = f" ({', '.join(notes)})" if notes else ""
+            return f"Fertig – {count_text(self.elements, 'Bauteil', 'Bauteile')}{details}"
         if self.status is Status.FAILED:
             return f"Fehler: {self.error}"
         if self.status is Status.CANCELLED:
@@ -317,6 +339,7 @@ class ConversionWorker(QObject):
         kernel: str | None = None,
         low_priority: bool = True,
         blocks: bool = False,
+        envelope: bool = False,
     ):
         super().__init__()
         self.jobs = jobs
@@ -327,6 +350,7 @@ class ConversionWorker(QObject):
         self.kernel = kernel
         self.low_priority = low_priority
         self.blocks = blocks
+        self.envelope = envelope  # only the building hull (every format)
         self._cancel = threading.Event()
 
     def cancel(self) -> None:
@@ -370,6 +394,8 @@ class ConversionWorker(QObject):
             options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
             if self.fmt == "3dm" and self.blocks:
                 options["blocks"] = True
+            if self.envelope:
+                options["envelope"] = True
             if self.kernel:
                 options["kernel"] = self.kernel
             if self.use_subprocess:
@@ -796,6 +822,12 @@ class MainWindow(QMainWindow):
         self.format_hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         format_layout.addSpacing(2)
         format_layout.addWidget(self.format_hint)
+        # Only the building hull (every format): under the formats, since it decides what the file holds.
+        self.envelope_check = QCheckBox(ENVELOPE_LABEL)
+        self.envelope_check.setToolTip(ENVELOPE_TOOLTIP)
+        self.envelope_check.toggled.connect(self._envelope_changed)
+        format_layout.addSpacing(4)
+        format_layout.addWidget(self.envelope_check)
         right.addWidget(format_box)
 
         output_box = QGroupBox("Speicherort")
@@ -959,6 +991,8 @@ class MainWindow(QMainWindow):
         self.beside_check.setChecked(self.settings.value("beside_input", False, type=bool))
         self._beside_changed(self.beside_check.isChecked())
 
+        self.envelope_check.setChecked(self.settings.value("envelope", False, type=bool))
+
         mode = str(self.settings.value("rhino_geometry", DEFAULT_GEOMETRY))
         self.geometry_buttons[mode if mode in self.geometry_buttons else DEFAULT_GEOMETRY].setChecked(True)
 
@@ -997,6 +1031,11 @@ class MainWindow(QMainWindow):
                 return mode
         return DEFAULT_GEOMETRY
 
+    @property
+    def envelope(self) -> bool:
+        """Whether only the building hull is converted (option "Nur Gebäudehülle")."""
+        return self.envelope_check.isChecked()
+
     def set_format(self, fmt: str) -> None:
         self.format_buttons[fmt].setChecked(True)
 
@@ -1033,6 +1072,9 @@ class MainWindow(QMainWindow):
     def _beside_changed(self, checked: bool) -> None:
         self.settings.setValue("beside_input", checked)
         self._update_actions()
+
+    def _envelope_changed(self, checked: bool) -> None:
+        self.settings.setValue("envelope", checked)
 
     def show_settings(self) -> None:
         dialog = SettingsDialog(self.preferences, self)
@@ -1138,6 +1180,8 @@ class MainWindow(QMainWindow):
                 tooltip += f"\n\n⚠ {len(item.crashed)} übersprungen (Geometriekern abgestürzt oder hängen geblieben)"
             if item.skipped > 0:
                 tooltip += f"\n\n⚠ {skipped_count(item.skipped)}: {SKIPPED_HINT}"
+            if item.inside > 0:
+                tooltip += f"\n\nNur Gebäudehülle: {inside_text(item.inside)} (innen liegende Bauteile)"
             if item.has_details:
                 tooltip += "\n\nListe zum Kopieren: Rechtsklick → „Übersprungene Bauteile…“"
         elif item.status is Status.FAILED:
@@ -1193,7 +1237,9 @@ class MainWindow(QMainWindow):
         prefs = self.preferences
         kernel = "" if prefs.kernel == DEFAULT_KERNEL else f", Geometriekern {KERNEL_INFO[prefs.kernel][0]}"
         blocks = ", gleiche Bauteile als Blöcke" if fmt == "3dm" and prefs.blocks else ""
-        self.log(f"▶ {files_text(len(rows))} → {label}{blocks}, Ziel: {target}{kernel}")
+        envelope = self.envelope
+        hull = ", nur Gebäudehülle" if envelope else ""
+        self.log(f"▶ {files_text(len(rows))} → {label}{blocks}{hull}, Ziel: {target}{kernel}")
         threads = prefs.effective_threads
         resources = resource_text(threads, prefs.low_priority, rhino_workers(threads) if fmt == "3dm" else 0)
         self.log(f"• Rechenleistung: {resources}")
@@ -1201,7 +1247,7 @@ class MainWindow(QMainWindow):
         jobs = [(row, self.queue[row].path) for row in rows]
         self._worker = ConversionWorker(
             jobs, fmt, out_dir, threads=prefs.effective_threads, geometry=geometry, kernel=prefs.kernel,
-            low_priority=prefs.low_priority, blocks=prefs.blocks,
+            low_priority=prefs.low_priority, blocks=prefs.blocks, envelope=envelope,
         )
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
@@ -1260,9 +1306,9 @@ class MainWindow(QMainWindow):
         item = self.queue[row]
         if item.status is not Status.RUNNING:
             return
-        # The row only shows the long phases in which the percentage stands still: deeply nested
-        # elements (computed one by one), writing and copying the output.
-        detail = text if phase in ("write", "copy", "deep") else ""
+        # The row only shows the long phases in which the percentage says little: the hull's coarse
+        # pass (the first 25 %), deeply nested elements (computed one by one), writing and copying.
+        detail = text if phase in DETAIL_PHASES else ""
         if detail != item.detail:
             if detail and phase != item.phase:
                 self.log(f"… {item.path.name}: {text}")
@@ -1296,11 +1342,15 @@ class MainWindow(QMainWindow):
         item = self.queue[row]
         item.status, item.progress, item.output, item.elements = Status.DONE, 100, result.output, result.elements
         item.skipped, item.crashed, item.no_geometry = result.skipped, list(result.crashed), list(result.no_geometry)
+        item.inside = result.inside
         self._refresh_row(row)
         self._run_done += 1
         self._last_output_dir = result.output.parent
         self._update_overall(0)
-        self.log(f"✓ {item.path.name} → {result.output}  ({count_text(result.elements, 'Bauteil', 'Bauteile')})")
+        counts = count_text(result.elements, 'Bauteil', 'Bauteile')
+        if result.inside > 0:
+            counts += f", {inside_text(result.inside)}"
+        self.log(f"✓ {item.path.name} → {result.output}  ({counts})")
         if result.crashed:
             self.log(f"⚠ {item.path.name}: {crashed_warning(result.crashed)}")
         if result.skipped > 0:
@@ -1435,7 +1485,7 @@ class MainWindow(QMainWindow):
         if row is None:
             return None
         item = self.queue[row]
-        dialog = SkippedDialog(item.path.name, item.crashed, item.no_geometry, item.skipped, self)
+        dialog = SkippedDialog(item.path.name, item.crashed, item.no_geometry, item.skipped, item.inside, parent=self)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.show()  # not modal: the list can stay open next to the CAD program
         return dialog
@@ -1486,6 +1536,7 @@ class MainWindow(QMainWindow):
         for button in self.format_buttons.values():
             button.setEnabled(not running)
         self.geometry_box.setEnabled(not running and self.fmt == "3dm")
+        self.envelope_check.setEnabled(not running)
         self.beside_check.setEnabled(not running)
         beside = self.beside_check.isChecked()
         self.output_edit.setEnabled(not running and not beside)

@@ -1229,3 +1229,101 @@ def test_status_texts_are_consistent_german(window, wall_ifc):
     item.status, item.elements, item.skipped = Status.DONE, 12345, 2
     assert item.status_text == "Fertig – 12.345 Bauteile (2 ohne Geometrie)"
     assert window._running_text() == "Die Konvertierung läuft noch."
+
+
+# ------------------------------------------------------------ 0.6.0 Nur Gebäudehülle
+
+
+def test_envelope_option_is_off_by_default_and_remembered(app, settings):
+    first = gui.MainWindow(settings=settings)
+    assert not first.envelope_check.isChecked() and first.envelope is False
+    assert "Außenwände" in first.envelope_check.toolTip() and "IsExternal" in first.envelope_check.toolTip()
+    first.envelope_check.setChecked(True)
+    assert settings.value("envelope", type=bool) is True
+    first.close()
+
+    second = gui.MainWindow(settings=settings)
+    assert second.envelope is True
+    second.close()
+
+
+@pytest.mark.parametrize("fmt", ["3dm", "glb", "dae"])
+def test_envelope_reaches_every_format_and_is_logged(window, wall_ifc, child_calls, fmt):
+    window.set_format(fmt)
+    window.envelope_check.setChecked(True)
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    assert not window.envelope_check.isEnabled()  # locked while running, like the format
+    wait_finished(window)
+    assert child_calls[0].get("envelope") is True
+    assert ", nur Gebäudehülle, Ziel: " in window.log_view.toPlainText()
+    assert window.envelope_check.isEnabled()
+
+
+def test_envelope_is_not_passed_when_off(window, wall_ifc, child_calls):
+    window.set_format("glb")
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    wait_finished(window)
+    assert "envelope" not in child_calls[0]
+    assert "Gebäudehülle" not in window.log_view.toPlainText()
+
+
+def test_inside_count_is_shown_in_row_log_tooltip_and_dialog(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._on_file_done(0, ConversionResult(
+        tmp_path / "wall.3dm", 812, 3, crashed=["IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag“"], inside=2431,
+    ))
+    assert window.status_text(0) == "Fertig – 812 Bauteile (3 ohne Geometrie, 2.431 innen liegende weggelassen)"
+    assert "(812 Bauteile, 2.431 innen liegende weggelassen)" in window.log_view.toPlainText()
+    assert "Nur Gebäudehülle: 2.431 innen liegende weggelassen" in window.table.item(0, 2).toolTip()
+
+    dialog = window.show_details(0)
+    try:
+        texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+        assert "2.431 innen liegende weggelassen (nur Gebäudehülle)" in texts
+        assert "nicht einzeln aufgeführt" in texts
+        assert dialog.table.rowCount() == 1  # only the crashed one is listed
+    finally:
+        dialog.close()
+
+    # Without the option nothing of it shows; a single interior element is singular.
+    window._on_file_done(0, ConversionResult(tmp_path / "wall.3dm", 5))
+    assert window.status_text(0) == "Fertig – 5 Bauteile"
+    assert "Gebäudehülle" not in window.table.item(0, 2).toolTip()
+    window._on_file_done(0, ConversionResult(tmp_path / "wall.3dm", 5, inside=1))
+    assert window.status_text(0) == "Fertig – 5 Bauteile (1 innen liegendes weggelassen)"
+
+
+def test_envelope_phase_is_shown_in_the_row(window, wall_ifc, tmp_path):
+    window.add_paths([wall_ifc])
+    window._worker = ConversionWorker([], "glb", tmp_path)
+    try:
+        window._on_file_started(0, tmp_path / "out" / "wall.glb")
+        window._on_file_progress(0, 10)
+        window._on_file_status(0, "envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …")
+        assert window.status_text(0) == (
+            f"Wird konvertiert … 10{gui.NNBSP}% – Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …"
+        )
+        assert "Gebäudehülle wird bestimmt" in window.status_label.text()
+        assert "… wall.ifc: Gebäudehülle wird bestimmt" in window.log_view.toPlainText()
+        window._on_file_status(0, "geometry", "Geometrie wird berechnet (4 Threads) …")
+        window._on_file_progress(0, 30)
+        assert window.status_text(0) == f"Wird konvertiert … 30{gui.NNBSP}%"
+    finally:
+        window._worker = None
+
+
+def test_real_conversion_with_envelope_reports_the_inside_count(window, wall_ifc, tmp_path, monkeypatch):
+    use_child_func(monkeypatch, child_helpers.convert_only_hull)
+    window.set_format("glb")
+    window.envelope_check.setChecked(True)
+    window.add_paths([wall_ifc])
+    window.start_conversion()
+    assert wait_finished(window) is False
+    assert window.queue[0].status is Status.DONE
+    assert window.status_text(0) == "Fertig – 1 Bauteil (2 innen liegende weggelassen)"
+    assert (tmp_path / "out" / "wall.glb").stat().st_size > 0
+    log = window.log_view.toPlainText()
+    assert "→ GLB, nur Gebäudehülle, Ziel: " in log
+    assert "(1 Bauteil, 2 innen liegende weggelassen)" in log
