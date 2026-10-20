@@ -104,7 +104,7 @@ def test_a_small_file_gets_its_preview_right_away(app, tmp_path, previews):
 
     calls.clear()  # selected again: from the cache
     pane.show_file(None)
-    assert pane.view.message == preview_pane.NO_FILE
+    assert pane.view.message == preview_pane.no_file_text()
     pane.show_file(tmp_path / "a.ifc")
     assert wait_until(app, lambda: pane.view.mesh is not None) and calls == []
     pane.shutdown()
