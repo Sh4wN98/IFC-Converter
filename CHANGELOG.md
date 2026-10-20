@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.6.0 – 2026-10-20
+
+- **Neue Option „Nur Gebäudehülle“** (Häkchen unter dem Zielformat; im Terminal `--envelope`, kurz `--hull`; für jedes Zielformat): Nur was von außen zu sehen ist – Außenwände, Dächer, Fenster, Türen, Balkone, Gelände – wird umgewandelt, Innenwände, Möbel, Einrichtung, Rohre und Kanäle bleiben weg, die Ausgabe wird deutlich kleiner (für Umgebungsmodelle, schwächere PCs und Modelle mit GB-großer Ausgabe). Bauteile werden nur weggelassen, nie verändert. Als außen gekennzeichnete Bauteile (`IsExternal`) bleiben immer erhalten, im Zweifel wird ein Bauteil behalten. Ein kurzer Durchgang vorab bestimmt die Hülle („Gebäudehülle wird bestimmt …“, die ersten 25 % des Fortschritts); Protokoll, Dateiliste und Terminal nennen danach, wie viele innen liegende Bauteile weggelassen wurden. Die Einstellung wird gemerkt.
+
 ## 0.5.3 – 2026-10-19
 
 - **IFC2x2 und IFC4x4 werden gelesen:** IFC2x2 (2003) als IFC2x3; der unveröffentlichte Tunnel-Entwurf IFC4x4 als IFC4.3 mit Ersatzklassen für seine sechs Entwurfs-Entitäten (IfcTunnel → IfcFacility, IfcTunnelPart → IfcFacilityPart, IfcUndergroundExcavation und IfcArchElement → IfcBuildingElementProxy; Datensatz-Verweise entfallen). Geprüft am „Energy Tower“ (IFC2x2, 234.000 Entitäten) und am Trimble-Tunnel (IFC4x4, 695.000 Entitäten, 16 Bauteile mit Geometrie). Das Protokoll nennt die Umdeutung; Maße und Lage bleiben unverändert.

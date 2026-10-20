@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="3dm only: type geometry placed several times becomes Rhino blocks (smaller file; "
              "explode an instance in Rhino to edit it)",
     )
+    parser.add_argument(
+        "--envelope", "--hull", action="store_true",
+        help="only the building hull: elements inside the building (interior walls, furniture, fittings, MEP) "
+             "are left out; the output is much smaller (a short extra pass computes coarse geometry first)",
+    )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
@@ -103,7 +108,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.inputs:
         from ifc_converter.interactive import run
 
-        return run(args.format, args.out_dir, args.geometry, low_priority=not args.normal_priority, blocks=args.blocks)
+        return run(
+            args.format, args.out_dir, args.geometry, low_priority=not args.normal_priority, blocks=args.blocks,
+            envelope=args.envelope,
+        )
 
     if args.output and len(args.inputs) > 1:
         parser.error("--output only works with a single input; use --out-dir instead")
@@ -125,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             result = convert_in_terminal(
                 source, target, args.format, args.threads, args.geometry, label=f"{source.name}: ",
                 on_retry=lambda message: print(f"⚠ {source.name}: {message}", file=sys.stderr),
-                low_priority=not args.normal_priority, blocks=args.blocks,
+                low_priority=not args.normal_priority, blocks=args.blocks, envelope=args.envelope,
             )
         except KeyboardInterrupt:
             print(f"■ {source}: abgebrochen", file=sys.stderr)
@@ -136,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             failed += 1
             continue
         skipped = f", {result.skipped} without geometry" if result.skipped > 0 else ""
-        print(f"✓ {source} → {result.output} ({result.elements} elements{skipped})")
+        inside = f", {result.inside} inside left out" if result.inside > 0 else ""
+        print(f"✓ {source} → {result.output} ({result.elements} elements{skipped}{inside})")
         if result.crashed:
             print(f"⚠ {source.name}: {crashed_warning(result.crashed)}", file=sys.stderr)
         if result.skipped > 0:
