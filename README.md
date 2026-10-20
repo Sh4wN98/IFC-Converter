@@ -115,6 +115,15 @@ Die Vorschau zeigt das Modell zum Drehen und Anschauen, zu Beginn schräg von S�
 - **Georeferenzierte Modelle** (Koordinaten in UTM/Gauß-Krüger, z. B. bei Brücken) behalten volle Genauigkeit.
 - Die Datei wird im Rhino-7-Format geschrieben und lässt sich damit in Rhino 7 und 8 öffnen.
 
+### Nur Gebäudehülle
+
+Mit dem Häkchen **„Nur Gebäudehülle“** unter dem Zielformat (im Terminal `--envelope`, kurz `--hull`) wird nur umgewandelt, was von außen zu sehen ist: Außenwände, Dächer, Fenster, Türen, Balkone, Vordächer, Gelände. Innenwände, Decken, Möbel, Einrichtung, Sanitär, Rohre und Kanäle – also der größte Teil der Geometrie eines Gebäudemodells – bleiben weg. Die Option gilt für jedes Zielformat.
+
+- **Wofür:** Umgebungsmodelle (das Nachbargebäude im Städtebaumodell, in dem nur die Kubatur zählt), schwächere Arbeitsplätze und Modelle, deren vollständige Ausgabe mehrere GB groß würde. Was ankommt, ist maßhaltig wie immer: Bauteile werden nur weggelassen, nie verändert – Maße und Lage der umgewandelten Bauteile sind dieselben wie ohne die Option.
+- **Wie entschieden wird:** Vor der eigentlichen Umwandlung berechnet ein zusätzlicher Durchgang die Geometrie aller Bauteile grob vor (schneller Kern, grobe Toleranz; die ersten 25 % des Fortschritts, im Fenster „Gebäudehülle wird bestimmt …“). Die Oberflächen werden in ein Raster von 20 cm großen Zellen eingetragen (bei sehr großen Modellen gröber), und vom Rand des Rasters aus wird die Außenluft gesucht: Alles, was von dort durch leere Zellen erreichbar ist, ist „außen“. Ein Bauteil gehört zur Hülle, wenn ein nennenswerter Teil seiner Zellen an Außenluft grenzt. Fenster und Verglasungen gelten dabei als undurchsichtig, Öffnungen sind durch ihre Fenster und Türen geschlossen – die Außenluft dringt also nicht ins Gebäude ein.
+- **Im Zweifel bleibt ein Bauteil erhalten:** Bauteile, die in der IFC als außen liegend gekennzeichnet sind (`IsExternal` in `Pset_WallCommon`, `Pset_SlabCommon` usw.), werden immer übernommen, auch wenn das Raster sie nicht sieht. Bauteile, deren Geometrie der grobe Durchgang nicht berechnen konnte, ebenfalls. Fehlt dem Modell das Dach (oder ist die Hülle sonst nicht geschlossen), strömt die Außenluft ins Gebäude, und fast alles gilt als außen – die Ausgabe ist dann kaum kleiner, aber es fehlt nichts. Innenhöfe und Loggien zählen als außen, sobald sie zum Himmel offen sind.
+- **Kosten:** Der zusätzliche Durchgang braucht etwas Zeit (die Geometrie aller Bauteile wird einmal grob vorberechnet); die eigentliche Umwandlung wird dafür kürzer, weil nur noch die Hülle genau berechnet und geschrieben wird. Das Protokoll nennt am Ende, wie viele Bauteile innen lagen und weggelassen wurden („812 Bauteile, 2.431 innen liegende weggelassen“); die Liste „Übersprungene Bauteile…“ zählt sie mit, führt sie aber nicht einzeln auf.
+
 ### Maßhaltigkeit
 
 - **Einheiten:** Die Ausgabe ist immer in Metern, ob die IFC in mm, m, Fuß oder Zoll vorliegt. Die Rhino-Datei hat die Einheit Meter, die absolute Toleranz 0,001 m (1 mm) und die Winkeltoleranz 1°.
@@ -212,6 +221,7 @@ ifc-convert haus.ifc -f dae               # → haus.dae (Collada, Netze mit Far
 ifc-convert haus.ifczip                   # gepackte IFC wird direkt gelesen
 ifc-convert haus.ifc -f 3dm               # → haus.3dm (Rhino, Polyflächen)
 ifc-convert haus.ifc -f 3dm -g mesh       # → haus.3dm nur mit Netzen
+ifc-convert haus.ifc --envelope           # nur die Gebäudehülle, ohne innen liegende Bauteile
 ifc-convert haus.ifc -o export/modell.glb # eigener Ausgabepfad
 ifc-convert *.ifc -d output/              # mehrere Dateien in einen Ordner
 ```
@@ -221,6 +231,7 @@ Optionen:
 - `-f, --format {glb,obj,3dm}`: Zielformat (Standard: `glb`)
 - `-g, --geometry {brep,mesh}`: nur für 3dm, Polyflächen oder Netze (Standard: `brep`)
 - `--blocks`: nur für 3dm, gleiche Bauteile als Blöcke (siehe „Rhino-Export“)
+- `--envelope` (auch `--hull`): nur die Gebäudehülle – innen liegende Bauteile (Innenwände, Möbel, Einrichtung, Leitungen) werden weggelassen, die Ausgabe wird deutlich kleiner (siehe „Nur Gebäudehülle“); die Ergebniszeile nennt die Zahl der weggelassenen Bauteile („… inside left out“)
 - `-o, --output PFAD`: Ausgabedatei (nur bei einer Eingabedatei)
 - `-d, --out-dir ORDNER`: Ausgabeordner für mehrere Dateien
 - `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: automatisch wie im Programmfenster – zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte der Kerne, siehe „Rücksicht auf andere Programme“; `ifc-convert --help` zeigt die Zahl für diesen PC)
