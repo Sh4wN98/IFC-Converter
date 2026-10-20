@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.6.1 – 2026-10-20
+
+- **Nur Gebäudehülle, Nachbesserungen aus der Prüfung am Testbestand:** Baumassen (z. B. ein Revit-Massenkörper, der das ganze Gebäude umschließt, oder ein als Block modelliertes Gelände) verdecken die Hülle nicht mehr – ohne `IsExternal`-Kennzeichnung wäre im Revit-Bürogebäude sonst das Dach weggefallen; solche Körper bleiben selbst erhalten, das Protokoll nennt sie. Bei Teilmodellen ohne geschlossene Hülle entfallen zusätzlich Decken- und Bodenbeläge (IfcCovering CEILING/FLOORING). Neues Prüfwerkzeug `tools/hull_check.py` (Vergleich mit `IsExternal`, Dateigrößen, Ansichten der behaltenen und weggelassenen Bauteile).
+
 ## 0.6.0 – 2026-10-20
 
 - **Neue Option „Nur Gebäudehülle“** (Häkchen unter dem Zielformat; im Terminal `--envelope`, kurz `--hull`; für jedes Zielformat): Nur was von außen zu sehen ist – Außenwände, Dächer, Fenster, Türen, Balkone, Gelände – wird umgewandelt, Innenwände, Möbel, Einrichtung, Rohre und Kanäle bleiben weg, die Ausgabe wird deutlich kleiner (für Umgebungsmodelle, schwächere PCs und Modelle mit GB-großer Ausgabe). Bauteile werden nur weggelassen, nie verändert. Als außen gekennzeichnete Bauteile (`IsExternal`) bleiben immer erhalten, im Zweifel wird ein Bauteil behalten. Ein kurzer Durchgang vorab bestimmt die Hülle („Gebäudehülle wird bestimmt …“, die ersten 25 % des Fortschritts); Protokoll, Dateiliste und Terminal nennen danach, wie viele innen liegende Bauteile weggelassen wurden. Die Einstellung wird gemerkt.

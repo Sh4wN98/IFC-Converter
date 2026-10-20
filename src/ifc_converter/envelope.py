@@ -18,7 +18,12 @@ part of the hull.
 A model without a closed hull (an architecture part model without its floors and roof, which sit
 in the structural model) has outside air everywhere, so the fill leaves out next to nothing. Then
 the property sets decide instead (see OPEN_HULL_SHARE): products marked IsExternal = False are left
-out, and so are furniture, fittings and building services (INTERIOR_CLASSES).
+out, and so are furniture, fittings, building services and ceilings (INTERIOR_CLASSES, INTERIOR_COVERINGS).
+
+A massing volume (a Revit conceptual mass exported as a box around the whole building, a site
+modelled as a block) would seal everything inside it. Products that are very simple and span most
+of the model (see MASS_TRIANGLES, MASS_SHARE) are therefore not taken as opaque: they are kept
+themselves, but the fill looks through them.
 """
 
 from __future__ import annotations
@@ -51,6 +56,13 @@ OPEN_HULL_SHARE = 0.02
 # cables, terminals, equipment), lifts, fasteners and reinforcement.
 INTERIOR_CLASSES = ("IfcFurnishingElement", "IfcDistributionElement", "IfcDistributionPort", "IfcTransportElement",
                     "IfcFastener", "IfcMechanicalFastener", "IfcReinforcingElement", "IfcDiscreteAccessory")
+# Coverings of these types are never part of a hull (cladding and roofing are).
+INTERIOR_COVERINGS = ("CEILING", "FLOORING", "SKIRTINGBOARD")
+# A product with at most this many coarse triangles whose bounding box holds the centres of at
+# least this share of all other products is a massing volume: not opaque for the fill. (The model's
+# own extent is no yardstick: a terrain dwarfs the building.)
+MASS_TRIANGLES = 200
+MASS_SHARE = 0.5
 # The sampled voxels of all products are kept until the grid is built (8 bytes each, packed; about
 # three times that while the exposure is computed); above this many the grid cell is doubled.
 MAX_SAMPLED = 30_000_000
@@ -77,7 +89,8 @@ class Selection:
     exposure: dict[int, float] = field(default_factory=dict)  # product id -> exposed share
     open_hull: bool = False  # the fill found no closed hull: the property sets decided instead
     marked: int = 0  # open hull: products left out as IsExternal = False
-    fittings: int = 0  # open hull: products left out by class (INTERIOR_CLASSES)
+    fittings: int = 0  # open hull: products left out by class (INTERIOR_CLASSES, INTERIOR_COVERINGS)
+    masses: int = 0  # massing volumes the fill looked through (see MASS_TRIANGLES)
 
     @property
     def note(self) -> str:
@@ -86,14 +99,16 @@ class Selection:
             return (f"Nur Gebäudehülle: Das Modell hat keine geschlossene Hülle (fehlendes Dach, fehlende Decken "
                     f"oder Wände, z. B. ein Teilmodell ohne Rohbau): die Außenluft erreicht fast alle Bauteile "
                     f"(Raster {voxel} m). Stattdessen weggelassen: {_count(self.marked)} als innen gekennzeichnete "
-                    f"Bauteile (IsExternal = Nein) sowie {_count(self.fittings)} Möbel, Einrichtungen und "
-                    f"Leitungen; {kept} von {_count(self.total)} Bauteilen werden umgewandelt.")
+                    f"Bauteile (IsExternal = Nein) sowie {_count(self.fittings)} Möbel, Einrichtungen, Leitungen, "
+                    f"Decken- und Bodenbeläge; {kept} von {_count(self.total)} Bauteilen werden umgewandelt.")
         text = (f"Nur Gebäudehülle: {kept} von {_count(self.total)} Bauteilen liegen außen und werden umgewandelt, "
                 f"{_count(self.inside)} innen liegende weggelassen (Raster {voxel} m)")
         if self.unknown:
             text += f"; {_count(self.unknown)} ohne Vorab-Geometrie sicherheitshalber übernommen"
         if self.flagged:
             text += f"; {_count(self.flagged)} als außen gekennzeichnete (IsExternal) übernommen"
+        if self.masses:
+            text += f"; {_count(self.masses)} Baumassen (Hüllkörper um das Modell) nicht als undurchsichtig gewertet"
         return text + "."
 
 
@@ -122,6 +137,7 @@ def select(
     exposure = sampler.exposure()
     selection.voxel = sampler.voxel
     selection.exposure = exposure
+    selection.masses = len(sampler.masses)
     marks = external_marks(model)
     for product_id in ids:
         share = exposure.get(product_id)
@@ -152,7 +168,8 @@ def _select_by_marks(selection: Selection, products: list, marks: dict[int, bool
     for product in products:
         if marks.get(product.id()) is False:
             selection.marked += 1
-        elif any(product.is_a(name) for name in INTERIOR_CLASSES):
+        elif any(product.is_a(name) for name in INTERIOR_CLASSES) or (
+                product.is_a("IfcCovering") and getattr(product, "PredefinedType", None) in INTERIOR_COVERINGS):
             selection.fittings += 1
         else:
             selection.keep.add(product.id())
@@ -199,7 +216,9 @@ class _Sampler:
         self.voxel = voxel
         self.origin: numpy.ndarray | None = None  # the first point; voxel coordinates are relative to it
         self.keys: dict[int, numpy.ndarray] = {}  # product id -> packed voxel coordinates (int64)
+        self.triangles: dict[int, int] = {}  # product id -> coarse triangles
         self.unknown: set[int] = set()  # products placed too far away to sample
+        self.masses: set[int] = set()  # massing volumes, see exposure()
         self.cells = 0
         self._stored = 0
 
@@ -224,6 +243,7 @@ class _Sampler:
             return
         keys = numpy.unique(_pack(cells))
         self.keys[shape.id] = keys
+        self.triangles[shape.id] = len(triangles)
         self._stored += len(keys)
         if self._stored > MAX_SAMPLED:
             self._coarsen()
@@ -260,9 +280,25 @@ class _Sampler:
         cells = cells - low + 2
         self.cells = int(numpy.prod(shape))
         flat = numpy.ravel_multi_index((cells[:, 0], cells[:, 1], cells[:, 2]), shape)
+        # Massing volumes: simple products holding most of the other products are not opaque.
+        count = len(self.keys)
+        lows = numpy.full((count, 3), numpy.iinfo(numpy.int64).max)
+        highs = numpy.full((count, 3), numpy.iinfo(numpy.int64).min)
+        numpy.minimum.at(lows, owners, cells)
+        numpy.maximum.at(highs, owners, cells)
+        centres = (lows + highs) / 2
+        opaque = numpy.ones(len(flat), dtype=bool)
+        if count > 1:
+            for index, product_id in enumerate(self.keys):
+                if self.triangles[product_id] > MASS_TRIANGLES:
+                    continue
+                held = ((centres >= lows[index]) & (centres <= highs[index])).all(axis=1).sum() - 1
+                if held >= MASS_SHARE * (count - 1):
+                    self.masses.add(product_id)
+                    opaque[owners == index] = False
         del cells
         solid = numpy.zeros(self.cells, dtype=bool)
-        solid[flat] = True
+        solid[flat[opaque]] = True
         outside = _outside(solid.reshape(shape)).ravel()
         del solid
         exposed = numpy.zeros(len(flat), dtype=bool)
