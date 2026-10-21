@@ -101,6 +101,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "A guardar a pré-visualização ({count} triângulos) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Demasiados triângulos para a pré-visualização (mais de {limit} por elemento).",
+    "furniture": "mobiliário",
+    "MEP": "instalações técnicas",
+    "fasteners": "fixações",
+    "reinforcement": "armaduras",
+    "deeply nested": "aninhados profundamente",
     # process.py
     "stack overflow": "excesso de pilha (stack overflow)",
     "The memory was not enough (the process was ended by the system)":
@@ -548,7 +553,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Selecione um ficheiro na lista – a sua pré-visualização aparece aqui.",
     "The 3D view is not available on this PC.": "A vista 3D não está disponível neste PC.",
     "Compute preview": "Calcular pré-visualização",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Calcula agora a pré-visualização deste ficheiro (prioridade baixa, no máximo 4 threads); fica guardada para a próxima vez.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Calcula agora a pré-visualização deste ficheiro (prioridade baixa, no máximo 8 threads, 4 durante uma conversão); fica guardada para a próxima vez.",
     "Stop computing the preview": "Parar o cálculo da pré-visualização",
     "Reset view": "Repor vista",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Vista inicial: o modelo inteiro de sudoeste, de cima (Home; duplo clique: modelo inteiro)",
@@ -562,6 +568,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "A calcular a pré-visualização: a ler o ficheiro IFC …",
     "Loading preview …": "A carregar a pré-visualização …",
     "Preview cancelled.": "Pré-visualização cancelada.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Pré-visualização impossível: o núcleo geométrico falhou repetidamente.",
+    "Preview cancelled – incomplete":
+        "Pré-visualização cancelada – incompleta",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Pré-visualização incompleta (o núcleo geométrico falhou repetidamente)",
+    "Preview incomplete: {error}":
+        "Pré-visualização incompleta: {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Pré-visualização incompleta por agora (o núcleo geométrico falhou), a calcular o resto …",
+    "{count} of {total} elements so far":
+        "{count} de {total} elementos até agora",
+    "{count} details left out ({kinds})":
+        "{count} detalhes omitidos ({kinds})",
     "The preview could not be loaded.": "Não foi possível carregar a pré-visualização.",
     "The file contains no geometry that can be shown.": "O ficheiro não contém geometria que possa ser mostrada.",
     "Computing preview … {percent}%": "A calcular a pré-visualização … {percent} %",

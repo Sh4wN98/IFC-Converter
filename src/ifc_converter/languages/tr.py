@@ -100,6 +100,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "Önizleme kaydediliyor ({count} üçgen) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Önizleme için çok fazla üçgen (eleman başına {limit} üzeri).",
+    "furniture": "mobilya",
+    "MEP": "tesisat",
+    "fasteners": "bağlantı elemanları",
+    "reinforcement": "donatı",
+    "deeply nested": "derin iç içe",
     # process.py
     "stack overflow": "yığın taşması",
     "The memory was not enough (the process was ended by the system)":
@@ -547,7 +552,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Listeden bir dosya seçin – önizlemesi burada görünür.",
     "The 3D view is not available on this PC.": "3D görünüm bu bilgisayarda kullanılamıyor.",
     "Compute preview": "Önizlemeyi hesapla",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Bu dosyanın önizlemesini şimdi hesaplar (düşük öncelik, en fazla 4 iş parçacığı); bir sonraki sefer için saklanır.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Bu dosyanın önizlemesini şimdi hesaplar (düşük öncelik, en fazla 8 iş parçacığı, dönüştürme sırasında 4); bir sonraki sefer için saklanır.",
     "Stop computing the preview": "Önizleme hesaplamasını durdur",
     "Reset view": "Görünümü sıfırla",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Başlangıç görünümü: tüm model güneybatıdan, yukarıdan (Home; çift tık: tüm model)",
@@ -561,6 +567,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "Önizleme hesaplanıyor: IFC dosyası okunuyor …",
     "Loading preview …": "Önizleme yükleniyor …",
     "Preview cancelled.": "Önizleme iptal edildi.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Önizleme mümkün değil: geometri çekirdeği tekrar tekrar çöktü.",
+    "Preview cancelled – incomplete":
+        "Önizleme iptal edildi – eksik",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Önizleme eksik (geometri çekirdeği tekrar tekrar çöktü)",
+    "Preview incomplete: {error}":
+        "Önizleme eksik: {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Önizleme şimdilik eksik (geometri çekirdeği çöktü), kalanı hesaplanıyor …",
+    "{count} of {total} elements so far":
+        "şimdilik {total} elemandan {count} tanesi",
+    "{count} details left out ({kinds})":
+        "{count} ayrıntı dışarıda bırakıldı ({kinds})",
     "The preview could not be loaded.": "Önizleme yüklenemedi.",
     "The file contains no geometry that can be shown.": "Dosyada gösterilebilecek geometri yok.",
     "Computing preview … {percent}%": "Önizleme hesaplanıyor … %{percent}",

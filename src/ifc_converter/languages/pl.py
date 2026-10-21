@@ -101,6 +101,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "Zapisywanie podglądu (trójkątów: {count}) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Za dużo trójkątów do podglądu (ponad {limit} na element).",
+    "furniture": "meble",
+    "MEP": "instalacje",
+    "fasteners": "łączniki",
+    "reinforcement": "zbrojenie",
+    "deeply nested": "głęboko zagnieżdżone",
     # process.py
     "stack overflow": "przepełnienie stosu",
     "The memory was not enough (the process was ended by the system)":
@@ -545,7 +550,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Wybierz plik z listy – tu pojawi się jego podgląd.",
     "The 3D view is not available on this PC.": "Widok 3D jest niedostępny na tym komputerze.",
     "Compute preview": "Oblicz podgląd",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Oblicza teraz podgląd tego pliku (niski priorytet, najwyżej 4 wątki); zostanie zachowany na następny raz.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Oblicza podgląd tego pliku teraz (niski priorytet, najwyżej 8 wątków, 4 podczas konwersji); zostaje zapamiętany na następny raz.",
     "Stop computing the preview": "Przerwij obliczanie podglądu",
     "Reset view": "Resetuj widok",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Widok początkowy: cały model z południowego zachodu z góry (Home; dwuklik: cały model)",
@@ -559,6 +565,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "Obliczanie podglądu: odczyt pliku IFC …",
     "Loading preview …": "Wczytywanie podglądu …",
     "Preview cancelled.": "Podgląd anulowano.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Podgląd niemożliwy: jądro geometryczne wielokrotnie uległo awarii.",
+    "Preview cancelled – incomplete":
+        "Podgląd anulowano – niekompletny",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Podgląd niekompletny (jądro geometryczne wielokrotnie uległo awarii)",
+    "Preview incomplete: {error}":
+        "Podgląd niekompletny: {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Podgląd na razie niekompletny (jądro geometryczne uległo awarii), obliczanie reszty …",
+    "{count} of {total} elements so far":
+        "na razie {count} z {total} elementów",
+    "{count} details left out ({kinds})":
+        "pominięto {count} detali ({kinds})",
     "The preview could not be loaded.": "Nie udało się wczytać podglądu.",
     "The file contains no geometry that can be shown.": "Plik nie zawiera geometrii, którą można wyświetlić.",
     "Computing preview … {percent}%": "Obliczanie podglądu … {percent} %",
