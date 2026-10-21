@@ -582,10 +582,6 @@ TEXTS: dict[str, str] = {
     # --- lead, 2026-10-21 ---
     "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
         "Die Datei enthält {count} Projekte mit unterschiedlichen Einheiten; alle werden mit den Einheiten des ersten ({name}) gelesen. Bitte die Maße prüfen.",
-    'cancelled':
-        'abgebrochen',
-    'Reading IFC …':
-        'IFC wird gelesen …',
     '{declared} is read as {target} (the same schema under another name).':
         '{declared} wird als {target} gelesen (dasselbe Schema unter anderem Namen).',
     'Not enough free space in the temp folder for a working copy of the file ({needed} needed, {free} free).':
