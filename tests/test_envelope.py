@@ -320,3 +320,75 @@ def test_a_stray_product_kilometres_away_stays_out_of_the_grid(house_ifc):
     assert _names(model, selection.keep) == {"South", "North", "West", "East", "Floor", "Roof", "Column",
                                              "Survey point"}
     assert selection.voxel == envelope.VOXEL  # the grid did not grow to kilometres
+
+
+def test_a_product_the_coarse_pass_hangs_on_is_kept(house_ifc, monkeypatch):
+    # The coarse pass only approximates: a product the kernel hangs on there is given up after the
+    # pass's limit, counts as unknown and stays in the output (like one without coarse geometry),
+    # and is not reported as crashed or hung to the conversion.
+    import threading
+
+    from ifc_converter import converter
+
+    monkeypatch.setenv(converter.HANG_ENV, "0.5")
+    iterate = converter._iterate
+    release = threading.Event()
+
+    def hanging_iterate(model, settings, threads, products, library):
+        table = [product for product in products if product.Name == "Table"]
+        others = [product for product in products if product.Name != "Table"]
+        shapes = list(iterate(model, settings, threads, others, library)) if others else []
+
+        def run():
+            yield from shapes
+            if table:
+                release.wait()
+
+        return run()
+
+    monkeypatch.setattr(converter, "_iterate", hanging_iterate)
+    model = ifcopenshell.open(str(house_ifc))
+    products = shape_products(model, EXCLUDED_CLASSES)
+    notes, positions = [], []
+    recovery = converter._recovery.set((lambda kind, ids, label: positions.append(kind), set(), set()))
+    hung_list = ["untouched"]  # what convert() would collect the hung elements in
+    hung = converter._hung.set(hung_list)
+    try:
+        selection = envelope.select(model, 2, products, lambda phase, text: notes.append((phase, text)))
+    finally:
+        release.set()
+        converter._recovery.reset(recovery)
+        converter._hung.reset(hung)
+    table = model.by_type("IfcFurniture")[0]
+    assert table.id() in selection.keep and selection.unknown == 1 and selection.inside == 1
+    assert "Inner" not in _names(model, selection.keep)
+    assert any(phase == "note" and text.startswith("Der Geometriekern hängt seit mehr als 0 min an IfcFurniture ")
+               and text.endswith("„Table“ (grobe Vorberechnung): das Bauteil bleibt als Teil der Hülle erhalten")
+               for phase, text in notes)
+    # Nothing reported to the conversion: no "hung" position, nothing in its list of hung elements.
+    assert "hung" not in positions and hung_list == ["untouched"]
+
+
+def test_the_hull_text_comes_back_after_the_deep_elements(house_ifc, monkeypatch):
+    # The coarse pass forwards the deep elements' status; once they are done, iter_shapes reports
+    # "geometry", which must bring the hull's own text back instead of leaving the last deep
+    # element's text in the window for the rest of the pass.
+    from ifc_converter import converter
+
+    def fake_iter_shapes(model, settings, threads, exclude, progress, share, products, status=None, **kwargs):
+        status("deep", "Tief verschachteltes Bauteil (143 Ebenen) 1 von 1 wird einzeln berechnet: IfcCovering x …")
+        status("geometry", "Geometrie wird berechnet (2 Threads) …")
+        status("note", "eine Notiz")
+        status("read", "nicht weitergegeben")
+        return iter(())
+
+    monkeypatch.setattr(converter, "iter_shapes", fake_iter_shapes)
+    model = ifcopenshell.open(str(house_ifc))
+    reported = []
+    list(envelope._coarse_shapes(model, 2, shape_products(model, EXCLUDED_CLASSES),
+                                 lambda phase, text: reported.append((phase, text)), None))
+    assert reported == [
+        ("deep", "Tief verschachteltes Bauteil (143 Ebenen) 1 von 1 wird einzeln berechnet: IfcCovering x …"),
+        ("envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …"),
+        ("note", "eine Notiz"),
+    ]

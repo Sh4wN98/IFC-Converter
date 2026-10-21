@@ -28,6 +28,16 @@ TEXTS: dict[str, str] = {
     "{note} Dimensions and positions stay unchanged.": "{note} Ölçüler ve konumlar değişmez.",
     "Determining the building hull (geometry roughly precomputed) …":
         "Bina kabuğu belirleniyor (geometri kabaca ön hesaplanıyor) …",
+    'The geometry kernel hung on {label} for more than {minutes} min: the element is skipped':
+        'Geometri çekirdeği {minutes} dakikadan uzun süredir {label} öğesinde takılı: öğe atlanıyor',
+    'The geometry kernel hung on {label} for more than {minutes} min in the rough pre-computation: the element is kept as part of the hull':
+        'Geometri çekirdeği {minutes} dakikadan uzun süredir {label} öğesinde takılı (kaba ön hesaplama): öğe kabuğun parçası olarak korunuyor',
+    'The geometry kernel hung on one of {count} elements for more than {minutes} min: they are computed one by one …':
+        'Geometri çekirdeği {minutes} dakikadan uzun süredir {count} öğeden birinde takılı: tek tek hesaplanıyorlar …',
+    '{count} elements not computed because the geometry kernel hung on their chunk: they are skipped':
+        'Geometri çekirdeği paketlerinde takıldığı için {count} öğe hesaplanmadı: atlanıyorlar',
+    '{count} elements not computed because the geometry kernel hung on their chunk in the rough pre-computation: they are kept as part of the hull':
+        'Kaba ön hesaplamada geometri çekirdeği paketlerinde takıldığı için {count} öğe hesaplanmadı: kabuğun parçası olarak korunuyorlar',
     "Computing geometry ({threads} threads) …": "Geometri hesaplanıyor ({threads} iş parçacığı) …",
     "No geometry produced: none of the {count} elements with geometry could be converted (probably unsupported "
     "geometry types).":
@@ -179,6 +189,8 @@ TEXTS: dict[str, str] = {
     "{message} (after {seconds} s)": "{message} ({seconds} sn sonra)",
     "Running for {seconds} s, {percent} %: {message}": "{seconds} sn'dir sürüyor, %{percent}: {message}",
     "{message}: {size} written …": "{message}: {size} yazıldı …",
+    'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message}':
+        'Dönüştürme hesaplamaya devam etse de {minutes} dakikadır ilerleme yok (CPU {cpu} sn), %{percent}: {message}',
     "No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}":
         "{seconds} sn'dir hesaplama etkinliği yok (CPU {cpu} sn){fatal}, %{percent}: {message}",
     " after {fatal}": " {fatal} sonrasında",

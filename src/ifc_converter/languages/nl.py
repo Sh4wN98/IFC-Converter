@@ -28,6 +28,16 @@ TEXTS: dict[str, str] = {
     "{note} Dimensions and positions stay unchanged.": "{note} Afmetingen en posities blijven ongewijzigd.",
     "Determining the building hull (geometry roughly precomputed) …":
         "Gebouwschil wordt bepaald (geometrie grof voorberekend) …",
+    'The geometry kernel hung on {label} for more than {minutes} min: the element is skipped':
+        'De geometriekern loopt al meer dan {minutes} min vast op {label}: het element wordt overgeslagen',
+    'The geometry kernel hung on {label} for more than {minutes} min in the rough pre-computation: the element is kept as part of the hull':
+        'De geometriekern loopt al meer dan {minutes} min vast op {label} (grove voorberekening): het element blijft als deel van de schil behouden',
+    'The geometry kernel hung on one of {count} elements for more than {minutes} min: they are computed one by one …':
+        'De geometriekern loopt al meer dan {minutes} min vast op een van {count} elementen: ze worden een voor een berekend …',
+    '{count} elements not computed because the geometry kernel hung on their chunk: they are skipped':
+        '{count} elementen niet berekend omdat de geometriekern op hun pakket vastliep: ze worden overgeslagen',
+    '{count} elements not computed because the geometry kernel hung on their chunk in the rough pre-computation: they are kept as part of the hull':
+        '{count} elementen in de grove voorberekening niet berekend omdat de geometriekern op hun pakket vastliep: ze blijven als deel van de schil behouden',
     "Computing geometry ({threads} threads) …": "Geometrie wordt berekend ({threads} threads) …",
     "No geometry produced: none of the {count} elements with geometry could be converted (probably unsupported "
     "geometry types).":
@@ -180,6 +190,8 @@ TEXTS: dict[str, str] = {
     "{message} (after {seconds} s)": "{message} (na {seconds} s)",
     "Running for {seconds} s, {percent} %: {message}": "Loopt al {seconds} s, {percent} %: {message}",
     "{message}: {size} written …": "{message}: {size} geschreven …",
+    'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message}':
+        'Al {minutes} min geen voortgang hoewel de omzetting rekent (CPU {cpu} s), {percent} %: {message}',
     "No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}":
         "Geen rekenactiviteit sinds {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}",
     " after {fatal}": " na {fatal}",

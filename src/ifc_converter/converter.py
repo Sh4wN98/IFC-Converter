@@ -81,6 +81,11 @@ _recovery: ContextVar[tuple | None] = ContextVar("recovery", default=None)
 _candidates: ContextVar[list[int] | None] = ContextVar("candidates", default=None)
 # Option "Nur Gebäudehülle": the ids of the products shape_products returns (None: all of them).
 _selected: ContextVar[set[int] | None] = ContextVar("selected", default=None)
+# The hang limit (seconds) of the running pass, see HANG_SECONDS; None: the "fine" limit.
+_hang_seconds: ContextVar[float | None] = ContextVar("hang_seconds", default=None)
+# Labels of the products the kernel hung on during the running conversion (reported like crashed
+# ones); None in the hull's coarse pass, where a hung product is kept instead.
+_hung: ContextVar[list | None] = ContextVar("hung", default=None)
 # Share of the progress the hull's coarse geometry pass takes (the conversion gets the rest).
 ENVELOPE_SHARE = 25
 
@@ -154,6 +159,22 @@ OVERLAP_POLL = 0.5
 # it waits up to CLOSE_WAIT seconds for them; slower runs keep the model alive until they are done
 # (freeing it under them crashed the process).
 CLOSE_WAIT = 60
+# The kernel can spin on a single element for hours (a hull's coarse pass stood at 23 % for over two
+# hours on a 1.5 GB model), and its threads cannot be stopped. A run (one iterator, see _Run) that
+# delivers nothing for this many seconds while the kernel is still at it, or a single computation
+# (_deep_shape, _second_attempts) taking this long, has hung: the run is abandoned (its iterator and
+# the model are then never freed, see _keep_forever) and its undelivered products are computed one
+# by one (see _after_hang); what still hangs is skipped like an element the kernel crashed on. Per
+# pass: the conversion itself ("fine"), the hull's coarse pass (it only approximates: a hung product
+# is kept there, see envelope.select) and the preview. IFC_CONVERTER_HANG_SECONDS overrides all three.
+HANG_SECONDS = {"fine": 20 * 60, "coarse": 5 * 60, "preview": 3 * 60}
+HANG_ENV = "IFC_CONVERTER_HANG_SECONDS"
+# Of an abandoned run, at most this many undelivered products are computed one by one, and no more
+# once this many of them hung as well (each costs the limit again): the rest are reported as not
+# computed. Usually the kernel's other threads have finished every other product of the run, so
+# only the hung one is undelivered.
+HANG_RETRY_LIMIT = 100
+HANG_RETRY_HANGS = 2
 
 # Share of the logical CPUs a conversion keeps busy by default, kernel threads and the Rhino export's
 # worker processes together: it is a work PC, where other demanding programs run at the same time.
@@ -189,7 +210,8 @@ class ConversionResult:
     skipped: int = 0
     # Those elements as "IfcClass GlobalId „Name“" (as far as the geometry step can tell).
     no_geometry: list[str] = field(default_factory=list)
-    # Elements left out because the geometry kernel crashed or hung on them (filled in by process).
+    # Elements left out because the geometry kernel crashed or hung on them: those it hung on (given
+    # up by the conversion itself, see HANG_SECONDS) from convert, those it crashed on from process.
     crashed: list[str] = field(default_factory=list)
     # Elements left out as interior (option "Nur Gebäudehülle", see envelope).
     inside: int = 0
@@ -291,6 +313,9 @@ def convert(
     recovery_token = _recovery.set((position, set(isolate_ids or ()), set(skip_ids or ())))
     missing: list[str] = []
     missing_token = _missing.set(missing)
+    hung: list[str] = []
+    hung_token = _hung.set(hung)
+    hang_token = _hang_seconds.set(hang_limit("preview" if fmt == "preview" else "fine"))
     checkpoint = None
     if checkpoint_dir and fmt == "3dm":
         from ifc_converter.checkpoint import Checkpoint
@@ -335,6 +360,8 @@ def convert(
             _candidates.reset(candidates_token)
             _recovery.reset(recovery_token)
             _missing.reset(missing_token)
+            _hung.reset(hung_token)
+            _hang_seconds.reset(hang_token)
             _checkpoint.reset(checkpoint_token)
             if selected_token is not None:
                 _selected.reset(selected_token)
@@ -356,7 +383,7 @@ def convert(
         progress(100)
     return ConversionResult(
         output=output_path, elements=elements, skipped=max(0, candidates[0] - elements), no_geometry=missing,
-        inside=selection.inside if selection else 0,
+        crashed=hung, inside=selection.inside if selection else 0,
     )
 
 
@@ -658,6 +685,7 @@ def iter_shapes(
     chunk_ends: bool = False,
     status: StatusCallback | None = None,
     second_attempts: bool = True,
+    hang_seconds: float | None = None,
 ) -> Iterator:
     """Yield the triangulated shape of every product, computed chunk by chunk to cap memory use.
 
@@ -666,9 +694,15 @@ def iter_shapes(
     the shapes of each chunk. Deeply nested products come first, one by one (see DEEP_NESTING);
     ``status`` hears about each of them. Products without geometry get a second attempt with a
     finer tolerance (see RESCUE_SECONDS) unless ``second_attempts`` is off (the hull's coarse pass).
+    A run or a single computation that delivers nothing for ``hang_seconds`` (by default the running
+    pass's limit, see HANG_SECONDS) is abandoned, see _after_hang.
     """
     if products is None:
         products = shape_products(model, exclude)
+    limit = hang_seconds if hang_seconds is not None else _hang_seconds.get()
+    if limit is None:
+        limit = hang_limit("fine")
+    hung_ids: set[int] = set()  # products the kernel hung on: neither computed again nor "without geometry"
     position, isolate, skip = _recovery.get() or (None, set(), set())
     if skip:  # products that crashed or hung the kernel before: left out, reported by the caller
         products = [product for product in products if product.id() not in skip]
@@ -739,7 +773,11 @@ def iter_shapes(
             else:
                 status("deep", tr("Element {number} of {total} is computed on its own: {label} …",
                                   number=number, total=len(deep), label=label))
-        shape = _deep_shape(settings, product, strategy)
+        try:
+            shape = _deep_shape(settings, product, strategy, limit, model)
+        except KernelHung:
+            _report_hung(product, hung_ids, status, position, limit)
+            shape = None
         if shape is not None:
             yield keep(shape)
         if progress:
@@ -751,7 +789,7 @@ def iter_shapes(
 
     rescue, rescued = [RESCUE_SECONDS if second_attempts else 0], 0  # time left for second attempts, products saved
     chunks = [products[start:start + size] for start in range(0, len(products), size)]
-    pipeline = _Pipeline(model, settings, threads, position, chunks, strategy, library)
+    pipeline = _Pipeline(model, settings, threads, position, chunks, strategy, library, limit)
     finished += len(deep)
     try:
         for index, chunk in enumerate(chunks):
@@ -761,15 +799,26 @@ def iter_shapes(
             # with openings cut into it, e.g. Revit cabinets with a sink cut-out: those are redone in
             # world coordinates, which the serializers and the Rhino export accept as well.
             empty = []
-            while (run := pipeline.next_run(index)) is not None:
-                if run.library == LIBRARIES["hybrid"]:
-                    hybrid += run.products
+
+            def take(run: _Run, check_empty: bool = True) -> Iterator:
                 for shape in pipeline.shapes(run, index):
                     done.add(shape.id)
-                    if local and not has_geometry(shape):
+                    if check_empty and local and not has_geometry(shape):
                         empty.append(model.by_id(shape.id))
                     else:
                         yield keep(shape)
+                if run.abandoned:
+                    # Its undelivered products are computed one by one (world coordinates where local
+                    # ones give nothing, see _deep_shape) or reported hung: nothing of it is run again.
+                    done.update(run.ids)
+                    for shape in _after_hang(run, settings, strategy, position, status, limit, hung_ids):
+                        yield keep(shape)
+                    pipeline.report_position()
+
+            while (run := pipeline.next_run(index)) is not None:
+                if run.library == LIBRARIES["hybrid"]:
+                    hybrid += run.products
+                yield from take(run)
             if hybrid:
                 # The hybrid kernel gives up on some shapes that OpenCASCADE can still build, and leaves
                 # type geometry with openings empty in local coordinates, where OpenCASCADE builds it:
@@ -779,17 +828,12 @@ def iter_shapes(
                 missing += [product for product in empty if product.id() in hybrid_ids]
                 empty = [product for product in empty if product.id() not in hybrid_ids]
                 if missing:
-                    for shape in pipeline.shapes(pipeline.start(index, missing, LIBRARIES["opencascade"]), index):
-                        if local and not has_geometry(shape):
-                            empty.append(model.by_id(shape.id))
-                        else:
-                            yield keep(shape)
+                    yield from take(pipeline.start(index, missing, LIBRARIES["opencascade"]))
             if empty:
-                for shape in pipeline.shapes(pipeline.start(index, empty, library, world=True), index):
-                    yield keep(shape)
-            failed = [product for product in chunk if product.id() not in produced]
+                yield from take(pipeline.start(index, empty, library, world=True), check_empty=False)
+            failed = [product for product in chunk if product.id() not in produced and product.id() not in hung_ids]
             if failed and rescue[0] > 0:
-                for shape in _second_attempts(settings, failed, position, rescue):
+                for shape in _second_attempts(settings, failed, position, rescue, status, limit, hung_ids, model):
                     rescued += 1
                     yield keep(shape)
                 pipeline.report_position()
@@ -807,7 +851,9 @@ def iter_shapes(
     if rescue[0] <= 0 and second_attempts and status:
         status("note", tr("Second attempts ended after {seconds} s; further elements without geometry were not "
                           "tried on their own any more", seconds=RESCUE_SECONDS))
-    without = [product for product in candidates if product.id() not in produced]
+    if hung_ids and counter is not None:  # like products skipped after a crash: not candidates
+        counter[0] -= len(hung_ids)
+    without = [product for product in candidates if product.id() not in produced and product.id() not in hung_ids]
     # An aggregate whose parts became geometry (e.g. a curtain wall of plates and members, whose own
     # body ArchiCAD leaves empty) misses nothing: it is neither reported nor counted as without.
     covered = [product for product in without if _parts_produced(product, produced)]
@@ -850,6 +896,9 @@ class _Run:
         self.computed: set[int] = set()  # products whose shape the kernel has delivered
         self.finished = False
         self.stopped = False
+        self.abandoned = False  # given up as hung, see _Pipeline.hung
+        self.last_delivery = time.monotonic()  # when the kernel last delivered a shape (or the start)
+        self.source = None  # the _Shapes of the iterator, kept for as long as the run lives
         self._queue: queue.SimpleQueue = queue.SimpleQueue()
 
     def busy(self) -> int:
@@ -857,13 +906,13 @@ class _Run:
         return 0 if self.finished else max(0, min(self.width, len(self.ids) - len(self.computed)))
 
     def drain(self, shapes, computed: Callable[[_Run, object], None]) -> None:
-        """Runs in the run's thread: queue each shape once the kernel has computed it.
+        """Runs in the run's thread: hand each shape to ``computed`` (which queues it, see
+        _Pipeline._computed) once the kernel has computed it.
 
         Once the run is stopped, the remaining shapes are taken and dropped: only an iterator that
-        has delivered everything has no threads left that read the model.
+        has delivered everything has no threads left that read the model. (An abandoned run never
+        gets there: its thread stays in the kernel for good.)
         """
-        # The iterator stays until the run is finished with, like the shapes it produced.
-        self._source = shapes
         failed = None
         try:
             for shape in shapes:
@@ -874,7 +923,6 @@ class _Run:
                 except BaseException as exc:  # e.g. the pipe to the parent is gone
                     failed = exc
                     continue
-                self._queue.put(shape)
         except BaseException as exc:
             failed = failed or exc
         finally:
@@ -883,19 +931,28 @@ class _Run:
                 self._queue.put(_Failed(failed))
             self._queue.put(_END)
 
-    def shapes(self, waiting: Callable[[], None]) -> Iterator:
-        """The queued shapes as they come; ``waiting`` is called while there are none."""
+    def shapes(self, waiting: Callable[[], bool]) -> Iterator:
+        """The queued shapes as they come; ``waiting`` is called while there are none, and ends
+        the run once it returns True (the run was abandoned: what is queued is still taken)."""
+        abandoned = False
         while True:
             try:
-                item = self._queue.get(timeout=OVERLAP_POLL)
+                item = self._queue.get(timeout=0 if abandoned else OVERLAP_POLL)
             except queue.Empty:
-                waiting()
+                if abandoned:
+                    return
+                abandoned = waiting()
                 continue
             if item is _END:
                 return
             if isinstance(item, _Failed):
+                if abandoned:
+                    return
                 raise item.error
             yield item
+
+    def queue_shape(self, shape) -> None:
+        self._queue.put(shape)
 
 
 @dataclass
@@ -917,10 +974,11 @@ class _Pipeline:
 
     def __init__(
         self, model, settings, threads: int, position: PositionCallback | None, chunks: list[list],
-        strategy: str, library: str,
+        strategy: str, library: str, hang_seconds: float | None = None,
     ):
         self.model, self.settings, self.threads = model, settings, threads
         self.strategy, self.library = strategy, library
+        self.hang_seconds = hang_seconds  # None: runs are never abandoned
         self.slack = max(1, threads // OVERLAP_SHARE)
         self._position = position
         self._lock = threading.Lock()  # orders the positions sent here and by the runs' threads
@@ -928,7 +986,7 @@ class _Pipeline:
         self._planned: deque[tuple[int, list, str]] = deque()  # parts of chunks, not started yet
         self._started: deque[_Run] = deque()  # planned runs started, in the order they are needed
         self._alive: list[_Run] = []  # every run started and not finished with
-        self._threads: list[threading.Thread] = []  # of every run started
+        self._threads: list[tuple[_Run, threading.Thread]] = []  # of every run started
 
     def next_run(self, index: int) -> _Run | None:
         """The next planned run of chunk ``index``, started now if it was not yet; None after its last."""
@@ -956,9 +1014,10 @@ class _Pipeline:
         finally:
             if world:
                 self.settings.set("use-world-coords", False)
+        run.source = shapes  # the iterator stays until the run is finished with, like its shapes
         thread = threading.Thread(target=run.drain, args=(shapes, self._computed), name="geometry-run", daemon=True)
         thread.start()
-        self._threads.append(thread)
+        self._threads.append((run, thread))
         return run
 
     def report_position(self) -> None:
@@ -971,12 +1030,33 @@ class _Pipeline:
                     self._position("delivered", computed, "")
 
     def shapes(self, run: _Run, index: int) -> Iterator:
-        """The shapes of ``run`` as the kernel delivers them; meanwhile idle threads get more work."""
+        """The shapes of ``run`` as the kernel delivers them; meanwhile idle threads get more work.
+        A run that hangs (see hung) is abandoned: ``run.abandoned`` says so afterwards."""
         self.top_up(index)
-        for shape in run.shapes(lambda: self.top_up(index)):
+
+        def waiting() -> bool:
+            self.top_up(index)
+            return self.hung(run)
+
+        for shape in run.shapes(waiting):
             yield shape
             self.top_up(index)
+        if not run.abandoned:
+            self._alive.remove(run)
+
+    def hung(self, run: _Run) -> bool:
+        """Abandon ``run`` if it has delivered nothing for ``hang_seconds`` while the kernel is still
+        at it; returns whether it is abandoned now. Its thread stays in the kernel, so its iterator
+        and the model are never freed (see _keep_forever); the shapes it delivered are still taken."""
+        if run.finished or self.hang_seconds is None or time.monotonic() - run.last_delivery < self.hang_seconds:
+            return False
+        with self._lock:  # from here on no shape of it is computed (queued) any more
+            run.stopped = run.abandoned = True
         self._alive.remove(run)
+        _keep_forever(run.source)
+        _keep_forever(run.model)
+        self.report_position()
+        return True
 
     def top_up(self, current: int) -> None:
         """Start the next planned runs while at most ``slack`` threads are busy (chunk ``current`` is
@@ -993,9 +1073,10 @@ class _Pipeline:
         for run in self._alive:
             run.stopped = True
         deadline = time.monotonic() + CLOSE_WAIT
-        for thread in self._threads:
+        threads = [thread for run, thread in self._threads if not run.abandoned]  # those never end
+        for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
-        left = sum(thread.is_alive() for thread in self._threads)
+        left = sum(thread.is_alive() for thread in threads)
         if left:
             log.warning(tr("{count} geometry computations are still running after {seconds} s and are ended in "
                            "the background", count=left, seconds=int(CLOSE_WAIT)))
@@ -1036,11 +1117,129 @@ class _Pipeline:
         return [(part, library) for part, library in parts if part]
 
     def _computed(self, run: _Run, shape) -> None:
-        """Called by the threads of the runs for each shape the kernel delivers."""
+        """Called by the threads of the runs for each shape the kernel delivers: noted, reported and
+        queued for iter_shapes in one go, so that abandoning the run (see hung) loses none of them."""
         with self._lock:
+            if run.stopped:
+                return
             run.computed.add(shape.id)
+            run.last_delivery = time.monotonic()
             if self._position:
                 self._position("delivered", [shape.id], "")
+            run.queue_shape(shape)
+
+
+class KernelHung(Exception):
+    """A single computation in the kernel took longer than the hang limit (see HANG_SECONDS)."""
+
+
+def hang_limit(kind: str) -> float:
+    """The hang limit in seconds of pass ``kind`` ("fine", "coarse", "preview"), see HANG_SECONDS;
+    the environment variable HANG_ENV overrides it (e.g. for tests)."""
+    value = os.environ.get(HANG_ENV)
+    if value:
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return float(HANG_SECONDS[kind])
+
+
+# Objects a thread stuck in the kernel still uses (iterators, models, settings): never freed, see
+# _keep_forever. The list is for the record (and for process to see that there are any).
+_ABANDONED: list = []
+
+
+def _keep_forever(obj) -> None:
+    """Make ``obj`` immortal: an extra reference that is never dropped, so neither its destructor nor
+    that of what it holds ever runs, not even at the interpreter's exit.
+
+    IfcOpenShell's iterator joins its threads in its destructor, and a thread spinning on an element
+    never returns: freeing the iterator would hang the exit forever, freeing the model under the
+    thread would crash the process. So both stay, and the conversion process ends with os._exit
+    (see process._child_main) once its result is sent.
+    """
+    if obj is None:
+        return
+    import ctypes
+
+    ctypes.pythonapi.Py_IncRef.argtypes = (ctypes.py_object,)
+    ctypes.pythonapi.Py_IncRef(obj)
+    _ABANDONED.append(obj)
+
+
+def abandoned() -> int:
+    """How many objects this process keeps for threads stuck in the kernel (0: nothing was abandoned)."""
+    return len(_ABANDONED)
+
+
+def _minutes(limit: float) -> int:
+    return round(limit / 60)
+
+
+def _report_hung(product, hung_ids: set[int], status, position, limit: float, quiet: bool = False) -> None:
+    """Note ``product`` as hung: skipped like one the kernel crashed on (result.crashed, the parent's
+    quarantine through ``position``), or kept in the hull's coarse pass (see envelope.select)."""
+    hung_ids.add(product.id())
+    label = product_label(product)
+    hung = _hung.get()
+    if hung is None:  # the coarse pass approximates only: an unknown product is kept
+        if status and not quiet:
+            status("note", tr("The geometry kernel hung on {label} for more than {minutes} min in the rough "
+                              "pre-computation: the element is kept as part of the hull", label=label,
+                              minutes=_minutes(limit)))
+        return
+    hung.append(label)
+    if position:
+        position("hung", [product.id()], label)
+    if status and not quiet:
+        status("note", tr("The geometry kernel hung on {label} for more than {minutes} min: the element is skipped",
+                          label=label, minutes=_minutes(limit)))
+
+
+def _after_hang(run: _Run, settings, strategy: str, position, status, limit: float, hung_ids: set[int]) -> Iterator:
+    """The shapes of the products of the abandoned ``run`` that the kernel had not delivered.
+
+    Only the kernel knows which of them it hung on. A single undelivered product is the one (the
+    kernel's other threads finished the rest, the usual case). Of several, each is computed on its
+    own under the same limit (see _deep_shape), at most HANG_RETRY_LIMIT of them and no more once
+    HANG_RETRY_HANGS hung as well; the rest are reported as not computed, so nothing is claimed
+    about them that is not known.
+    """
+    undelivered = [product for product in run.products if product.id() not in run.computed]
+    if not undelivered:  # the run finished the moment it was abandoned
+        return
+    if len(undelivered) == 1:
+        _report_hung(undelivered[0], hung_ids, status, position, limit)
+        return
+    if status:
+        status("note", tr("The geometry kernel hung on one of {count} elements for more than {minutes} min: they are "
+                          "computed one by one …", count=len(undelivered), minutes=_minutes(limit)))
+    hangs = 0
+    for number, product in enumerate(undelivered):
+        if hangs >= HANG_RETRY_HANGS or number >= HANG_RETRY_LIMIT:
+            rest = undelivered[number:]
+            if status:
+                if _hung.get() is None:
+                    status("note", tr("{count} elements not computed because the geometry kernel hung on their chunk "
+                                      "in the rough pre-computation: they are kept as part of the hull",
+                                      count=len(rest)))
+                else:
+                    status("note", tr("{count} elements not computed because the geometry kernel hung on their "
+                                      "chunk: they are skipped", count=len(rest)))
+            for product in rest:
+                _report_hung(product, hung_ids, status, position, limit, quiet=True)
+            return
+        if position:
+            position("element", [product.id()], product_label(product))
+        try:
+            shape = _deep_shape(settings, product, strategy, limit, run.model)
+        except KernelHung:
+            hangs += 1
+            _report_hung(product, hung_ids, status, position, limit)
+            continue
+        if shape is not None:
+            yield shape
 
 
 def _parts_produced(product: ifcopenshell.entity_instance, produced: set[int]) -> bool:
@@ -1141,10 +1340,15 @@ def _nested_children(entity: ifcopenshell.entity_instance) -> list:
     return []
 
 
-def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, strategy: str):
+def _deep_shape(
+    settings: geom.settings, product: ifcopenshell.entity_instance, strategy: str, limit: float | None = None,
+    model=None,
+):
     """The shape of a deeply nested product, computed in a thread with DEEP_STACK of stack, or None.
 
     geom.create_shape() computes in the calling thread, unlike the iterator's worker threads.
+    Raises KernelHung once a computation takes longer than ``limit`` seconds; ``model`` is then
+    kept alive for the thread left behind (see _keep_forever).
     """
     representation = _body_representation(product)
     if representation is None:
@@ -1161,7 +1365,7 @@ def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, 
             return geom.create_shape(settings, product, representation, geometry_library=LIBRARIES[library])
 
         try:
-            shape = _with_large_stack(compute)
+            shape = _with_large_stack(compute, limit, model)
         except RuntimeError:  # the kernel could not build it
             continue
         if has_geometry(shape) or settings.get("use-world-coords"):
@@ -1169,7 +1373,7 @@ def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, 
         # Local coordinates gave nothing (type geometry with openings): world coordinates do.
         settings.set("use-world-coords", True)
         try:
-            return _with_large_stack(compute)
+            return _with_large_stack(compute, limit, model)
         except RuntimeError:
             continue
         finally:
@@ -1177,9 +1381,13 @@ def _deep_shape(settings: geom.settings, product: ifcopenshell.entity_instance, 
     return None
 
 
-def _second_attempts(settings: geom.settings, products: list, position, budget: list[float]) -> Iterator:
+def _second_attempts(
+    settings: geom.settings, products: list, position, budget: list[float], status=None, limit: float | None = None,
+    hung_ids: set[int] | None = None, model=None,
+) -> Iterator:
     """Second attempts for ``products`` that the iterator gave no geometry, one by one, as long as
     ``budget[0]`` seconds are left: OpenCASCADE with RESCUE_PRECISION, then the hybrid kernel.
+    An attempt that hangs (``limit``, see _deep_shape) makes the product a hung one.
 
     OpenCASCADE gives up on some faceted solids at its default tolerance of 0.01 mm that it builds
     at 0.001 mm (beams of millimetre bridges, which came out right only while the file's unit was
@@ -1194,12 +1402,16 @@ def _second_attempts(settings: geom.settings, products: list, position, budget: 
         previous = settings.get("precision")
         settings.set("precision", RESCUE_PRECISION)
         try:
-            shape = _deep_shape(settings, product, "opencascade")
+            shape = _deep_shape(settings, product, "opencascade", limit, model)
+            if (shape is None or not has_geometry(shape)) and not _native_output(settings):
+                # The STEP writer drops the hybrid kernel's shapes, so they are no rescue there.
+                settings.set("precision", previous)
+                shape = _deep_shape(settings, product, "hybrid", limit, model)
+        except KernelHung:
+            _report_hung(product, hung_ids if hung_ids is not None else set(), status, position, limit or 0.0)
+            shape = None
         finally:
             settings.set("precision", previous)
-        if (shape is None or not has_geometry(shape)) and not _native_output(settings):
-            # The STEP writer drops the hybrid kernel's shapes, so they are no rescue there.
-            shape = _deep_shape(settings, product, "hybrid")
         budget[0] -= time.monotonic() - started
         if shape is not None and has_geometry(shape):
             yield shape
@@ -1222,8 +1434,12 @@ def _body_representation(product: ifcopenshell.entity_instance):
     return next((r for r in representations if r.RepresentationType not in NON_BODY_TYPES), None)
 
 
-def _with_large_stack(function: Callable):
-    """``function()`` run in a thread with DEEP_STACK of stack (the calling thread waits)."""
+def _with_large_stack(function: Callable, timeout: float | None = None, keep=None):
+    """``function()`` run in a thread with DEEP_STACK of stack (the calling thread waits).
+
+    Raises KernelHung if it is not done after ``timeout`` seconds: the thread is left behind (it
+    cannot be stopped), with ``function`` and ``keep`` (the model) alive for it, see _keep_forever.
+    """
     outcome: dict = {}
 
     def run() -> None:
@@ -1234,11 +1450,16 @@ def _with_large_stack(function: Callable):
 
     previous = threading.stack_size(DEEP_STACK)
     try:
-        thread = threading.Thread(target=run, name="deep-geometry")
+        # A daemon: a thread left behind must not keep the interpreter from exiting.
+        thread = threading.Thread(target=run, name="deep-geometry", daemon=True)
         thread.start()
     finally:
         threading.stack_size(previous)
-    thread.join()
+    thread.join(timeout)
+    if thread.is_alive():
+        _keep_forever(function)
+        _keep_forever(keep)
+        raise KernelHung
     if "error" in outcome:
         raise outcome["error"]
     return outcome["value"]
