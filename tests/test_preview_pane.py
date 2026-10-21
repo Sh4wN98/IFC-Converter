@@ -267,5 +267,11 @@ def test_the_real_view_in_the_pane_keeps_its_options(app, tmp_path, monkeypatch)
     assert pane.view.projection == "orthographic" and pane.view.edges_visible
     pane.view.set_edges(False)
     assert settings.value("preview_edges", type=bool) is False
+    # The view's buttons sit in the pane's header (always visible, greyed out without a model), not over the view.
+    toolbar = pane.view.toolbar
+    assert toolbar.parentWidget() is pane and not toolbar.isEnabled()
+    header = pane.layout().itemAt(0).layout()
+    assert header.indexOf(toolbar) == header.indexOf(pane.reset_button) - 1
+    assert toolbar.buttons["projection"].isChecked() and not toolbar.buttons["edges"].isChecked()
     pane.shutdown()
     viewer.opengl_problem.cache_clear()

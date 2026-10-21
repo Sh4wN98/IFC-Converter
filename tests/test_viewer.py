@@ -6,6 +6,7 @@ software renderer is tested everywhere, also on the Windows CI runner without a 
 
 import logging
 import os
+import threading
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -13,8 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy  # noqa: E402
 import pytest  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPalette, QWheelEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtGui import QColor, QIcon, QImage, QMouseEvent, QPalette, QWheelEvent  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
 from ifc_converter import viewer  # noqa: E402
 from ifc_converter.preview import PreviewMesh  # noqa: E402
@@ -165,7 +166,8 @@ def is_background(view, image, x, y, tolerance=6) -> bool:
 def pixels_of(image) -> numpy.ndarray:
     image = image.convertToFormat(QImage.Format.Format_RGB888)
     pixels = numpy.frombuffer(image.constBits(), numpy.uint8, image.sizeInBytes())
-    return pixels.reshape(image.height(), image.bytesPerLine())[:, :3 * image.width()].reshape(image.height(), -1, 3)
+    # A copy: the converted image is freed on return, and a view of its bits would then read freed memory.
+    return pixels.reshape(image.height(), image.bytesPerLine())[:, :3 * image.width()].reshape(image.height(), -1, 3).copy()
 
 
 def covered(view, image) -> float:
@@ -425,33 +427,28 @@ def test_both_renderers_look_alike(app, renderer_env):
     assert numpy.mean(numpy.array(differences) > 40) < 0.03  # only along edges
 
 
-def hover(view, inside=True):
-    view.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, inside)
-    QApplication.sendEvent(view, QEvent(QEvent.Type.Enter if inside else QEvent.Type.Leave))
-
-
-def test_view_buttons_show_while_the_mouse_is_over_the_model(make_view):
-    # Wide enough for the buttons with this platform's font (Segoe UI on Windows is wider).
-    view = make_view(400, 250, two_boxes())
-    hover(view, False)
-    assert not view._buttons.isVisible()
-    hover(view)
-    assert view._buttons.isVisible()
-    assert view._buttons.width() <= 320 and view._buttons.height() <= 32  # leave room for the model
-    hover(view, False)
-    assert not view._buttons.isVisible()
-    hover(view)
+def test_toolbar_is_a_separate_widget_enabled_while_a_model_is_shown(make_view):
+    # Not over the GL view (a translucent widget over a QOpenGLWidget vanished on a Windows/NVIDIA PC), not
+    # hover-only (the user never found it): the pane puts it into its header; the view greys it out.
+    view = make_view(400, 250)
+    toolbar = view.toolbar
+    assert isinstance(toolbar, viewer.ViewToolbar) and toolbar.parentWidget() is None
+    assert not toolbar.isEnabled() and not toolbar.isVisible()
+    view.set_mesh(two_boxes())
+    assert toolbar.isEnabled()
+    assert toolbar.width() <= 230 and toolbar.height() <= 32  # fits beside the pane's title at 1080p
+    view.set_message("Vorschau wird berechnet …")
+    assert not toolbar.isEnabled()
+    view.set_message("")
+    assert toolbar.isEnabled()
     view.set_mesh(None)
-    assert not view._buttons.isVisible()
+    assert not toolbar.isEnabled()
+    assert not view.findChildren(QPushButton)  # nothing of the toolbar is inside the view
 
 
 def test_view_works_small_and_large(make_view):
     small = make_view(400, 250, two_boxes())
-    hover(small)
-    assert small._buttons.isVisible()
-    tiny = make_view(150, 120, two_boxes())
-    hover(tiny)
-    assert not tiny._buttons.isVisible()  # too narrow for the buttons, the view still works
+    tiny = make_view(150, 120, two_boxes())  # the toolbar is not in the view: no width it needs
     large = make_view(1600, 1000, two_boxes())
     for view in (small, tiny, large):
         image = view.image()
@@ -492,11 +489,10 @@ def test_georeferenced_mesh_is_drawn_relative_to_its_origin(make_view):
 
 def test_message_replaces_the_model(make_view):
     view = make_view(mesh=two_boxes())
-    hover(view)
     view.set_message("Vorschau wird berechnet … 34 %")
     assert view._stack.currentWidget() is view._message
     assert view.message() == "Vorschau wird berechnet … 34 %"
-    assert not view._buttons.isVisible()
+    assert not view.toolbar.isEnabled()
     view.set_message("")
     assert view._stack.currentWidget() is view._renderer
     view.set_message("Keine Vorschau")
@@ -1008,11 +1004,245 @@ def test_pose_interpolation_takes_the_short_turn():
 
 def test_toolbar_is_compact_and_has_tooltips_with_shortcuts(make_view):
     view = make_view(400, 250, two_boxes())
-    hover(view)
-    assert view._buttons.isVisible()
-    assert view._buttons.width() <= 230 and view._buttons.height() <= 30
-    tips = {name: button.toolTip() for name, button in view._tool_buttons.items()}
+    toolbar = view.toolbar
+    assert toolbar.width() <= 230 and toolbar.height() <= 30
+    tips = {name: button.toolTip() for name, button in toolbar.buttons.items()}
     assert tips["iso"].endswith("(1)") and tips["fit"].startswith("Ganzes Modell") and "(E)" in tips["edges"]
     assert "(P)" in tips["projection"]
-    for name, button in view._tool_buttons.items():
+    for name, button in toolbar.buttons.items():
         assert button.width() <= 28 and not button.icon().isNull(), name
+        assert not button.icon().pixmap(16, QIcon.Mode.Disabled).isNull()  # greyed while no model is shown
+    assert view._tool_buttons is toolbar.buttons
+
+
+def test_toolbar_buttons_drive_the_view_and_follow_its_options(make_view):
+    view = make_view(400, 250, two_boxes())
+    buttons = view.toolbar.buttons
+    assert list(buttons) == ["iso", "top", "front", "side", "fit", "edges", "projection"]
+    buttons["top"].click()
+    assert view.camera.pitch == -90
+    buttons["side"].click()
+    assert (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["side"]
+    buttons["iso"].click()
+    assert (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["iso"]
+    fitted = view.camera.distance
+    view.camera.zoom(0.4)
+    buttons["fit"].click()
+    assert view.camera.distance == pytest.approx(fitted)
+    assert buttons["edges"].isChecked() and buttons["edges"].isCheckable()
+    buttons["edges"].click()
+    assert not view.edges_visible
+    view.set_edges(True)
+    assert buttons["edges"].isChecked()  # the view keeps the button in step (settings, key E)
+    assert not buttons["projection"].isChecked()
+    buttons["projection"].click()
+    assert view.projection == viewer.ORTHOGRAPHIC
+    view.set_projection(viewer.PERSPECTIVE)
+    assert not buttons["projection"].isChecked()
+
+
+# --------------------------------------------------------------------------- triad and chip in the image
+
+
+def hued(image, box, channel: int, margin: int = 25) -> int:
+    """How many pixels of ``image`` in ``box`` (x0, y0, x1, y1) are clearly red (0), green (1) or blue (2):
+    that channel exceeds both others by ``margin``. The faint (away-pointing) axes still count."""
+    x0, y0, x1, y1 = box
+    region = pixels_of(image)[y0:y1, x0:x1].astype(int)
+    others = numpy.delete(region, channel, axis=2).max(axis=2)
+    return int((region[..., channel] - others > margin).sum())
+
+
+def triad_box(image, view) -> tuple[int, int, int, int]:
+    ratio = image.width() / view.width()
+    size = int((2 * viewer.TRIAD_SIZE + 24) * ratio)
+    return 0, image.height() - size, size, image.height()
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_axis_triad_is_part_of_the_rendered_image(make_view, dark):
+    # Drawn by the renderers themselves (QPainter in paintGL / into the software image), so it shows wherever
+    # the model shows: not a widget over the GL view, which a Windows/NVIDIA PC did not composite.
+    view = make_view(400, 300, boxes_mesh([((0, 0, 0), (4, 3, 3), (180, 180, 170, 255), WALL)]), dark=dark)
+    image = view.image()
+    box = triad_box(image, view)
+    for channel in range(3):  # x red, y green, z blue, all pointing up in the start view
+        assert hued(image, box, channel) >= 8, channel
+    assert hued(image, (0, 0, image.width(), image.height() // 2), 2) == 0  # only in the corner (a grey model)
+    view.camera.pitch = 20  # from below the x axis points down-right: still inside the corner
+    view._view_changed()
+    assert hued(view.image(), box, 0) >= 8
+    view.set_mesh(None)
+    image = view.image()
+    for channel in range(3):
+        assert hued(image, box, channel) == 0
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_selection_chip_is_part_of_the_rendered_image(make_view, dark):
+    view = make_view(400, 300, two_boxes(), dark=dark)
+    view.set_edges(False)
+    plain = pixels_of(view.image()).astype(int)
+    view.select_element(WALL)
+    image = view.image()
+    with_chip = pixels_of(image).astype(int)
+    ratio = image.width() / 400
+    changed = numpy.abs(with_chip - plain).sum(axis=2) > 60
+    band = (slice(int(262 * ratio), int(292 * ratio)), slice(int(150 * ratio), int(250 * ratio)))
+    assert changed[band].sum() > 30  # the label's letters and the chip's rim at the bottom centre
+    assert not is_background(view, image, 200 * ratio, 276 * ratio, 3) or dark  # the light chip over the gradient
+    assert changed[: int(20 * ratio)].sum() == 0  # nothing at the top
+    view.select_element("")
+    assert numpy.abs(pixels_of(view.image()).astype(int) - plain).max() <= 6
+
+
+# --------------------------------------------------------------------------- update_mesh (growing preview)
+
+
+def grown(far=20.0) -> PreviewMesh:
+    """two_boxes plus a third box far to the north-east: the bounds grow."""
+    return boxes_mesh([((0, 0, 0), (4, 3, 3), RED, WALL), ((6, 0, 0), (9, 3, 2), GLASS, WINDOW),
+                       ((far, far, 0), (far + 2, far + 2, 5), RED, "IfcColumn 3 „Stütze“")])
+
+
+def inside_view(view) -> bool:
+    pixels, _ = view.camera.project(view.mesh.positions)
+    return bool((pixels >= -0.5).all() and (pixels[:, 0] <= view.camera.width + 0.5).all()
+                and (pixels[:, 1] <= view.camera.height + 0.5).all())
+
+
+def test_update_mesh_refits_while_fitted_and_keeps_the_pose_otherwise(make_view):
+    view = make_view(400, 300, two_boxes())
+    distance = view.camera.distance
+    view.update_mesh(two_boxes())  # same bounds: nothing moves
+    assert view.camera.distance == distance and view._fitted
+    view.update_mesh(grown())
+    assert view.mesh.triangle_count == 36 and view._fitted
+    assert view.camera.distance > distance * 1.5 and inside_view(view)  # the whole grown model again
+    assert (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["iso"]
+    assert not view.animating
+    view.camera.orbit(30, 5)
+    view.camera.zoom(0.6)
+    view._view_changed()  # the user moved the view: it is theirs now
+    pose = view.camera.pose()
+    view.update_mesh(grown(40.0))
+    assert view.mesh.triangle_count == 36 and not view._fitted
+    yaw, pitch, target, far = view.camera.pose()
+    assert (yaw, pitch, far) == (pose[0], pose[1], pose[3]) and numpy.array_equal(target, pose[2])
+    assert not inside_view(view)  # not refitted
+    x, y = pixel_of(view, (2, 1.5, 3))
+    if 0 <= x < 400 and 0 <= y < 300:
+        assert view.element_at(x, y) == WALL  # drawn where the kept pose says
+    view.fit_view()
+    assert view._fitted and inside_view(view)
+    assert view.toolbar.isEnabled()
+
+
+def test_update_mesh_keeps_the_selection_while_its_element_exists(make_view):
+    view = make_view(400, 300, two_boxes())
+    view.select_element(WINDOW)
+    assert view.selected_element == 1
+    reordered = boxes_mesh([((20, 20, 0), (22, 22, 5), RED, "IfcColumn 3 „Stütze“"), ((0, 0, 0), (4, 3, 3), RED, WALL),
+                            ((6, 0, 0), (9, 3, 2), GLASS, WINDOW)])
+    view.update_mesh(reordered)
+    assert view.selected_element == 2 and view.selected_label == WINDOW
+    view.update_mesh(boxes_mesh([((0, 0, 0), (4, 3, 3), RED, WALL)]))
+    assert view.selected_element == -1 and view.selected_label == ""
+    assert view.element_at(*pixel_of(view, (2, 1.5, 3))) == WALL  # picking works on the new mesh
+
+
+def test_update_mesh_without_a_model_or_with_a_message_shows_the_model(make_view):
+    view = make_view(400, 300)
+    view.set_message("Vorschau wird berechnet …")
+    view.update_mesh(two_boxes())  # like set_mesh: start view, message gone, toolbar on
+    assert view.mesh is not None and view.message() == "" and view._stack.currentWidget() is view._renderer
+    assert view.toolbar.isEnabled() and view._fitted and inside_view(view)
+    view.set_message("Vorschau wird berechnet … 40 %")
+    view.update_mesh(grown())
+    assert view.message() == "" and view._stack.currentWidget() is view._renderer
+    view.update_mesh(None)
+    assert view.mesh is None and not view.toolbar.isEnabled()
+
+
+def test_update_mesh_finishes_a_running_animation_first(make_view, monkeypatch, app):
+    view = make_view(400, 300, two_boxes())
+    monkeypatch.setattr(viewer, "ANIMATION_MS", 250)
+    view.set_view("top")
+    assert view.animating
+    view.update_mesh(grown())
+    assert not view.animating and (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["top"]
+    assert view._fitted and inside_view(view)
+
+
+def test_update_mesh_computes_edges_once_the_mesh_settles_and_never_twice_at_once(make_view, monkeypatch, app):
+    from PySide6.QtTest import QTest
+
+    monkeypatch.setattr(viewer, "EDGES_IN_BACKGROUND", 10)
+    monkeypatch.setattr(viewer, "EDGE_SETTLE_MS", 300)
+    calls, running, overlap = [], [0], [0]
+    original = viewer.feature_edges
+
+    def counted(mesh, *args, **kwargs):
+        running[0] += 1
+        overlap[0] = max(overlap[0], running[0])
+        calls.append(mesh.triangle_count)
+        time.sleep(0.15)
+        try:
+            return original(mesh, *args, **kwargs)
+        finally:
+            running[0] -= 1
+
+    monkeypatch.setattr(viewer, "feature_edges", counted)
+    view = make_view(400, 300)
+    view.set_mesh(many_boxes(20))  # in a thread (> EDGES_IN_BACKGROUND)
+    assert view.wait_for_edges() and calls == [240]
+    for count in (30, 40, 50, 60):  # a growing preview, every few seconds: no edge work per call
+        view.update_mesh(many_boxes(count))
+        QTest.qWait(30)
+    assert calls == [240] and view._scene.edge_thread is None
+    deadline = time.monotonic() + 5
+    while (view._scene.edges is None or view._scene.edge_thread.is_alive()) and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert calls == [240, 720]  # only the settled mesh
+    image = view.image()
+    view.set_edges(False)
+    assert (numpy.abs(pixels_of(image).astype(int) - pixels_of(view.image()).astype(int)).max(axis=2) > 20).any()
+    view.set_edges(True)
+    # A new mesh while a thread still works on the old one: it waits for its turn, one thread at a time.
+    view.set_mesh(many_boxes(70))
+    first = view._scene
+    assert first.edge_thread is not None and first.edge_thread.is_alive()
+    view.set_mesh(many_boxes(80))
+    second = view._scene
+    assert second.edge_thread is None  # not started yet
+    deadline = time.monotonic() + 5
+    while second.edges is None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert second.edges is not None and calls == [240, 720, 840, 960] and overlap[0] == 1
+
+
+def test_waiting_scene_gets_its_edges_as_soon_as_the_old_thread_reports(make_view, monkeypatch, app):
+    # The thread reports (signal) before it has exited: the view must not wait for the exit, or the next
+    # scene would never get its edges.
+    monkeypatch.setattr(viewer, "EDGES_IN_BACKGROUND", 10)
+    original = viewer.feature_edges
+    release = threading.Event()
+
+    def slow(mesh, *args, **kwargs):
+        result = original(mesh, *args, **kwargs)
+        release.wait(5)
+        return result
+
+    monkeypatch.setattr(viewer, "feature_edges", slow)
+    view = make_view(400, 300)
+    view.set_mesh(many_boxes(20))
+    first = view._scene
+    view.set_mesh(many_boxes(30))
+    second = view._scene
+    assert first.edge_thread.is_alive() and second.edge_thread is None
+    view._edges_computed(first)  # as the queued signal would arrive while the thread still runs
+    assert second.edge_thread is not None
+    release.set()
+    assert view.wait_for_edges() and len(second.edges) == 360
