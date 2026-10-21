@@ -399,14 +399,14 @@ def convert_in_terminal(
     created = [path for path in output_files(target, fmt) if not path.exists()]
     line = ProgressLine(label)
     # convert() reports 0 % only once the IFC file is read, which can take minutes.
-    line.show("IFC wird gelesen …")
+    line.show(tr("Reading IFC …"))
 
     def retrying(message: str) -> None:
         # After a crash or hang the file is read and converted once more.
         line.clear()
         if on_retry:
             on_retry(message)
-        line.show("IFC wird gelesen …")
+        line.show(tr("Reading IFC …"))
 
     options = {}
     if blocks and fmt == "3dm":

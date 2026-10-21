@@ -265,7 +265,7 @@ def convert(
         model = ifcopenshell.open(str(bridged.path if bridged else input_path))
     except ifcopenshell.SchemaError as exc:
         supported = ", ".join(s for s in ifcopenshell.ifcopenshell_wrapper.schema_names() if s.startswith("IFC"))
-        bridges = ", ".join(sorted({b.label() for b in schema_bridge.BRIDGES.values()}))
+        bridges = ", ".join(sorted({b.label() for b in schema_bridge.BRIDGES.values() if not b.alias}))
         raise ValueError(tr(
             "IFC version is not supported ({error}). Supported: {supported}; {bridges} are also read as the "
             "closest related schema.", error=exc, supported=supported, bridges=bridges,
@@ -277,7 +277,9 @@ def convert(
         report("note", tr("{note} Dimensions and positions stay unchanged.", note=bridged.note))
     repair_units(model)
     repair_extrusions(model)
-    merge_projects(model)
+    units_note = merge_projects(model)
+    if units_note:
+        report("note", units_note)
     read_seconds = time.monotonic() - read_started
     threads = threads or default_threads()
     token = _kernel.set(kernel)
@@ -566,24 +568,37 @@ def repair_extrusions(model: ifcopenshell.file) -> int:
     return repaired
 
 
-def merge_projects(model: ifcopenshell.file) -> None:
-    """Merge the projects of a federated model into the first one, in memory.
+def merge_projects(model: ifcopenshell.file) -> str | None:
+    """Merge the projects of a federated model into the first one that has units, in memory, and
+    return a note for the user if their units disagreed.
 
     Some exports combine several models in one file, each with its own IfcProject (210 King: the
     architecture, electrical and MEP models). IfcOpenShell only reads the units of a file with
     exactly one project, otherwise it takes lengths as metres and angles as radians: that model in
     feet came out 3.28x too large, and the arcs of arched openings, trimmed in degrees, made broken
     opening solids. Each facade wall then lost all of its openings after ~25 s of failing booleans.
-    Projects with different units are left alone, as no single unit would fit them all.
+    A project without units of its own (a linked model's empty project) has no say. Projects with
+    different units are merged all the same, with a note: read with the first project's units most
+    of the model is right, read as metres none of it would be.
     """
     projects = model.by_type("IfcProject")
-    if len(projects) < 2 or len({_unit_scales(project) for project in projects}) > 1:
-        return
-    for project in projects[1:]:
+    if len(projects) < 2:
+        return None
+    scales = {_unit_scales(project) for project in projects} - {(None, None)}
+    survivor = next((project for project in projects if _unit_scales(project) != (None, None)), projects[0])
+    note = None
+    if len(scales) > 1:
+        note = tr("The file holds {count} projects with different units; all of them are read with the units of "
+                  "the first one ({name}). Please check the dimensions.", count=len(projects),
+                  name=survivor.Name or survivor.GlobalId)
+    for project in projects:
+        if project is survivor:
+            continue
         # Re-link what belongs to the project (its sites, properties) before removing it.
         for inverse in model.get_inverse(project):
-            ifcopenshell.util.element.replace_attribute(inverse, project, projects[0])
+            ifcopenshell.util.element.replace_attribute(inverse, project, survivor)
         model.remove(project)
+    return note
 
 
 def _unit_scales(project: ifcopenshell.entity_instance) -> tuple:

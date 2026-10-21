@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from ifc_converter.i18n import tr
 
 # The header is within the first bytes of any STEP file; 16 KB covers long FILE_DESCRIPTIONs.
 HEADER_BYTES = 16 * 1024
+# Free space the temp folder must keep beyond the copy (staging and checkpoints use it too).
+COPY_ROOM = 512 * 1024 ** 2
 _SCHEMA = re.compile(rb"FILE_SCHEMA\s*\(\s*\(\s*'([A-Za-z0-9_]+)'\s*\)\s*\)")
 _ENTITY = re.compile(rb"^(#\d+\s*=\s*)([A-Z0-9_]+)(\s*\()")
 
@@ -40,6 +43,7 @@ class Bridge:
     renamed: dict[bytes, bytes] = field(default_factory=dict)  # entity name -> IFC counterpart
     dropped: frozenset[bytes] = frozenset()  # entities without a counterpart, left out
     note: Callable[[], str] = lambda: ""  # what the user should know, in the user's language when called
+    alias: bool = False  # the same schema under another header name (not listed as a bridged version)
 
 
 def _ifc2x2_note() -> str:
@@ -51,6 +55,21 @@ def _ifc4x4_note() -> str:
               "IfcTunnelPart as IfcFacilityPart, IfcUndergroundExcavation and IfcArchElement as "
               "IfcBuildingElementProxy; dataset references (IfcDataSetInformation) are dropped.")
 
+
+def _alias(declared: str, target: str) -> Bridge:
+    """``declared`` is ``target`` under another name (a technical corrigendum, addendum or release
+    candidate): read as such, with a note."""
+    return Bridge(target, lambda: declared, alias=True,
+                  note=lambda: tr("{declared} is read as {target} (the same schema under another name).",
+                                  declared=declared, target=target))
+
+
+# Header names IfcOpenShell does not know but which name a schema it knows.
+ALIASES = {
+    "IFC2X2_ADD1": "IFC2X3", "IFC2X3_TC1": "IFC2X3", "IFC2X3_FINAL": "IFC2X3",
+    "IFC4_ADD1": "IFC4", "IFC4_ADD2": "IFC4", "IFC4_ADD2_TC1": "IFC4",
+    "IFC4X3_RC1": "IFC4X3_ADD2", "IFC4X3_RC2": "IFC4X3_ADD2", "IFC4X3_RC3": "IFC4X3_ADD2", "IFC4X3_RC4": "IFC4X3_ADD2",
+}
 
 BRIDGES: dict[str, Bridge] = {
     "IFC2X2_FINAL": Bridge("IFC2X3", lambda: "IFC2x2", note=_ifc2x2_note),
@@ -67,6 +86,7 @@ BRIDGES: dict[str, Bridge] = {
         note=_ifc4x4_note,
     ),
 }
+BRIDGES.update({declared: _alias(declared, target) for declared, target in ALIASES.items()})
 
 
 def declared_schema(path: str | Path) -> str | None:
@@ -113,28 +133,41 @@ def bridged_copy(path: str | Path, bridge: Bridge) -> Bridged:
     """Write the copy of ``path`` that declares ``bridge.target`` into a new temp folder
     (``ifc-converter-*``, cleared by the usual temp cleanup should the process die)."""
     path = Path(path)
+    size = path.stat().st_size
+    free = shutil.disk_usage(tempfile.gettempdir()).free
+    if free < size + COPY_ROOM:
+        raise OSError(tr("Not enough free space in the temp folder for a working copy of the file ({needed} needed, "
+                         "{free} free).", needed=_gb(size + COPY_ROOM), free=_gb(free)))
     folder = Path(tempfile.mkdtemp(prefix="ifc-converter-bridge-"))
     copy = folder / path.name
     result = Bridged(copy, bridge)
     target = bridge.target.encode("ascii")
-    with open(path, "rb") as source, open(copy, "wb") as out:
-        in_header = True
-        for line in source:
-            if in_header:
-                line, found = _SCHEMA.subn(b"FILE_SCHEMA(('" + target + b"'))", line, count=1)
-                if found or line.startswith(b"DATA;"):
-                    in_header = line.strip() != b"DATA;" and not found
-            elif bridge.renamed or bridge.dropped:
-                match = _ENTITY.match(line)
-                if match:
-                    name = match.group(2)
-                    if name in bridge.dropped:
-                        result.dropped += 1
-                        continue
-                    replacement = bridge.renamed.get(name)
-                    if replacement:
-                        line = match.group(1) + replacement + match.group(3) + line[match.end():]
-                        result.renamed += 1
-            out.write(line)
-    os.chmod(copy, 0o600)
+    try:
+        with open(path, "rb") as source, open(copy, "wb") as out:
+            in_header = True
+            for line in source:
+                if in_header:
+                    line, found = _SCHEMA.subn(b"FILE_SCHEMA(('" + target + b"'))", line, count=1)
+                    if found or line.startswith(b"DATA;"):
+                        in_header = line.strip() != b"DATA;" and not found
+                elif bridge.renamed or bridge.dropped:
+                    match = _ENTITY.match(line)
+                    if match:
+                        name = match.group(2)
+                        if name in bridge.dropped:
+                            result.dropped += 1
+                            continue
+                        replacement = bridge.renamed.get(name)
+                        if replacement:
+                            line = match.group(1) + replacement + match.group(3) + line[match.end():]
+                            result.renamed += 1
+                out.write(line)
+        os.chmod(copy, 0o600)
+    except BaseException:  # also a cancel (KeyboardInterrupt): no half-written copy stays behind
+        result.remove()
+        raise
     return result
+
+
+def _gb(size: int) -> str:
+    return f"{size / 1024 ** 3:.1f} GB"

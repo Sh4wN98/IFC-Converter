@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ifc_converter import __version__, i18n
 from ifc_converter.app import log_path
+from ifc_converter.i18n import tr
 from ifc_converter.converter import FORMATS, GEOMETRIES, KERNELS
 from ifc_converter.interactive import (
     check_memory,
@@ -143,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                 low_priority=not args.normal_priority, blocks=args.blocks, envelope=args.envelope,
             )
         except KeyboardInterrupt:
-            print(f"■ {source}: abgebrochen", file=sys.stderr)
+            print(f"■ {source}: {tr('cancelled')}", file=sys.stderr)
             return 130
         except Exception as exc:
             print(f"✗ {source}: {error_message(exc)}", file=sys.stderr)
