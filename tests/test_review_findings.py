@@ -1,6 +1,6 @@
 """Failing tests that demonstrate confirmed findings of the night review (report-night-review.md).
 
-Each is marked xfail(strict=True): it fails today and must start passing (and then lose its mark)
+Written as xfail(strict=True) in the night review; the marks came off as the findings were fixed
 once the finding is fixed.
 """
 from __future__ import annotations
@@ -71,7 +71,6 @@ def _cube_size(model):
     return float((verts.max(axis=0) - verts.min(axis=0)).max())
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 1: second IfcProject without units keeps the model 1000x too large")
 def test_merge_projects_second_project_without_units(tmp_path):
     model = _two_project_model(tmp_path / "two.ifc", second_units=None)
     assert _cube_size(model) == pytest.approx(1000.0)  # IfcOpenShell reads the file as metres
@@ -80,7 +79,6 @@ def test_merge_projects_second_project_without_units(tmp_path):
     assert _cube_size(model) == pytest.approx(1.0, abs=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="review finding 1: second IfcProject with other units keeps the model 1000x too large")
 def test_merge_projects_second_project_other_units(tmp_path):
     model = _two_project_model(tmp_path / "two.ifc", second_units="metres")
     converter.merge_projects(model)
@@ -88,7 +86,6 @@ def test_merge_projects_second_project_other_units(tmp_path):
     assert _cube_size(model) == pytest.approx(1.0, abs=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason="review finding F11: a worker exit drops the tree CPU sum; the child must re-earn it")
 def test_stall_watchdog_survives_worker_exit(tmp_path, monkeypatch):
     """The Rhino export shuts its worker pool down right before the (single-threaded) write phase.
 
@@ -155,7 +152,6 @@ def _hull_house(path, bench: bool):
     return ifcopenshell.open(str(path))
 
 
-@pytest.mark.xfail(strict=True, reason="review finding F14: open-hull fallback drops exposed furniture of a closed house")
 def test_hull_keeps_exposed_furniture_of_a_closed_house_without_interior(tmp_path):
     from ifc_converter import envelope
 
