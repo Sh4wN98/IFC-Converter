@@ -138,7 +138,7 @@ jobs:
         run: python -m pip install -c packaging/constraints.txt ".[build]"
       - name: Build app and tar.gz
         run: python packaging/build.py
-      - name: User guide (PDF, German and English)
+      - name: User guide (PDF)
         run: QT_QPA_PLATFORM=offscreen python packaging/guide.py
       - name: Smoke test of the built app and the tar.gz
         timeout-minutes: 20
@@ -151,7 +151,7 @@ jobs:
           name: IFC-Converter-linux
           path: |
             dist/IFC-Converter-*-linux-*.tar.gz
-            dist/IFC-Converter-*-Kurzanleitung.pdf
+            dist/IFC-Converter-*-Guide.pdf
             dist/SHA256SUMS.txt
           retention-days: 7
           compression-level: 0  # the tar.gz is compressed already
@@ -182,7 +182,7 @@ jobs:
           (cd dist/linux && sha256sum -c SHA256SUMS.txt)
           mkdir release
           cp dist/windows/IFC-Converter-*-Setup.exe dist/windows/IFC-Converter-*-portable.zip \
-             dist/linux/IFC-Converter-*-linux-*.tar.gz dist/linux/IFC-Converter-*-Kurzanleitung.pdf release/
+             dist/linux/IFC-Converter-*-linux-*.tar.gz dist/linux/IFC-Converter-*-Guide.pdf release/
           (cd release && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
           test "$(ls release | wc -l)" -eq 5 || { echo "::error::expected Setup.exe, portable ZIP, tar.gz, guide PDF and SHA256SUMS.txt in release/"; ls release; exit 1; }
       - name: Release notes from CHANGELOG.md

@@ -300,7 +300,7 @@ def test_linux_install_update_and_uninstall_in_a_fake_home(tmp_path):
 
 def test_readme_describes_the_linux_release():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    for text in ("## Installation unter Linux", "install.sh", "uninstall.sh", "linux-x86_64.tar.gz",
+    for text in ("## Installation on Linux", "install.sh", "uninstall.sh", "linux-x86_64.tar.gz",
                  "SHA256SUMS.txt", "QT_QPA_PLATFORM", "~/.config/ifc-converter", "~/.local/state/ifc-converter",
                  "smoke_test_linux.py", "IFC-Converter-linux"):
         assert text in readme, text
