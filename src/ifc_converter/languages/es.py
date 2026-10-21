@@ -593,4 +593,6 @@ TEXTS: dict[str, str] = {
         '{declared} se lee como {target} (el mismo esquema con otro nombre).',
     'Not enough free space in the temp folder for a working copy of the file ({needed} needed, {free} free).':
         'No hay suficiente espacio libre en la carpeta temporal para una copia de trabajo del archivo ({needed} necesarios, {free} libres).',
+    'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
+        'El archivo IFC parece estar truncado (sin END-ISO-10303-21 al final): la salida puede estar incompleta.',
 }

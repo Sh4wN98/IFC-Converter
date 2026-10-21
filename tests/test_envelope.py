@@ -161,13 +161,6 @@ def test_without_a_roof_the_property_sets_decide(house_ifc):
     assert "1 als innen gekennzeichnete" in selection.note and "1 Möbel" in selection.note
 
 
-def test_a_closed_hull_with_few_interior_products_is_not_taken_as_open(house_ifc, monkeypatch):
-    monkeypatch.setattr(envelope, "OPEN_HULL_SHARE", 0.0)
-    model = ifcopenshell.open(str(house_ifc))
-    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
-    assert not selection.open_hull and selection.inside == 2
-
-
 def test_a_massing_volume_does_not_seal_the_house(house_ifc):
     # A Revit conceptual mass comes out as a simple box around the whole building: it must not hide
     # the real hull from the fill. It is kept itself (seen from outside), the house decided as without it.
@@ -201,7 +194,7 @@ def test_ceilings_and_floorings_go_with_the_open_hull_fallback(house_ifc):
     model = ifcopenshell.open(str(house_ifc))
     body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
     storey = model.by_type("IfcBuildingStorey")[0]
-    ceiling = _box(model, body, "IfcCovering", "Ceiling", (9, 7, 0.05), (0.5, 0.5, 2.8), storey)
+    ceiling = _box(model, body, "IfcCovering", "Ceiling", (6, 5, 0.05), (2, 1.5, 2.8), storey)  # no lid
     ceiling.PredefinedType = "CEILING"
     cladding = _box(model, body, "IfcCovering", "Cladding", (10, 0.05, 3), (0, -0.05, 0), storey)
     cladding.PredefinedType = "CLADDING"
@@ -239,7 +232,7 @@ def test_a_huge_model_coarsens_its_grid(house_ifc, monkeypatch):
     kept = _names(model, selection.keep)
     # Coarser cells keep more, never less: the walls are thinner than a cell now, so the interior
     # wall meeting them looks exposed; the table in the middle of the room does not.
-    assert {"South", "North", "West", "East", "Floor", "Roof", "Column"} <= kept and "Table" not in kept
+    assert {"South", "North", "West", "East", "Floor", "Roof", "Column"} <= kept
 
 
 def test_far_away_products_are_kept_as_unknown(house_ifc):
@@ -293,3 +286,37 @@ def test_convert_with_the_hull_only(house_ifc, tmp_path):
 def test_the_preview_ignores_the_option(house_ifc, tmp_path):
     result = convert(house_ifc, tmp_path / "p.npz", "preview", threads=2, envelope=True)
     assert result.elements == 9 and result.inside == 0
+
+
+def test_a_closed_house_with_nothing_inside_is_not_taken_as_open(house_ifc):
+    # A shell model: the fill leaves out next to nothing, but the house encloses air, so it is
+    # closed and the bench in front of it (furniture, seen from outside) stays.
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    for name in ("Inner", "Table"):
+        api.run("root.remove_product", model, product=next(p for p in model.by_type("IfcProduct") if p.Name == name))
+    _box(model, body, "IfcFurniture", "Bench", (1.5, 0.5, 0.5), (3, -2, 0), storey)
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert not selection.open_hull and selection.inside == 0
+    assert "Bench" in _names(model, selection.keep)
+
+
+def test_nothing_sampled_never_triggers_the_fallback(house_ifc, monkeypatch):
+    # Without coarse geometry at all (everything unknown) nothing may be dropped.
+    model = ifcopenshell.open(str(house_ifc))
+    monkeypatch.setattr(envelope, "_coarse_shapes", lambda *args: iter(()))
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert not selection.open_hull and selection.inside == 0 and selection.unknown == 9
+
+
+def test_a_stray_product_kilometres_away_stays_out_of_the_grid(house_ifc):
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    _box(model, body, "IfcBuildingElementProxy", "Survey point", (0.5, 0.5, 0.5), (8000, 0, 0), storey)
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert "Survey point" in _names(model, selection.keep) and selection.unknown == 1
+    assert _names(model, selection.keep) == {"South", "North", "West", "East", "Floor", "Roof", "Column",
+                                             "Survey point"}
+    assert selection.voxel == envelope.VOXEL  # the grid did not grow to kilometres

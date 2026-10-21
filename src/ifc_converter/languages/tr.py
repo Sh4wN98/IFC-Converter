@@ -590,4 +590,6 @@ TEXTS: dict[str, str] = {
         '{declared}, {target} olarak okunur (aynı şemanın başka adı).',
     'Not enough free space in the temp folder for a working copy of the file ({needed} needed, {free} free).':
         'Dosyanın çalışma kopyası için geçici klasörde yeterli boş alan yok ({needed} gerekli, {free} boş).',
+    'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
+        'IFC dosyası kesilmiş görünüyor (sonunda END-ISO-10303-21 yok): çıktı eksik olabilir.',
 }

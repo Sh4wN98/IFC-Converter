@@ -957,3 +957,17 @@ def test_alignment_layout_parts_are_left_out_of_glb_and_obj(alignment_ifc, fmt, 
             names = [node["name"] for node in json.loads(glb.read(length))["nodes"] if "name" in node]
     written = {classes[name.removeprefix("product-").rsplit("-", 1)[0].replace("-", "")] for name in names}
     assert names and written == {"IfcAlignment"}
+
+
+def test_a_cut_off_ifc_file_gets_a_warning(wall_ifc, tmp_path):
+    data = wall_ifc.read_bytes()
+    cut = tmp_path / "cut.ifc"
+    cut.write_bytes(data[:int(len(data) * 0.9)])
+    notes = []
+    convert(cut, tmp_path / "cut.glb", "glb", threads=2,
+            status=lambda phase, text: notes.append(text) if phase == "note" else None)
+    assert any(note.startswith("Die IFC-Datei scheint abgeschnitten zu sein") for note in notes)
+    notes.clear()
+    convert(wall_ifc, tmp_path / "whole.glb", "glb", threads=2,
+            status=lambda phase, text: notes.append(text) if phase == "note" else None)
+    assert not any("abgeschnitten" in note for note in notes)

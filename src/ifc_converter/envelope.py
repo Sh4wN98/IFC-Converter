@@ -63,9 +63,16 @@ MAX_VOXELS = 150_000_000
 # A threshold would leave out products with a small visible part (a lintel seen through a gap) and
 # open the hull there.
 EXPOSURE = 0.0
-# When the fill leaves out less than this share of the products, the hull is taken as open and the
-# property sets decide (a closed building has interior walls, doors and fittings well above it).
-OPEN_HULL_SHARE = 0.02
+# A closed building encloses air: its rooms are free cells of the whole-model grid that the fill
+# does not reach, many more than the solid cells of its walls and slabs. A model without roof or
+# floors (an architecture part model) encloses next to none: then the hull is taken as open and the
+# property sets decide, since the fill sees every product from outside. (The count of products the
+# fill leaves out is no criterion: a shell model with nothing inside is closed all the same.)
+OPEN_HULL_AIR = 0.25
+# Products whose centre lies further than this from the bulk of the model (survey points, stray
+# site elements kilometres away) are left out of the grid and kept as unknown: they would blow the
+# grid up without telling anything about the hull.
+FAR_METRES = 2000.0
 # Left out in a model without a closed hull: furniture and fittings, building services (pipes, ducts,
 # cables, terminals, equipment), lifts, fasteners and reinforcement.
 INTERIOR_CLASSES = ("IfcFurnishingElement", "IfcDistributionElement", "IfcDistributionPort", "IfcTransportElement",
@@ -178,7 +185,7 @@ def select(
     selection = Selection(keep=set(), total=len(products))
     if not products:
         return selection
-    sampler = _Sampler(VOXEL, *budgets())
+    sampler = _Sampler(VOXEL, *budgets(), origin=_origin(model))
     for shape in _coarse_shapes(model, threads, products, report, progress):
         sampler.add(shape)
     coarse_seconds = time.monotonic() - started
@@ -201,8 +208,8 @@ def select(
             selection.keep.add(product_id)
         else:
             selection.inside += 1
-    if selection.inside < OPEN_HULL_SHARE * selection.total:
-        _select_by_marks(selection, products, marks)
+    if sampler.enclosed < OPEN_HULL_AIR * sampler.solid:
+        _select_by_marks(selection, products, marks, exposure)
     for product in products:
         if product.id() not in selection.keep:
             selection.dropped_classes[product.is_a()] = selection.dropped_classes.get(product.is_a(), 0) + 1
@@ -218,6 +225,23 @@ def select(
     return selection
 
 
+def _origin(model: ifcopenshell.file) -> numpy.ndarray | None:
+    """Where the model's building (else its site) is placed, in metres; None if neither says."""
+    import ifcopenshell.util.placement
+    import ifcopenshell.util.unit
+
+    try:
+        scale = ifcopenshell.util.unit.calculate_unit_scale(model)
+        for name in ("IfcBuilding", "IfcSite"):
+            for product in model.by_type(name):
+                if product.ObjectPlacement:
+                    matrix = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)
+                    return numpy.asarray(matrix[:3, 3], dtype=numpy.float64) * scale
+    except Exception:  # a broken placement is no reason to give up the hull
+        log.debug("Gebäudehülle: Ursprung nicht bestimmbar", exc_info=True)
+    return None
+
+
 def budgets() -> tuple[int, int]:
     """(sampled cells, grid cells) the PC can afford: the defaults, more with more free memory."""
     available = converter.available_memory() or 0
@@ -225,12 +249,16 @@ def budgets() -> tuple[int, int]:
             min(MAX_VOXELS_CAP, max(MAX_VOXELS, available // 40)))
 
 
-def _select_by_marks(selection: Selection, products: list, marks: dict[int, bool]) -> None:
-    """The hull is open: keep everything except what is marked or furnished as interior."""
+def _select_by_marks(selection: Selection, products: list, marks: dict[int, bool],
+                     exposure: dict[int, float]) -> None:
+    """The hull is open, so the fill sees everything from outside and says nothing: keep everything
+    except what is marked or furnished as interior; what the coarse pass could not build stays."""
     selection.open_hull = True
-    selection.keep, selection.inside, selection.unknown, selection.flagged = set(), 0, 0, 0
+    selection.keep, selection.inside, selection.flagged = set(), 0, 0
     for product in products:
-        if marks.get(product.id()) is False:
+        if exposure.get(product.id()) is None:
+            selection.keep.add(product.id())
+        elif marks.get(product.id()) is False:
             selection.marked += 1
         elif any(product.is_a(name) for name in INTERIOR_CLASSES) or (
                 product.is_a("IfcCovering") and getattr(product, "PredefinedType", None) in INTERIOR_COVERINGS):
@@ -276,17 +304,22 @@ class _Sampler:
     """Collects, per product, the voxels its surfaces pass through, and finds the ones next to
     outside air once all products are in."""
 
-    def __init__(self, voxel: float, max_sampled: int = MAX_SAMPLED, max_voxels: int = MAX_VOXELS):
+    def __init__(self, voxel: float, max_sampled: int = MAX_SAMPLED, max_voxels: int = MAX_VOXELS,
+                 origin: numpy.ndarray | None = None):
         self.voxel = voxel
         self.coarse = voxel * FINE
         self.max_sampled = max_sampled
         self.max_voxels = max_voxels
-        self.origin: numpy.ndarray | None = None  # the first point; cell coordinates are relative to it
+        # Cell coordinates are relative to the origin: the building's placement if known, else the
+        # first point sampled (a stray survey point first would put the whole building out of range).
+        self.origin: numpy.ndarray | None = None if origin is None else numpy.floor(origin / voxel) * voxel
         self.keys: dict[int, numpy.ndarray] = {}  # product id -> packed cell coordinates (int64)
         self.triangles: dict[int, int] = {}  # product id -> coarse triangles
         self.unknown: set[int] = set()  # products placed too far away to sample
         self.masses: set[int] = set()  # massing volumes, see exposure()
         self.cells = 0  # cells of the whole-model grid
+        self.solid = 0  # of them solid
+        self.enclosed = 0  # of them free but not reached by the fill: rooms (and hollow elements)
         self.band_cells = 0  # sampled cells of the band around the outside air
         self._stored = 0
 
@@ -316,6 +349,24 @@ class _Sampler:
         if self._stored > self.max_sampled:
             self._coarsen()
 
+    def _drop_far_products(self) -> None:
+        """Products centred further than FAR_METRES from the bulk of the model become unknown
+        (kept) and leave the grid, which they would blow up to kilometres."""
+        if len(self.keys) < 3:
+            return
+        centres = numpy.array([(_unpack(keys[:1])[0] + _unpack(keys[-1:])[0]) / 2 for keys in self.keys.values()],
+                              dtype=numpy.float64) * self.voxel
+        # Packed keys sort by x, then y, then z: first and last key bound the product in x at least;
+        # the median of those midpoints is the bulk. Far means far in any direction.
+        bulk = numpy.median(centres, axis=0)
+        far = numpy.abs(centres - bulk).max(axis=1) > FAR_METRES
+        for product_id, is_far in zip(list(self.keys), far):
+            if is_far:
+                self._stored -= len(self.keys.pop(product_id))
+                self.unknown.add(product_id)
+                log.info("Gebäudehülle: Bauteil #%d liegt weit abseits des Modells, wird ohne Prüfung übernommen",
+                         product_id)
+
     def _coarsen(self) -> None:
         """Double the grid cell, re-quantising what is stored (the lead-in of very large models)."""
         self.voxel *= 2
@@ -330,6 +381,9 @@ class _Sampler:
 
     def exposure(self) -> dict[int, float]:
         """Product id -> share of its cells next to outside air; sampled products only."""
+        if not self.keys:
+            return {}
+        self._drop_far_products()
         if not self.keys:
             return {}
         owners = numpy.concatenate([numpy.full(len(keys), index, numpy.int32)
@@ -360,17 +414,24 @@ class _Sampler:
         centres = (lows + highs) / 2
         opaque = numpy.ones(len(flat), dtype=bool)
         if count > 1:
+            # Only the largest boxes can hold dozens of others: the top 2 % by volume are tested,
+            # which keeps the test linear for models with 100,000 products.
+            volumes = numpy.prod(highs - lows + 1, axis=1)
+            threshold = numpy.quantile(volumes, 0.98) if count > 50 else 0
+            needed = min(max(2, MASS_SHARE * (count - 1)), MASS_HELD)
             for index, product_id in enumerate(self.keys):
-                if self.triangles[product_id] > MASS_TRIANGLES:
+                if self.triangles[product_id] > MASS_TRIANGLES or volumes[index] < threshold:
                     continue
                 held = ((centres >= lows[index]) & (centres <= highs[index])).all(axis=1).sum() - 1
-                if held >= min(max(2, MASS_SHARE * (count - 1)), MASS_HELD):
+                if held >= needed:
                     self.masses.add(product_id)
                     opaque[owners == index] = False
         del coarse, lows, highs, centres
         solid = numpy.zeros(self.cells, dtype=bool)
         solid[flat[opaque]] = True
         outside = _outside(solid.reshape(shape)).ravel()
+        self.solid = int(solid.sum())
+        self.enclosed = int(self.cells - self.solid - outside.sum())
         # Seen from outside: cells lying in outside air of the whole-model grid (a mass), and
         # cells next to outside air at the sampled resolution. The whole-model grid alone would be
         # too coarse for that: an interior wall meeting an exterior wall thinner than its cell
@@ -387,7 +448,7 @@ class _Sampler:
             position = numpy.searchsorted(band, flat)
             in_band = (position < band.size) & (band[numpy.minimum(position, band.size - 1)] == flat)
             fine_ids = (position * factor ** 3 + local[:, 0].astype(numpy.int64) * factor * factor
-                        + local[:, 1] * factor + local[:, 2])
+                        + local[:, 1].astype(numpy.int64) * factor + local[:, 2])
             del position, local, flat
             domain = _Band(band, shape, outside, factor)
             self.band_cells = domain.size
