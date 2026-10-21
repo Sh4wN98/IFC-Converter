@@ -275,6 +275,9 @@ def convert(
             bridged.remove()  # the model is in memory now
     if bridged:
         report("note", tr("{note} Dimensions and positions stay unchanged.", note=bridged.note))
+    if not _ends_properly(input_path):
+        report("note", tr("The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be "
+                          "incomplete."))
     repair_units(model)
     repair_extrusions(model)
     units_note = merge_projects(model)
@@ -355,6 +358,19 @@ def convert(
         output=output_path, elements=elements, skipped=max(0, candidates[0] - elements), no_geometry=missing,
         inside=selection.inside if selection else 0,
     )
+
+
+def _ends_properly(path: Path) -> bool:
+    """Whether a STEP file (.ifc) ends with END-ISO-10303-21; a cut-off download or copy does not.
+    Other inputs (.ifczip) are not checked."""
+    if path.suffix.lower() != ".ifc":
+        return True
+    try:
+        with open(path, "rb") as file:
+            file.seek(max(0, path.stat().st_size - 256))
+            return b"END-ISO-10303-21" in file.read()
+    except OSError:
+        return True
 
 
 def size_text(size: int) -> str:

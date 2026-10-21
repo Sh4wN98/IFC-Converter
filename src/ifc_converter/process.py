@@ -1084,6 +1084,10 @@ class _Phases:
         timeout = FATAL_STALL_TIMEOUT if self.fatal else STALL_TIMEOUT
         if self._active_cpu is None or cpu - self._active_cpu >= STALL_CPU:
             self._active, self._active_cpu = now, cpu
+        elif cpu < self._active_cpu:
+            # The tree's CPU time dropped: worker processes exited (the Rhino pool after the geometry).
+            # That is a new reference, not activity; the child earns STALL_CPU from here on.
+            self._active_cpu = cpu
         elif now - self._active >= timeout:
             log.error(tr("No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}",
                          seconds=f"{now - self._active:.0f}", cpu=f"{cpu:.1f}",
