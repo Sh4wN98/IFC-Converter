@@ -971,3 +971,215 @@ def test_a_cut_off_ifc_file_gets_a_warning(wall_ifc, tmp_path):
     convert(wall_ifc, tmp_path / "whole.glb", "glb", threads=2,
             status=lambda phase, text: notes.append(text) if phase == "note" else None)
     assert not any("abgeschnitten" in note for note in notes)
+
+
+class _FakeShapes:
+    """The shapes of a run, like a geometry iterator whose threads spin on one product: ``shapes``
+    come at once, then it is stuck on ``release`` (the real kernel's thread never returns). ``freed``
+    records whether it was ever freed, which the real iterator's destructor would turn into a hang."""
+
+    def __init__(self, shapes, release, freed, stuck=True):
+        self.shapes, self.release, self.freed, self.stuck = shapes, release, freed, stuck
+
+    def __iter__(self):
+        yield from self.shapes
+        if self.stuck:
+            self.release.wait()
+
+    def __del__(self):
+        self.freed.append(self)
+
+
+def _hanging_kernel(monkeypatch, hung_name, release, freed, undelivered=1):
+    """Let the kernel hang for good on the product called ``hung_name``: of its run, the shapes of
+    all but ``undelivered`` products come at once (always those of ``hung_name`` among the missing)."""
+    from ifc_converter import converter
+
+    iterate = converter._iterate
+
+    def hanging_iterate(model, settings, threads, products, library):
+        if not any(product.Name == hung_name for product in products):
+            return iterate(model, settings, threads, products, library)
+        held = {product.id() for product in products if product.Name == hung_name}
+        for product in products:
+            if len(held) >= undelivered:
+                break
+            held.add(product.id())
+        others = [product for product in products if product.id() not in held]
+        shapes = list(iterate(model, settings, threads, others, library)) if others else []
+        return _FakeShapes(shapes, release, freed)
+
+    monkeypatch.setattr(converter, "_iterate", hanging_iterate)
+
+
+def _blocking_create_shape(monkeypatch, hung_name, release):
+    """Let a single computation (deep products, retries) hang on the product called ``hung_name``."""
+    from ifc_converter import converter
+
+    create_shape = converter.geom.create_shape
+
+    def blocking(settings, product, *args, **kwargs):
+        if product.Name == hung_name:
+            release.wait()
+        return create_shape(settings, product, *args, **kwargs)
+
+    monkeypatch.setattr(converter.geom, "create_shape", blocking)
+
+
+@pytest.fixture
+def short_hang_limit(monkeypatch):
+    """Runs and single computations that deliver nothing for half a second count as hung."""
+    from ifc_converter import converter
+
+    monkeypatch.setenv(converter.HANG_ENV, "0.5")
+    assert converter.hang_limit("fine") == converter.hang_limit("coarse") == 0.5
+
+
+def test_a_run_the_kernel_hangs_on_is_abandoned_and_the_element_skipped(
+    many_walls_ifc, tmp_path, monkeypatch, short_hang_limit
+):
+    # The kernel delivered every other shape of the chunk, so the undelivered wall is the one it hangs
+    # on: the conversion goes on without it, reports it like one the kernel crashed on, and the
+    # iterator (whose thread is still in the kernel) is never freed.
+    import gc
+
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    release, freed, notes, positions = threading.Event(), [], [], []
+    _hanging_kernel(monkeypatch, "Wall 7", release, freed)
+    abandoned_before = converter.abandoned()
+    try:
+        started = time.monotonic()
+        result = convert(
+            many_walls_ifc, tmp_path / "walls.glb", "glb", threads=2,
+            status=lambda phase, text: notes.append(text) if phase == "note" else None,
+            position=lambda kind, ids, label: positions.append((kind, ids, label)),
+        )
+        assert time.monotonic() - started < 60
+        assert (result.elements, result.skipped, result.no_geometry) == (599, 0, [])
+        assert len(result.crashed) == 1 and result.crashed[0].startswith("IfcWall ") and result.crashed[0].endswith("„Wall 7“")
+        assert any(note.startswith("Der Geometriekern hängt seit mehr als 0 min an IfcWall ")
+                   and note.endswith("„Wall 7“: das Element wird übersprungen") for note in notes)
+        model = ifcopenshell.open(str(many_walls_ifc))
+        wall = next(wall for wall in model.by_type("IfcWall") if wall.Name == "Wall 7")
+        assert ("hung", [wall.id()], result.crashed[0]) in positions
+        assert positions[-1] == ("done", [], "")
+        gc.collect()
+        assert freed == [] and converter.abandoned() == abandoned_before + 2  # the shapes and the model
+    finally:
+        release.set()
+
+
+def test_undelivered_products_of_a_hung_run_are_computed_one_by_one(
+    many_walls_ifc, tmp_path, monkeypatch, short_hang_limit
+):
+    # Three products undelivered when the run is given up: only the kernel knows which one it hangs
+    # on, so each is computed on its own under the same limit. Two come out, the third hangs again
+    # and is skipped.
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    release, freed, notes, positions = threading.Event(), [], [], []
+    _hanging_kernel(monkeypatch, "Wall 7", release, freed, undelivered=3)
+    _blocking_create_shape(monkeypatch, "Wall 7", release)
+    try:
+        result = convert(
+            many_walls_ifc, tmp_path / "walls.glb", "glb", threads=2,
+            status=lambda phase, text: notes.append(text) if phase == "note" else None,
+            position=lambda kind, ids, label: positions.append((kind, ids, label)),
+        )
+        assert (result.elements, result.skipped) == (599, 0)
+        assert len(result.crashed) == 1 and result.crashed[0].endswith("„Wall 7“")
+        assert "Der Geometriekern hängt seit mehr als 0 min an einem von 3 Bauteilen: sie werden einzeln berechnet …" in notes
+        retried = [label for kind, ids, label in positions if kind == "element"]
+        assert len(retried) == 3 and result.crashed[0] in retried
+        assert [label for kind, ids, label in positions if kind == "hung"] == result.crashed
+    finally:
+        release.set()
+
+
+def test_the_rest_of_a_hung_run_is_given_up_after_two_more_hangs(many_walls_ifc, tmp_path, monkeypatch, short_hang_limit):
+    # 5 undelivered products, every single computation hangs: after HANG_RETRY_HANGS the remaining
+    # ones are reported as not computed, so the limit is not paid for each of them.
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    release, freed, notes = threading.Event(), [], []
+    _hanging_kernel(monkeypatch, "Wall 7", release, freed, undelivered=5)
+    create_shape = converter.geom.create_shape
+    monkeypatch.setattr(converter.geom, "create_shape", lambda *args, **kwargs: release.wait() or create_shape(*args, **kwargs))
+    try:
+        started = time.monotonic()
+        result = convert(many_walls_ifc, tmp_path / "walls.glb", "glb", threads=2,
+                         status=lambda phase, text: notes.append(text) if phase == "note" else None)
+        assert time.monotonic() - started < 30
+        assert (result.elements, len(result.crashed), result.skipped) == (595, 5, 0)
+        assert "3 Bauteile nicht berechnet, weil der Geometriekern an ihrem Paket hängen blieb: sie werden übersprungen" in notes
+        assert sum(note.endswith("das Element wird übersprungen") for note in notes) == converter.HANG_RETRY_HANGS
+    finally:
+        release.set()
+
+
+def test_a_deeply_nested_product_the_kernel_hangs_on_is_skipped(nested_ifc, tmp_path, monkeypatch, short_hang_limit):
+    # Deep products are computed one by one in a thread of their own, which was joined without any
+    # timeout: now the thread is left behind (a daemon) and the product reported as hung.
+    import ifcopenshell.api as api
+
+    model = ifcopenshell.open(str(nested_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    plain = api.run("root.create_entity", model, ifc_class="IfcWall", name="Plain wall")
+    shape = api.run("geometry.add_wall_representation", model, context=body, length=2, height=3, thickness=0.2)
+    api.run("geometry.assign_representation", model, product=plain, representation=shape)
+    api.run("geometry.edit_object_placement", model, product=plain)
+    api.run("spatial.assign_container", model, relating_structure=model.by_type("IfcSite")[0], products=[plain])
+    path = tmp_path / "deep-and-plain.ifc"
+    model.write(str(path))
+
+    release, notes = threading.Event(), []
+    _blocking_create_shape(monkeypatch, "Deep wall", release)
+    result = convert(path, tmp_path / "nested.glb", "glb", threads=2,
+                     status=lambda phase, text: notes.append(text) if phase == "note" else None)
+    assert (result.elements, result.skipped, result.no_geometry) == (1, 0, [])
+    assert len(result.crashed) == 1 and result.crashed[0].endswith("„Deep wall“")
+    assert any("„Deep wall“: das Element wird übersprungen" in note for note in notes)
+    left = [thread for thread in threading.enumerate() if thread.name == "deep-geometry"]
+    assert left and all(thread.daemon for thread in left)
+    release.set()
+    for thread in left:
+        thread.join(30)
+
+
+def test_hang_limits_per_pass_and_their_override(monkeypatch):
+    from ifc_converter import converter
+
+    monkeypatch.delenv(converter.HANG_ENV, raising=False)
+    assert converter.hang_limit("fine") == 1200 and converter.hang_limit("coarse") == 300
+    assert converter.hang_limit("preview") == 180
+    monkeypatch.setenv(converter.HANG_ENV, "2.5")
+    assert converter.hang_limit("fine") == converter.hang_limit("coarse") == converter.hang_limit("preview") == 2.5
+    monkeypatch.setenv(converter.HANG_ENV, "soon")
+    assert converter.hang_limit("preview") == 180
+
+
+def test_a_slow_run_that_keeps_delivering_is_not_abandoned(many_walls_ifc, tmp_path, monkeypatch, short_hang_limit):
+    # Deliveries reset the clock: a run whose shapes trickle in (every 0.2 s, limit 0.5 s) is fine.
+    from ifc_converter import converter
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    iterate = converter._iterate
+
+    def trickling(model, settings, threads, products, library):
+        shapes = list(iterate(model, settings, threads, products, library))
+
+        def run():
+            for number, shape in enumerate(shapes):
+                if number % 20 == 0:
+                    time.sleep(0.2)
+                yield shape
+
+        return run()
+
+    monkeypatch.setattr(converter, "_iterate", trickling)
+    result = convert(many_walls_ifc, tmp_path / "walls.glb", "glb", threads=2)
+    assert (result.elements, result.crashed) == (600, [])

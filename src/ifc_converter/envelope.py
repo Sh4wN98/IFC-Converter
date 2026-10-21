@@ -278,25 +278,32 @@ def _coarse_shapes(model, threads: int, products: list, report, progress):
     settings.set("use-world-coords", True)
     settings.set("no-normals", True)
     kernel = converter.kernel_strategy()
+    # _hung None: a product the kernel hangs on is not skipped here but kept (unknown, see select).
+    variables = (converter._kernel, converter._checkpoint, converter._candidates, converter._missing, converter._hung)
     tokens = [
         converter._kernel.set("hybrid" if kernel != "opencascade" else kernel),
         converter._checkpoint.set(None), converter._candidates.set(None), converter._missing.set(None),
+        converter._hung.set(None),
     ]
 
     def status(phase: str, text: str) -> None:
         # The coarse pass's own phases would read like the conversion's; its notes and deep products
-        # are worth seeing.
-        if report and phase in ("note", "deep"):
+        # are worth seeing. Once the deep products are done ("geometry"), the hull's own text comes
+        # back, or the last deep product's would stay in the window for the rest of the pass.
+        if not report:
+            return
+        if phase in ("note", "deep"):
             report(phase, text)
+        elif phase == "geometry":
+            report("envelope", tr("Determining the building hull (geometry roughly precomputed) …"))
 
     try:
         yield from converter.iter_shapes(
             model, settings, threads, converter.EXCLUDED_CLASSES, progress, 100, products, status=status,
-            second_attempts=False,
+            second_attempts=False, hang_seconds=converter.hang_limit("coarse"),
         )
     finally:
-        for variable, token in zip((converter._kernel, converter._checkpoint, converter._candidates, converter._missing),
-                                   tokens):
+        for variable, token in zip(variables, tokens):
             variable.reset(token)
 
 
