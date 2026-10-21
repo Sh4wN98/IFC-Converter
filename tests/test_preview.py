@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import child_helpers
 import ifcopenshell
+import ifcopenshell.api as api
 import ifcopenshell.geom as geom
 import numpy
 import pytest
@@ -327,6 +328,21 @@ def test_compute_preview_passes_few_threads_and_the_fast_kernel(wall_ifc, tmp_pa
     assert options["low_priority"] is True
 
 
+def test_preview_threads_and_the_memory_policy(monkeypatch):
+    monkeypatch.setattr(converter, "default_threads", lambda: 16)
+    assert preview.preview_threads() == 8 and preview.preview_threads(busy=True) == 4
+    monkeypatch.setattr(converter, "default_threads", lambda: 3)
+    assert preview.preview_threads() == 3 == preview.preview_threads(busy=True)
+    size = 600 * 1024 ** 2
+    monkeypatch.setattr(converter, "available_memory",
+                        lambda: converter.MEMORY_BASE + converter.MEMORY_PER_IFC_BYTE * size)
+    assert preview.fits_in_memory(size) is True
+    assert preview.fits_in_memory(size, busy=True) is False  # twice the size beside a conversion
+    assert preview.fits_in_memory(size // 2, busy=True) is True
+    monkeypatch.setattr(converter, "available_memory", lambda: None)
+    assert preview.fits_in_memory(size) is None
+
+
 def test_preview_is_no_output_format(wall_ifc, tmp_path, capsys):
     assert "preview" not in FORMATS and "preview" in converter.INTERNAL_FORMATS
     with pytest.raises(SystemExit):
@@ -370,3 +386,161 @@ def test_a_preview_whose_fast_kernel_crashes_is_computed_with_opencascade(many_w
     assert target.with_suffix(".attempts").read_text().split() == ["hybrid", "opencascade"]
     assert (result.elements, result.crashed) == (600, [])
     assert load_preview(target).info["elements"] == 600
+
+
+# Progressive preview: structure first, details left out, batch files.
+
+
+def test_products_are_ordered_structure_first_and_details_left_out(mixed_ifc, tmp_path):
+    model = ifcopenshell.open(str(mixed_ifc))
+    products, details = preview.select_products(converter.shape_products(model, preview.PREVIEW_EXCLUDED))
+    classes = [product.is_a() for product in products]
+    assert "IfcFurniture" not in classes and len(products) == 15
+    assert details == {"furniture": 3, "mep": 0, "fasteners": 0, "reinforcement": 0, "deep": 0}
+    ranks = [preview.PREVIEW_CLASS_PRIORITY.index(name) for name in classes]
+    assert ranks == sorted(ranks) and classes[0] == "IfcSlab" and classes[-1] == "IfcBeam"
+    walls = [product.Name for product in products if product.is_a("IfcWall")]
+    assert walls == ["IfcWall 0", "IfcWall 3", "IfcWall 6", "IfcWall 9"]  # model order within a class
+    # Classes without a priority come last, in model order.
+    model4 = ifcopenshell.file(schema="IFC4")
+    things = [model4.createIfcBuildingElementProxy(), model4.createIfcDoor(), model4.createIfcSite(),
+              model4.createIfcWallStandardCase(), model4.createIfcBuildingElementProxy()]
+    ordered = preview.order_products(things)
+    assert [thing.is_a() for thing in ordered] == ["IfcSite", "IfcWallStandardCase", "IfcDoor",
+                                                   "IfcBuildingElementProxy", "IfcBuildingElementProxy"]
+    assert ordered[3] is things[0] and ordered[4] is things[4]
+    furniture = model.by_type("IfcFurniture")
+    assert preview.select_products(furniture) == (list(furniture), dict.fromkeys(preview.DETAIL_KINDS, 0))  # details only
+    mesh = _compute(mixed_ifc, tmp_path / "mixed.npz")
+    assert mesh.info["details_left_out"] == 3 and mesh.info["detail_kinds"] == "furniture"
+    assert mesh.info["elements"] == 15 and "partial" not in mesh.info
+    assert preview.detail_kind_name("furniture") == "Möbel" and preview.detail_kind_name("mep") == "Haustechnik"
+
+
+def test_deeply_nested_products_are_left_out_as_details(nested_ifc, tmp_path):
+    model = ifcopenshell.open(str(nested_ifc))
+    body = model.by_type("IfcGeometricRepresentationSubContext")[0]
+    wall = api.run("root.create_entity", model, ifc_class="IfcWall", name="Plain wall")
+    representation = api.run("geometry.add_wall_representation", model, context=body, length=5, height=3,
+                             thickness=0.2)
+    api.run("geometry.assign_representation", model, product=wall, representation=representation)
+    api.run("geometry.edit_object_placement", model, product=wall)
+    path = tmp_path / "deep_and_plain.ifc"
+    model.write(str(path))
+    mesh = _compute(path, tmp_path / "deep.npz")
+    assert len(mesh.elements) == 1 and "Plain wall" in mesh.elements[0]
+    assert mesh.info["details_left_out"] == 1 and mesh.info["detail_kinds"] == "deep"
+    with pytest.raises(ValueError, match="keine Bauteile mit Geometrie"):  # only the deep one: nothing to show
+        convert(nested_ifc, tmp_path / "only_deep.npz", fmt="preview", threads=2, kernel="hybrid")
+
+
+def _batch_meshes(target: Path) -> list[PreviewMesh]:
+    return [load_preview(path) for path in preview.batch_paths(target)]
+
+
+def test_batches_are_written_while_computing_and_stop_once_elements_are_dropped(tmp_path, monkeypatch):
+    monkeypatch.setenv(preview.BATCH_ENV, "0,1")  # a batch after every shape
+    target = tmp_path / "p.npz"
+    (tmp_path / "p.npz.part-1-0001.npz").write_bytes(b"old attempt")
+    collector = preview._Collector(25, {})
+    batches = preview._Batches(target, collector, str, {"elements_total": 7})
+    assert preview.batch_paths(target) == []  # the earlier attempt's files went
+    for shape in (_shape(1, 5.0, 10), _shape(2, 1.0, 4), _shape(3, 9.0, 8)):  # 22 triangles: within the budget
+        collector.add(shape)
+        batches.check()
+    paths = preview.batch_paths(target)
+    assert len(paths) == 3 and [preview.batch_token(path) for path in paths] == [batches.token] * 3
+    assert paths == [preview.batch_path(target, batches.token, number) for number in (1, 2, 3)]
+    collector.add(_shape(5, 2.0, 6))  # 28: the 1 m element is dropped, no more batches from now on
+    batches.check()
+    collector.add(_shape(6, 50.0, 3))
+    batches.check()
+    assert batches.stopped and collector.dropping and len(preview.batch_paths(target)) == 3
+    first, second, third = _batch_meshes(target)
+    assert first.elements == ["1"] and second.elements == ["2"] and third.elements == ["3"]
+    assert first.info == {"elements_total": 7, "batch": 1, "elements": 1, "triangles": 10}
+    assert numpy.array_equal(first.origin, second.origin) and numpy.array_equal(first.origin, third.origin)
+    assert first.origin.tolist() == [2.5, 2.5, 2.5]  # the centre of the first batch's bounding box
+    merged = None
+    for batch in (first, second, third):
+        merged = preview.merge_batch(merged, batch)
+    assert merged.elements == ["1", "2", "3"] and merged.triangle_count == 22
+    assert merged.info == {"elements_total": 7, "batch": 3, "elements": 3, "triangles": 22, "partial": 1}
+    assert merged.triangle_elements.tolist() == [0] * 10 + [1] * 4 + [2] * 8
+    assert int(merged.indices.max()) == len(merged.positions) - 1 == 8
+    assert preview.remove_batches(target) == 3 and preview.batch_paths(target) == []
+    # Odd names beside the target are no batches of it.
+    (tmp_path / "p.npz.part-1-0001.npz.part").write_bytes(b"being written")
+    (tmp_path / "p.npz.part-x-0001.npz").write_bytes(b"?")
+    (tmp_path / "q.npz.part-1-0001.npz").write_bytes(b"another preview")
+    assert preview.batch_paths(target) == []
+
+
+def test_merging_batches_of_different_origins():
+    one = _cube()
+    other = _cube()
+    other.origin = one.origin + [1.0, 0.0, 0.0]
+    other.elements = ["IfcSlab 0def"]
+    merged = preview.merge_batch(preview.merge_batch(None, one), other)
+    assert merged.elements == one.elements + other.elements and merged.triangle_count == 24
+    assert numpy.array_equal(merged.origin, one.origin)
+    assert numpy.allclose(merged.positions[8:], one.positions + [1.0, 0.0, 0.0])
+    assert merged.indices[36:].tolist() == (one.indices + 8).tolist()
+    assert merged.triangle_elements.tolist() == [0] * 12 + [1] * 12 and merged.info["partial"] == 1
+
+
+def test_batch_settings_come_from_the_environment(monkeypatch):
+    monkeypatch.delenv(preview.BATCH_ENV, raising=False)
+    assert preview.batch_settings() == (preview.BATCH_SECONDS, preview.BATCH_TRIANGLES)
+    monkeypatch.setenv(preview.BATCH_ENV, "0.5,1000")
+    assert preview.batch_settings() == (0.5, 1000)
+    monkeypatch.setenv(preview.BATCH_ENV, "nonsense")
+    assert preview.batch_settings() == (preview.BATCH_SECONDS, preview.BATCH_TRIANGLES)
+
+
+@pytest.mark.skipif(not (CORPUS / "duplex.ifc").exists(), reason="test corpus not on this machine")
+def test_batches_of_a_real_model_merge_to_its_preview(tmp_path, monkeypatch):
+    monkeypatch.setenv(preview.BATCH_ENV, "0.05,2000")
+    target = tmp_path / "duplex.npz"
+    mesh = _compute(CORPUS / "duplex.ifc", target)
+    batches = _batch_meshes(target)
+    assert len(batches) >= 3
+    merged = None
+    for batch in batches:
+        assert batch.info["elements_total"] == len(mesh.elements) and "partial" not in batch.info
+        merged = preview.merge_batch(merged, batch)
+    # The shapes after the last batch are only in the final file (which replaces the batches).
+    assert set(merged.elements) < set(mesh.elements) and len(merged.elements) > len(mesh.elements) * 0.8
+    assert merged.triangle_count < mesh.triangle_count and len(set(merged.elements)) == len(merged.elements)
+    assert merged.info["details_left_out"] == mesh.info["details_left_out"] > 0
+    assert "furniture" in mesh.info["detail_kinds"]
+    # Every element where the final preview has it (the origins differ: the first batch's centre).
+    final = {label: _element_points(mesh, number).min(axis=0) for number, label in enumerate(mesh.elements)}
+    for number, label in enumerate(merged.elements):
+        assert numpy.abs(_element_points(merged, number).min(axis=0) - final[label]).max() < 1e-3, label
+    # Structure first: slabs and walls are in the first batches, doors and windows later.
+    classes = [label.split()[0] for label in merged.elements]
+    assert classes.index("IfcSlab") < classes.index("IfcDoor") and classes.index("IfcWallStandardCase") < \
+        classes.index("IfcWindow")
+    assert preview.remove_batches(target) == len(batches)
+
+
+def test_the_cache_key_follows_the_preview_settings(wall_ifc, own_cache, monkeypatch):
+    path = preview.preview_path(wall_ifc)
+    monkeypatch.setattr(preview, "PREVIEW_DETAIL_CLASSES", {"furniture": ["IfcFurnishingElement", "IfcDoor"]})
+    changed = preview.preview_path(wall_ifc)
+    assert changed != path
+    monkeypatch.setattr(converter, "DEEP_NESTING", 50)
+    assert preview.preview_path(wall_ifc) not in (path, changed)
+
+
+def test_stale_batch_files_are_pruned_and_fresh_ones_kept(own_cache):
+    own_cache.mkdir(parents=True)
+    kept = own_cache / "a.npz"
+    kept.write_bytes(b"x" * 1000)
+    stale, fresh = own_cache / "a.npz.part-1-0001.npz", own_cache / "a.npz.part-2-0001.npz"
+    stale.write_bytes(b"x" * 5000)  # does not count as a preview for the limit
+    os.utime(stale, (1_000_000, 1_000_000))
+    fresh.write_bytes(b"x" * 5000)
+    assert preview.prune_cache(limit=2000) == 1
+    assert kept.exists() and fresh.exists() and not stale.exists()
