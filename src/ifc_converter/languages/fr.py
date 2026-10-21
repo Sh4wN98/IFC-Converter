@@ -101,6 +101,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "Enregistrement de l'aperçu ({count} triangles) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Trop de triangles pour l'aperçu (plus de {limit} par élément).",
+    "furniture": "mobilier",
+    "MEP": "équipements techniques",
+    "fasteners": "fixations",
+    "reinforcement": "armatures",
+    "deeply nested": "imbriqués profondément",
     # process.py
     "stack overflow": "débordement de pile",
     "The memory was not enough (the process was ended by the system)":
@@ -553,7 +558,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Sélectionnez un fichier dans la liste – son aperçu apparaît ici.",
     "The 3D view is not available on this PC.": "La vue 3D n'est pas disponible sur ce PC.",
     "Compute preview": "Calculer l'aperçu",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Calcule maintenant l'aperçu de ce fichier (priorité basse, 4 threads au plus)\u202f; il est conservé pour la prochaine fois.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Calcule l'aperçu de ce fichier maintenant (priorité basse, au plus 8 threads, 4 pendant une conversion) ; il est conservé pour la prochaine fois.",
     "Stop computing the preview": "Arrêter le calcul de l'aperçu",
     "Reset view": "Réinitialiser la vue",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Vue initiale\u202f: tout le modèle depuis le sud-ouest en hauteur (Début\u202f; double-clic\u202f: tout le modèle)",
@@ -567,6 +573,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "Calcul de l'aperçu\u202f: lecture du fichier IFC …",
     "Loading preview …": "Chargement de l'aperçu …",
     "Preview cancelled.": "Aperçu annulé.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Aucun aperçu possible : le noyau géométrique a planté à plusieurs reprises.",
+    "Preview cancelled – incomplete":
+        "Aperçu annulé – incomplet",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Aperçu incomplet (le noyau géométrique a planté à plusieurs reprises)",
+    "Preview incomplete: {error}":
+        "Aperçu incomplet : {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Aperçu incomplet pour l'instant (le noyau géométrique a planté), le reste est en cours de calcul …",
+    "{count} of {total} elements so far":
+        "{count} éléments sur {total} pour l'instant",
+    "{count} details left out ({kinds})":
+        "{count} détails omis ({kinds})",
     "The preview could not be loaded.": "L'aperçu n'a pas pu être chargé.",
     "The file contains no geometry that can be shown.": "Le fichier ne contient aucune géométrie affichable.",
     "Computing preview … {percent}%": "Calcul de l'aperçu … {percent}\u202f%",

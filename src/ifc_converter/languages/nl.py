@@ -101,6 +101,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "Voorbeeld wordt opgeslagen ({count} driehoeken) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Te veel driehoeken voor het voorbeeld (meer dan {limit} per element).",
+    "furniture": "meubilair",
+    "MEP": "installaties",
+    "fasteners": "bevestigingen",
+    "reinforcement": "wapening",
+    "deeply nested": "diep genest",
     # process.py
     "stack overflow": "stackoverflow",
     "The memory was not enough (the process was ended by the system)":
@@ -546,7 +551,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Selecteer een bestand in de lijst – het voorbeeld verschijnt hier.",
     "The 3D view is not available on this PC.": "De 3D-weergave is op deze pc niet beschikbaar.",
     "Compute preview": "Voorbeeld berekenen",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Berekent het voorbeeld van dit bestand nu (lage prioriteit, maximaal 4 threads); het wordt bewaard voor de volgende keer.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Berekent het voorbeeld van dit bestand nu (lage prioriteit, hoogstens 8 threads, 4 tijdens een conversie); het wordt bewaard voor de volgende keer.",
     "Stop computing the preview": "Berekening van het voorbeeld stoppen",
     "Reset view": "Weergave herstellen",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Beginweergave: het hele model schuin vanuit het zuidwesten (Home; dubbelklik: hele model)",
@@ -560,6 +566,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "Voorbeeld wordt berekend: IFC-bestand wordt gelezen …",
     "Loading preview …": "Voorbeeld wordt geladen …",
     "Preview cancelled.": "Voorbeeld geannuleerd.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Geen voorbeeld mogelijk: de geometriekernel is herhaaldelijk vastgelopen.",
+    "Preview cancelled – incomplete":
+        "Voorbeeld geannuleerd – onvolledig",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Voorbeeld onvolledig (de geometriekernel is herhaaldelijk vastgelopen)",
+    "Preview incomplete: {error}":
+        "Voorbeeld onvolledig: {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Voorbeeld tot nu toe onvolledig (de geometriekernel is vastgelopen), de rest wordt berekend …",
+    "{count} of {total} elements so far":
+        "tot nu toe {count} van {total} elementen",
+    "{count} details left out ({kinds})":
+        "{count} details weggelaten ({kinds})",
     "The preview could not be loaded.": "Het voorbeeld kon niet worden geladen.",
     "The file contains no geometry that can be shown.": "Het bestand bevat geen geometrie die kan worden getoond.",
     "Computing preview … {percent}%": "Voorbeeld wordt berekend … {percent} %",
