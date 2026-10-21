@@ -10,6 +10,9 @@ duplex, revit_arc, Clinic Architectural and an IFC4X3 bridge, see tests/test_for
 - ``dae``: COLLADA 1.4.1, triangle meshes, Z-up, in metres, one node per element (name = GlobalId),
   materials from the IFC styles. The whole document is kept in memory and written at the end.
 
+Elements the kernel delivers inside out (mirrored type geometry, Revit's inward surface models) are
+turned outwards before they are written, like in the Rhino export (see outward_element).
+
 Not offered:
 
 - ``stp``/``step``: OpenCASCADE's STEP writer takes the kernel's B-rep without the element placement
@@ -33,6 +36,7 @@ from pathlib import Path
 
 import ifcopenshell.geom as geom
 import ifcopenshell.ifcopenshell_wrapper as wrapper
+import numpy
 
 from ifc_converter.i18n import tr
 
@@ -88,6 +92,41 @@ def requires_opencascade(fmt: str) -> bool:
     return serializer is not None and serializer.native
 
 
+def outward_element(shape, solids):
+    """``shape`` with its inside-out shells turned outwards, as the Rhino export writes them.
+
+    IfcOpenShell applies a mirroring type placement (Revit's mirrored doors, windows and furniture)
+    to the vertices without reversing the triangles, and leaves Revit's inward surface models as
+    they are, so its serializers write those elements inside out: normals pointing in, a negative
+    volume, dark shading in viewers that light one side. rhino._outward decides which items to turn
+    (solids as a whole, closed surface models); the triangulation is rebuilt with the turned faces
+    and handed to the serializer as a new element of the same product, placement and materials.
+    The shape itself is returned when nothing turns (the common case).
+    """
+    from ifc_converter.rhino import _outward
+
+    geometry = shape.geometry
+    faces, _ = _outward(geometry, solids)
+    original = geometry.faces_buffer
+    if faces is original or faces == original:
+        return shape
+    turned = numpy.frombuffer(faces, dtype=numpy.int32).reshape(-1, 3)
+    normals = list(geometry.normals)
+    if normals:
+        # Vertex normals of the turned triangles point the other way, too.
+        before = numpy.frombuffer(original, dtype=numpy.int32).reshape(-1, 3)
+        flipped = (turned != before).any(axis=1)
+        vectors = numpy.array(normals, dtype=numpy.float64).reshape(-1, 3)
+        vectors[numpy.unique(before[flipped])] *= -1.0
+        normals = vectors.ravel().tolist()
+    triangulation = wrapper.triangulation(
+        geometry.settings(), geometry.entity(), geometry.id, list(geometry.verts), turned.ravel().tolist(),
+        list(geometry.edges), normals, list(geometry.uvs), list(geometry.material_ids), list(geometry.materials),
+        list(geometry.item_ids), list(geometry.edges_item_ids),
+    )
+    return wrapper.triangulation_element(shape, triangulation)
+
+
 def write(
     model, target: Path, fmt: str, threads: int, progress: Callable[[int], None] | None,
     report: Callable[[str, str], None] = lambda phase, text: None,
@@ -98,6 +137,7 @@ def write(
     native format the kernel strategy is "opencascade" whatever the conversion asked for.
     """
     from ifc_converter import converter
+    from ifc_converter.rhino import _SolidItems
 
     serializer = SERIALIZERS[fmt]
     settings = geom.settings()
@@ -117,12 +157,13 @@ def write(
         writer.writeHeader()
 
         elements = 0
+        solids = _SolidItems(model)
         for shape in converter.iter_shapes(
             model, settings, threads, converter.EXCLUDED_CLASSES, progress, 95, status=report,
         ):
             if not converter.has_geometry(shape):  # nothing to write, so it counts as skipped
                 continue
-            writer.write(shape)
+            writer.write(shape if serializer.native else outward_element(shape, solids))
             elements += 1
         report("write", serializer.phase())
         writer.finalize()
