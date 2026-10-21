@@ -39,7 +39,7 @@
 <p class="figure"><img src="window-de.png"></p>
 <p class="caption">Das Programmfenster: Dateiliste und Vorschau links, Zielformat und Speicherort rechts, Protokoll unten.</p>
 <ol>
-  <li>IFC-Dateien oder ganze Ordner in das Fenster ziehen (oder „Dateien hinzufügen…“). Dateien unter 150 MB zeigen sofort eine 3D-Vorschau.</li>
+  <li>IFC-Dateien oder ganze Ordner in das Fenster ziehen (oder „Dateien hinzufügen…“). Die 3D-Vorschau baut sich auf, während sie berechnet wird: tragende Struktur zuerst, Möbel und Haustechnik bleiben weg.</li>
   <li>Rechts das <b>Zielformat</b> wählen. Für Rhino: <b>Polyflächen</b> (echte Öffnungen, bearbeitbar, 1,2–4,5× größere Datei) oder <b>Netze</b> (kleinste Datei, schnellste Umwandlung – bei sehr großen Modellen die bessere Wahl).</li>
   <li><b>Speicherort</b> prüfen (Standard: Desktop) oder „Neben der IFC-Datei speichern“.</li>
   <li><b>Konvertieren</b> klicken. Der Fortschritt steht je Datei in der Liste, „Ausgabeordner öffnen“ führt zum Ergebnis.</li>
@@ -67,7 +67,7 @@
   <tr><td>Bauteil-Info</td><td>Klick auf ein Bauteil zeigt Klasse, GlobalId und Name; Esc hebt die Auswahl auf</td></tr>
   <tr><td>Darstellung</td><td>Knöpfe der Ansichtsleiste für Kantenlinien an/aus (E) und Perspektive/Parallelprojektion (P)</td></tr>
 </table>
-<p>Große Dateien werden erst auf Knopfdruck („Vorschau berechnen“) vorberechnet. Ohne Grafikbeschleunigung (Remote-Desktop, virtuelle Maschine) zeichnet das Programm automatisch in Software.</p>
+<p>Die Vorschau startet von selbst, wenn der freie Arbeitsspeicher für die Datei reicht, sonst auf Knopfdruck („Vorschau berechnen“); das Einlesen der IFC-Datei dauert etwa 35 s je 600 MB, danach wächst das Bild alle paar Sekunden. Ohne Grafikbeschleunigung (Remote-Desktop, virtuelle Maschine) zeichnet das Programm automatisch in Software.</p>
 
 <h2>5. Sprache</h2>
 <p>Menü <b>Extras → Sprache</b> (englisch: Tools → Language). Nach der Wahl bietet das Programm einen Neustart an. Verfügbar: Deutsch, Englisch, Französisch, Spanisch, Italienisch, Portugiesisch, Niederländisch, Polnisch, Türkisch. Beim ersten Start ist die Oberfläche englisch.</p>
@@ -112,7 +112,7 @@
 <p class="figure"><img src="window-en.png"></p>
 <p class="caption">The window: file list and preview on the left, output format and folder on the right, log at the bottom.</p>
 <ol>
-  <li>Drag IFC files or whole folders into the window (or “Add files…”). Files under 150 MB show a 3D preview right away.</li>
+  <li>Drag IFC files or whole folders into the window (or “Add files…”). The 3D preview builds up while it is computed: structure first, furniture and MEP are left out.</li>
   <li>Pick the <b>output format</b> on the right. For Rhino: <b>Polysurfaces</b> (real openings, editable, 1.2–4.5× larger file) or <b>Meshes</b> (smallest file, fastest conversion – the better choice for very large models).</li>
   <li>Check the <b>output folder</b> (default: Desktop) or tick “Save next to the IFC file”.</li>
   <li>Click <b>Convert</b>. Progress is shown per file; “Open output folder” takes you to the result.</li>
@@ -140,7 +140,7 @@
   <tr><td>Element info</td><td>click an element to see class, GlobalId and name; Esc clears the selection</td></tr>
   <tr><td>Display</td><td>view bar buttons for edge lines on/off (E) and perspective/parallel projection (P)</td></tr>
 </table>
-<p>Large files are computed on request (“Compute preview”). Without graphics acceleration (remote desktop, virtual machine) the program draws in software automatically.</p>
+<p>The preview starts on its own when the free memory has room for the file, otherwise on request (“Compute preview”); reading the IFC file takes about 35 s per 600 MB, after that the picture grows every few seconds. Without graphics acceleration (remote desktop, virtual machine) the program draws in software automatically.</p>
 
 <h2>5. Language</h2>
 <p>Menu <b>Tools → Language</b>. After choosing, the program offers to restart. Available: English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Turkish. The first start is in English.</p>

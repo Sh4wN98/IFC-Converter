@@ -284,8 +284,13 @@ def test_convert_with_the_hull_only(house_ifc, tmp_path):
 
 
 def test_the_preview_ignores_the_option(house_ifc, tmp_path):
+    from ifc_converter.preview import load_preview
+
     result = convert(house_ifc, tmp_path / "p.npz", "preview", threads=2, envelope=True)
-    assert result.elements == 9 and result.inside == 0
+    # 8, not 9: the table is a detail the preview leaves out on its own (counted), not "inside".
+    assert result.elements == 8 and result.inside == 0
+    info = load_preview(tmp_path / "p.npz").info
+    assert info["details_left_out"] == 1 and info["detail_kinds"] == "furniture"
 
 
 def test_a_closed_house_with_nothing_inside_is_not_taken_as_open(house_ifc):
