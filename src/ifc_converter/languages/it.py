@@ -110,6 +110,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "Salvataggio dell’anteprima ({count} triangoli) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Troppi triangoli per l’anteprima (più di {limit} per elemento).",
+    "furniture": "arredi",
+    "MEP": "impianti",
+    "fasteners": "fissaggi",
+    "reinforcement": "armature",
+    "deeply nested": "annidati in profondità",
     # process.py
     "stack overflow": "overflow dello stack",
     "The memory was not enough (the process was ended by the system)":
@@ -557,7 +562,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Selezionare un file nell’elenco – la sua anteprima appare qui.",
     "The 3D view is not available on this PC.": "La vista 3D non è disponibile su questo PC.",
     "Compute preview": "Calcola anteprima",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Calcola adesso l’anteprima di questo file (bassa priorità, al massimo 4 thread); viene conservata per la prossima volta.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Calcola ora l’anteprima di questo file (priorità bassa, al massimo 8 thread, 4 durante una conversione); viene conservata per la prossima volta.",
     "Stop computing the preview": "Interrompi il calcolo dell’anteprima",
     "Reset view": "Ripristina vista",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Vista iniziale: l’intero modello da sud-ovest dall’alto (Home; doppio clic: intero modello)",
@@ -571,6 +577,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "Calcolo dell’anteprima: lettura del file IFC …",
     "Loading preview …": "Caricamento dell’anteprima …",
     "Preview cancelled.": "Anteprima annullata.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Nessuna anteprima possibile: il kernel geometrico si è bloccato ripetutamente.",
+    "Preview cancelled – incomplete":
+        "Anteprima annullata – incompleta",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Anteprima incompleta (il kernel geometrico si è bloccato ripetutamente)",
+    "Preview incomplete: {error}":
+        "Anteprima incompleta: {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Anteprima finora incompleta (il kernel geometrico si è bloccato), calcolo del resto in corso …",
+    "{count} of {total} elements so far":
+        "{count} di {total} elementi finora",
+    "{count} details left out ({kinds})":
+        "{count} dettagli tralasciati ({kinds})",
     "The preview could not be loaded.": "Impossibile caricare l’anteprima.",
     "The file contains no geometry that can be shown.": "Il file non contiene geometria visualizzabile.",
     "Computing preview … {percent}%": "Calcolo dell’anteprima … {percent} %",

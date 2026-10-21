@@ -110,6 +110,11 @@ TEXTS: dict[str, str] = {
     "Saving preview ({count} triangles) …": "Vorschau wird gespeichert ({count} Dreiecke) …",
     "Too many triangles for the preview (more than {limit} per element).":
         "Zu viele Dreiecke für die Vorschau (mehr als {limit} je Bauteil).",
+    "furniture": "Möbel",
+    "MEP": "Haustechnik",
+    "fasteners": "Befestigungen",
+    "reinforcement": "Bewehrung",
+    "deeply nested": "tief verschachtelt",
     # process.py
     "stack overflow": "Stapelüberlauf",
     "The memory was not enough (the process was ended by the system)":
@@ -559,7 +564,8 @@ TEXTS: dict[str, str] = {
     "Select a file in the list – its preview appears here.": "Eine Datei in der Liste auswählen – ihre Vorschau erscheint hier.",
     "The 3D view is not available on this PC.": "Die 3D-Ansicht ist auf diesem PC nicht verfügbar.",
     "Compute preview": "Vorschau berechnen",
-    "Computes the preview of this file now (low priority, at most 4 threads); it is kept for next time.": "Berechnet die Vorschau dieser Datei jetzt (niedrige Priorität, höchstens 4 Threads); sie wird gemerkt.",
+    "Computes the preview of this file now (low priority, at most 8 threads, 4 while a conversion runs); it is kept for next time.":
+        "Berechnet die Vorschau dieser Datei jetzt (niedrige Priorität, höchstens 8 Threads, 4 während einer Konvertierung); sie wird gemerkt.",
     "Stop computing the preview": "Berechnung der Vorschau abbrechen",
     "Reset view": "Ansicht zurücksetzen",
     "Start view: the whole model from the south-west above (Home; double-click: whole model)": "Startansicht: ganzes Modell schräg von Südwesten (Pos1; Doppelklick: ganzes Modell)",
@@ -573,6 +579,20 @@ TEXTS: dict[str, str] = {
     "Computing preview: reading the IFC file …": "Vorschau wird berechnet: IFC-Datei wird gelesen …",
     "Loading preview …": "Vorschau wird geladen …",
     "Preview cancelled.": "Vorschau abgebrochen.",
+    "No preview possible: the geometry kernel crashed repeatedly.":
+        "Keine Vorschau möglich: Der Geometriekern ist wiederholt abgestürzt.",
+    "Preview cancelled – incomplete":
+        "Vorschau abgebrochen – unvollständig",
+    "Preview incomplete (the geometry kernel crashed repeatedly)":
+        "Vorschau unvollständig (der Geometriekern ist wiederholt abgestürzt)",
+    "Preview incomplete: {error}":
+        "Vorschau unvollständig: {error}",
+    "Preview incomplete so far (the geometry kernel crashed), computing the rest …":
+        "Vorschau bisher unvollständig (der Geometriekern ist abgestürzt), der Rest wird berechnet …",
+    "{count} of {total} elements so far":
+        "bisher {count} von {total} Bauteilen",
+    "{count} details left out ({kinds})":
+        "{count} Details weggelassen ({kinds})",
     "The preview could not be loaded.": "Die Vorschau ließ sich nicht laden.",
     "The file contains no geometry that can be shown.": "Die Datei enthält keine darstellbare Geometrie.",
     "Computing preview … {percent}%": "Vorschau wird berechnet … {percent} %",
