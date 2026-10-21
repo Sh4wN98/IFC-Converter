@@ -42,6 +42,7 @@ MODES = {
     "3dm-mesh-blocks": ("3dm", "mesh", True),
     "glb": ("glb", "brep", False),
     "obj": ("obj", "brep", False),
+    "dae": ("dae", "brep", False),
 }
 # Elements compared per file (chosen at random with a fixed seed), plus up to GROUND_TRUTH_SAMPLE
 # elements with independently known dimensions.
@@ -249,7 +250,7 @@ def compare(output: Shape, reference: Shape) -> dict:
 
 def read_output(path: Path, fmt: str, wanted: set[str]) -> tuple[dict[str, Shape], dict]:
     """The shapes of the wanted GlobalIds in a converted file, and facts about the file."""
-    reader = {"3dm": read_3dm, "glb": read_glb, "obj": read_obj}[fmt]
+    reader = {"3dm": read_3dm, "glb": read_glb, "obj": read_obj, "dae": read_dae}[fmt]
     shapes, info = reader(path, wanted)
     return {guid: merge_shapes(parts) for guid, parts in shapes.items()}, info
 
@@ -484,6 +485,100 @@ def read_obj(path: Path, wanted: set[str]) -> tuple[dict[str, list[Shape]], dict
                 points, first, faces = [], count, []
     flush()
     return shapes, info
+
+
+def read_dae(path: Path, wanted: set[str]) -> tuple[dict[str, list[Shape]], dict]:
+    """Nodes of a COLLADA file placed by their matrices (Z-up as written by IfcOpenShell)."""
+    shapes: dict[str, list[Shape]] = {}
+    info = {}
+    for guid, points, triangles in iter_dae(path, info):
+        if guid in wanted:
+            shapes.setdefault(guid, []).append(mesh_shape(points, triangles))
+    return shapes, info
+
+
+def iter_dae(path: Path, info: dict):
+    """Yield (GlobalId or None, world points, triangles) per instanced geometry of a COLLADA 1.4
+    file; ``info`` gets the asset's unit and up axis, the materials (diffuse colour, transparency by
+    material id) and the node and geometry counts."""
+    import xml.etree.ElementTree as ET
+
+    ns = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
+    root = ET.parse(str(path)).getroot()
+    asset = root.find("c:asset", ns)
+    unit = asset.find("c:unit", ns) if asset is not None else None
+    up = asset.find("c:up_axis", ns) if asset is not None else None
+    info.update({
+        "unit_name": unit.get("name") if unit is not None else None,
+        "unit_meter": float(unit.get("meter")) if unit is not None and unit.get("meter") else None,
+        "up_axis": up.text if up is not None else None, "nodes": 0, "geometries": 0, "materials": {},
+    })
+    effects = {}
+    for effect in root.iterfind("c:library_effects/c:effect", ns):
+        colour = effect.find(".//c:diffuse/c:color", ns)
+        transparency = effect.find(".//c:transparency/c:float", ns)
+        effects[effect.get("id")] = {
+            "diffuse": [float(v) for v in colour.text.split()] if colour is not None else None,
+            "transparency": float(transparency.text) if transparency is not None else None,
+        }
+    for material in root.iterfind("c:library_materials/c:material", ns):
+        instance = material.find("c:instance_effect", ns)
+        info["materials"][material.get("id")] = effects.get(instance.get("url").lstrip("#")) if instance is not None else None
+    geometries = {}
+    for geometry in root.iterfind("c:library_geometries/c:geometry", ns):
+        mesh = geometry.find("c:mesh", ns)
+        if mesh is None:
+            continue
+        sources = {}
+        for source in mesh.iterfind("c:source", ns):
+            array = source.find("c:float_array", ns)
+            accessor = source.find("c:technique_common/c:accessor", ns)
+            stride = int(accessor.get("stride", 3)) if accessor is not None else 3
+            sources[source.get("id")] = numpy.array(array.text.split(), dtype=numpy.float64).reshape(-1, stride)
+        vertices = {}
+        for v in mesh.iterfind("c:vertices", ns):
+            position = v.find("c:input[@semantic='POSITION']", ns)
+            vertices[v.get("id")] = sources[position.get("source").lstrip("#")]
+        parts = []
+        for tri in mesh.iterfind("c:triangles", ns):
+            inputs = tri.findall("c:input", ns)
+            stride = max(int(i.get("offset", 0)) for i in inputs) + 1
+            vertex_input = next(i for i in inputs if i.get("semantic") == "VERTEX")
+            offset = int(vertex_input.get("offset", 0))
+            points = vertices[vertex_input.get("source").lstrip("#")]
+            p = tri.find("c:p", ns)
+            if p is not None and p.text:
+                indices = numpy.array(p.text.split(), dtype=numpy.int64).reshape(-1, stride)[:, offset].reshape(-1, 3)
+            else:
+                indices = numpy.zeros((0, 3), dtype=numpy.int64)
+            parts.append((points, indices))
+        geometries[geometry.get("id")] = parts
+        info["geometries"] += 1
+
+    def walk(node, parent):
+        info["nodes"] += 1
+        matrix = parent
+        m = node.find("c:matrix", ns)
+        if m is not None:
+            matrix = parent @ numpy.array(m.text.split(), dtype=numpy.float64).reshape(4, 4)
+        for t in node.findall("c:translate", ns):
+            translation = numpy.eye(4)
+            translation[:3, 3] = [float(v) for v in t.text.split()]
+            matrix = matrix @ translation
+        match = _GUID_IN_NAME.search(node.get("id", "") + " " + node.get("name", ""))
+        guid = _compress(match.group(1)) if match else None
+        for instance in node.findall("c:instance_geometry", ns):
+            for points, indices in geometries.get(instance.get("url").lstrip("#"), []):
+                placed = points @ matrix[:3, :3].T + matrix[:3, 3]
+                if numpy.linalg.det(matrix[:3, :3]) < 0:  # a mirroring node flips the winding
+                    indices = indices[:, [0, 2, 1]]
+                yield guid, placed, indices
+        for child in node.findall("c:node", ns):
+            yield from walk(child, matrix)
+
+    for scene in root.iterfind("c:library_visual_scenes/c:visual_scene", ns):
+        for node in scene.findall("c:node", ns):
+            yield from walk(node, numpy.eye(4))
 
 
 def _digits(number: bytes) -> int:
