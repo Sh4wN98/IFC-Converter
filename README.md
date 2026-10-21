@@ -1,293 +1,245 @@
-# IFC File Converter
+# IFC Converter
 
-Kleines Programm (mit Fenster oder als Kommandozeilen-Tool), das IFC-Gebäudemodelle in 3D-Formate umwandelt:
+Convert IFC building models to **Rhino (3DM), GLB, OBJ and DAE** – with exact dimensions, without touching the IFC file, and without slowing down the other programs on your workstation. A desktop program for Windows and Linux, plus a command-line tool.
 
-| Format | Endung | Gut für |
+**[Download the latest release](https://github.com/Sh4wN98/IFC-Converter/releases/latest)** – Windows installer, portable ZIP, Linux tarball and this guide as a PDF (`IFC-Converter-<version>-Guide.pdf`). Die ausführliche deutsche Dokumentation steht in [docs/README-de.md](docs/README-de.md).
+
+| Output | Extension | Good for |
 |---|---|---|
-| Rhino | `.3dm` | Rhino, Grasshopper (Layer pro Geschoss und Bauteiltyp, IFC-Daten als Attribute) |
-| glTF (binär) | `.glb` | Web-Viewer, Three.js, Blender, Game-Engines |
-| Wavefront OBJ | `.obj` + `.mtl` | Blender, fast jedes 3D-Programm |
+| Rhino | `.3dm` | Rhino 7/8, Grasshopper – layers per storey and element class, IFC data as user text |
+| glTF (binary) | `.glb` | web viewers, Three.js, Blender, game engines |
+| Wavefront OBJ | `.obj` + `.mtl` | almost every 3D program |
+| Collada | `.dae` | SketchUp, ArchiCAD, Blender |
 
-Die Geometrie wird mit [IfcOpenShell](https://ifcopenshell.org) berechnet und in Metern ausgegeben.
-Öffnungskörper (`IfcOpeningElement`) werden nie exportiert. Raumvolumen (`IfcSpace`) landen nur in `.3dm`, dort auf eigenen Layern zum Ausblenden.
+Input: IFC2x3, IFC4 and IFC4.3 (also IFC2x2 and the IFC4x4 draft), as `.ifc` or packed `.ifczip`. ifcXML is not supported. Geometry is computed with [IfcOpenShell](https://ifcopenshell.org) and OpenCASCADE and written in metres.
 
-## Installation unter Windows
+## Contents
 
-Der Converter wird wie ein normales Windows-Programm installiert, Python ist dafür nicht nötig.
+1. [Installation on Windows](#installation-on-windows)
+2. [Installation on Linux](#installation-on-linux)
+3. [Getting started](#getting-started)
+4. [Output formats and options](#output-formats-and-options)
+5. [3D preview](#3d-preview)
+6. [Accuracy](#accuracy)
+7. [Large models](#large-models)
+8. [Language](#language)
+9. [Log file, privacy and feedback](#log-file-privacy-and-feedback)
+10. [Command line](#command-line)
+11. [Development](#development)
 
-- **Installer:** `IFC-Converter-<Version>-Setup.exe` (aus den [Releases](https://github.com/Sh4wN98/IFC-Converter/releases)) doppelklicken.
-  - Keine Administratorrechte nötig: installiert wird nur für den angemeldeten Benutzer nach `%LOCALAPPDATA%\Programs\IFC Converter`, dazu ein Eintrag im Startmenü.
-  - Desktop-Symbol und ein „Öffnen mit“-Eintrag für `.ifc`-Dateien sind wählbar, aber standardmäßig aus. Das Standardprogramm für IFC-Dateien wird nie geändert.
-  - Keine Dienste, kein Autostart, keine Hintergrund-Updates, keine Internetverbindung im Betrieb.
-- **Portable Version:** `IFC-Converter-<Version>-portable.zip` entpacken (z. B. in „Dokumente“) und `IFC Converter.exe` im entpackten Ordner starten. Nichts wird installiert.
-- **Windows SmartScreen:** Das Programm ist nicht digital signiert. Beim ersten Start des Installers (bzw. der portablen exe) erscheint deshalb „Der Computer wurde durch Windows geschützt“. Dann auf **„Weitere Informationen“ → „Trotzdem ausführen“** klicken. Blockiert der Virenscanner der Firma das Programm, die IT um eine Ausnahme für den Programmordner bitten.
-- **Update:** Den Installer der neuen Version ausführen. Er ersetzt die alte Version; Einstellungen bleiben erhalten. Läuft der Converter noch (Fenster oder `ifc-convert`, z. B. mit einer langen Umwandlung), bittet der Installer, ihn erst zu schließen, und macht sonst nichts – eine laufende Umwandlung wird nie abgebrochen.
-- **Deinstallation:** Windows-Einstellungen → Apps → „IFC Converter“ → Deinstallieren (ebenfalls erst, wenn der Converter beendet ist). Einstellungen und Logdateien (`%APPDATA%\IFC Converter`, `%LOCALAPPDATA%\IFC Converter`) bleiben liegen und können bei Bedarf von Hand gelöscht werden; entfernt werden der „Öffnen mit“-Eintrag und die alten Einstellungen in der Registry (`HKCU\Software\IFC File Converter\IFC File Converter`, aus der Zeit vor der Umbenennung). Die portable Version wird einfach gelöscht.
-- **Kommandozeile:** Neben `IFC Converter.exe` liegt `ifc-convert.exe` mit denselben Optionen wie unten beschrieben, z. B. `"%LOCALAPPDATA%\Programs\IFC Converter\ifc-convert.exe" haus.ifc -f 3dm`. Ohne Argumente (Doppelklick) startet der Terminal-Modus.
+## Installation on Windows
 
-## Installation unter Linux
+The converter installs like any Windows program; Python is not needed.
 
-Für Linux (x86_64, jede aktuelle Distribution mit Desktop) gibt es `IFC-Converter-<Version>-linux-x86_64.tar.gz` aus den [Releases](https://github.com/Sh4wN98/IFC-Converter/releases); Python ist nicht nötig.
+- **Installer:** double-click `IFC-Converter-<version>-Setup.exe` from the [releases](https://github.com/Sh4wN98/IFC-Converter/releases). No administrator rights: it installs for the signed-in user only (`%LOCALAPPDATA%\Programs\IFC Converter`) with a Start menu entry. A desktop icon and an “Open with” entry for `.ifc` files are optional and off by default; the default program for IFC files is never changed. No services, no autostart, no background updates, no internet connection while running.
+- **Portable:** unpack `IFC-Converter-<version>-portable.zip` (for example into Documents) and start `IFC Converter.exe`. Nothing is installed.
+- **Windows SmartScreen:** the program is not code-signed, so the first start shows “Windows protected your PC”. Click **“More info” → “Run anyway”**. If the company virus scanner blocks the program, ask IT for an exception for the program folder.
+- **Update:** run the installer of the new version. It replaces the old one; settings are kept. If the converter is still running (window or `ifc-convert`), the installer asks you to close it first and changes nothing – a running conversion is never interrupted.
+- **Uninstall:** Windows Settings → Apps → “IFC Converter”. Settings and log files (`%APPDATA%\IFC Converter`, `%LOCALAPPDATA%\IFC Converter`) are left in place and can be deleted by hand.
+- **Command line:** `ifc-convert.exe` sits next to `IFC Converter.exe` with the options described [below](#command-line).
+
+## Installation on Linux
+
+For Linux (x86_64, any current desktop distribution) there is `IFC-Converter-<version>-linux-x86_64.tar.gz` in the releases; Python is not needed.
 
 ```bash
-tar xzf IFC-Converter-<Version>-linux-x86_64.tar.gz
-cd IFC-Converter-<Version>-linux-x86_64
+tar xzf IFC-Converter-<version>-linux-x86_64.tar.gz
+cd IFC-Converter-<version>-linux-x86_64
 ./install.sh
 ```
 
-- **Ohne Root, nur für den angemeldeten Benutzer:** `install.sh` kopiert das Programm nach `~/.local/opt/ifc-converter`, legt die Befehle `~/.local/bin/ifc-converter` (Fenster) und `~/.local/bin/ifc-convert` (Kommandozeile) an, einen Eintrag „IFC Converter“ im Anwendungsmenü mit Symbol und einen „Öffnen mit“-Eintrag für `.ifc`-Dateien (MIME-Typ `application/x-ifc`). Das Standardprogramm für IFC-Dateien wird nicht geändert. Anderer Ort: `IFC_CONVERTER_PREFIX=/pfad ./install.sh`.
-- **Ohne Installation:** im entpackten Ordner direkt `ifc-converter/ifc-converter` (Fenster) bzw. `ifc-converter/ifc-convert haus.ifc -f 3dm` starten. Nichts wird installiert.
-- **Update:** `install.sh` der neuen Version ausführen; der Programmordner wird in einem Zug ersetzt, Einstellungen bleiben. Läuft der Converter noch (auch eine Umwandlung im Terminal), bricht `install.sh` ab, ohne etwas zu ändern.
-- **Deinstallation:** `~/.local/opt/ifc-converter/uninstall.sh` (liegt auch im entpackten Ordner). Entfernt Programm, Befehle, Menüeintrag, Symbol und MIME-Typ; verweigert sich ebenfalls bei laufendem Programm. Einstellungen und Logdateien bleiben liegen (siehe unten).
-- **Wayland / X11:** Qt wählt die Anzeige selbst (Wayland-Sitzung → Wayland, sonst X11); beide Plugins sind dabei. Macht eine davon Probleme (kein Fenster, Vorschau schwarz), die andere erzwingen: `QT_QPA_PLATFORM=xcb ifc-converter` bzw. `QT_QPA_PLATFORM=wayland ifc-converter`. Die 3D-Vorschau zeichnet mit OpenGL 3.3 (Mesa reicht, auch in einer VM); geht das nicht, nimmt sie die eigene Darstellung wie unter Windows.
-- **Systembibliotheken:** Mitgeliefert werden Qt, IfcOpenShell, rhino3dm, NumPy und ihre Abhängigkeiten; vom System braucht das Programm nur OpenGL/EGL, xcb, die Wayland-Client-Bibliotheken, fontconfig, D-Bus und GLib, die auf jedem Desktop-Linux vorhanden sind. `install.sh` meldet, was fehlt (Ubuntu/Debian z. B. `sudo apt install libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0 libxcb-sync1 libxcb-xkb1 libxcb-shm0 libxcb-glx0 libgl1 libegl1`).
-- **Wo was liegt:** Einstellungen `~/.config/ifc-converter/settings.ini`; Logdatei `~/.local/state/ifc-converter/logs/ifc-converter.log` (Hilfe → Logdatei öffnen); gemerkte Problem-Bauteile `~/.local/state/ifc-converter/quarantine.json`; Vorschau-Zwischenspeicher `~/.local/state/ifc-converter/previews`; nicht kopierbare Ausgabe `~/.local/state/ifc-converter/rescued`. (`XDG_CONFIG_HOME`/`XDG_STATE_HOME` werden beachtet.) Zwischendateien liegen im Temp-Ordner (`/tmp`).
-- **Prüfsummen:** `SHA256SUMS.txt` im Release enthält die Prüfsummen aller Dateien (Setup.exe, portable ZIP, tar.gz): `sha256sum -c SHA256SUMS.txt` im Download-Ordner.
-- Nicht mitgeliefert: Speichergrenze (Job-Objekt) und Standby-Sperre gibt es nur unter Windows; niedrige Priorität, eigener Umwandlungsprozess und Neustart nach Absturz gelten auch unter Linux.
+- **No root, current user only:** `install.sh` copies the program to `~/.local/opt/ifc-converter`, creates the commands `~/.local/bin/ifc-converter` (window) and `~/.local/bin/ifc-convert` (command line), an application menu entry with icon and an “Open with” entry for `.ifc` files. Another location: `IFC_CONVERTER_PREFIX=/path ./install.sh`.
+- **Without installing:** run `ifc-converter/ifc-converter` (window) or `ifc-converter/ifc-convert house.ifc -f 3dm` straight from the unpacked folder.
+- **Update:** run `install.sh` of the new version; the program folder is replaced in one go, settings are kept. `install.sh` refuses while the converter is running.
+- **Uninstall:** `~/.local/opt/ifc-converter/uninstall.sh` (also in the unpacked folder) removes program, commands, menu entry, icon and MIME type. Settings and log files are left in place.
+- **Wayland / X11:** Qt picks the display system itself; both plugins are included. If one of them makes trouble (no window, black preview), force the other: `QT_QPA_PLATFORM=xcb ifc-converter` or `QT_QPA_PLATFORM=wayland ifc-converter`. The 3D preview draws with OpenGL 3.3 (Mesa is enough, also in a VM); without it, it falls back to its own software renderer.
+- **System libraries:** Qt, IfcOpenShell, rhino3dm, NumPy and their dependencies are included; from the system the program only needs OpenGL/EGL, xcb, the Wayland client libraries, fontconfig, D-Bus and GLib. `install.sh` reports what is missing (Ubuntu/Debian: `sudo apt install libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0 libxcb-sync1 libxcb-xkb1 libxcb-shm0 libxcb-glx0 libgl1 libegl1`).
+- **Where things are:** settings `~/.config/ifc-converter/settings.ini`; log file `~/.local/state/ifc-converter/logs/ifc-converter.log` (Help → Open log file); remembered problem elements `~/.local/state/ifc-converter/quarantine.json`; preview cache `~/.local/state/ifc-converter/previews`; output that could not be copied `~/.local/state/ifc-converter/rescued`. `XDG_CONFIG_HOME` / `XDG_STATE_HOME` are respected; temporary files go to `/tmp`.
+- **Checksums:** `SHA256SUMS.txt` in the release covers all files: `sha256sum -c SHA256SUMS.txt` in the download folder.
+- Not available on Linux: the memory limit (job object) and the standby lock exist on Windows only; low priority, the separate conversion process and the restart after a crash work on both.
 
-## Schnellstart (Programmfenster)
+## Getting started
 
-1. **Installiert:** „IFC Converter“ im Startmenü öffnen. **Aus dem Quellcode:** unter Windows `start.bat` doppelklicken, unter Linux/macOS `./start.sh` ausführen.
-2. Aus dem Quellcode richtet sich der Converter beim ersten Start selbst ein (Internet nötig für den Download von IfcOpenShell, rhino3dm und Qt; Python 3.10 oder neuer muss installiert sein). Nach einem Update passiert das automatisch noch einmal.
-3. IFC-Dateien (`.ifc` oder `.ifczip`, IFC2x3 bis IFC4.3) oder ganze Ordner ins Fenster ziehen (oder „Dateien hinzufügen…“). ifcXML kann nicht gelesen werden. Das alte IFC2x2 (2003) wird als IFC2x3 gelesen, der Tunnel-Entwurf IFC4x4 als IFC4.3 mit Ersatzklassen für seine Entwurfs-Entitäten (IfcTunnel → IfcFacility, IfcUndergroundExcavation/IfcArchElement → IfcBuildingElementProxy); das Protokoll weist darauf hin, Maße und Lage bleiben unverändert.
-4. Format wählen – 3DM (Rhino, Standard), GLB, OBJ oder DAE (Collada, z. B. für SketchUp, Blender, ArchiCAD) –, Ausgabeordner prüfen und auf „Konvertieren“ klicken.
-5. Die fertigen Dateien landen standardmäßig auf dem Desktop. Gibt es den Namen schon, wird `(2)`, `(3)` … angehängt.
+![The window: file list and 3D preview on the left, output format and folder on the right, log at the bottom](docs/guide/window-en.png)
 
-- **Während einer Umwandlung** hinzugefügte Dateien (ins Fenster gezogen, über „Dateien hinzufügen…“ oder per „Öffnen mit“/Ziehen aufs Programmsymbol) werden vorgemerkt und gleich danach mit denselben Einstellungen umgewandelt. Nach „Abbrechen“ bleiben sie in der Liste stehen.
-- **Rechenleistung:** Zu Beginn steht im Protokoll, wie viele Threads die Umwandlung höchstens nutzt und dass sie mit niedriger Priorität läuft. Unter Extras → Einstellungen → Leistung lässt sich die Zahl der Threads verringern, damit andere rechenintensive Programme mehr Luft haben; „Automatisch“ lässt einige Kerne frei und nimmt bei wenig freiem RAM weniger.
-- **Fehler:** Schlägt eine Datei fehl, steht im Protokoll darunter, wo die Details sind (Hilfe → Logdatei öffnen). „Interner Fehler (…)“ bedeutet einen Fehler im Programm selbst: dann bitte die Logdatei mitschicken (siehe „Logdatei und Datenschutz“).
+1. **Add files:** drag IFC files or whole folders into the window, or click “Add files…”. The 3D preview of the selected file builds up while it is computed.
+2. **Pick the output format** on the right. For Rhino choose **Polysurfaces** (real openings, editable, 1.2–4.5× larger file) or **Meshes** (smallest file, fastest conversion – the better choice for very large models).
+3. **Check the output folder** (default: Desktop) or tick “Save next to the IFC file”. If a file name exists already, “(2)”, “(3)” … is appended – nothing is overwritten.
+4. **Click Convert.** Progress is shown per file; “Open output folder” takes you to the result. Files added during a conversion are queued and converted right after it with the same settings.
 
-### 3D-Vorschau
+If a file fails, the log says where the details are (Help → Open log file). “Internal error (…)” means an error in the program itself – please send the anonymised log file (see [feedback](#log-file-privacy-and-feedback)).
 
-Unter der Dateiliste zeigt eine Vorschau die ausgewählte Datei – eine ins Fenster gezogene Datei wird gleich ausgewählt. Ein- und ausblenden: **Ansicht → Vorschau** (F3); die Trennlinie zur Liste lässt sich verschieben. Das Protokoll unten lässt sich ebenso ein- und ausklappen (**Ansicht → Protokoll**, F4, oder der Knopf „Protokoll“ links unten).
+## Output formats and options
 
-- Die Vorschau wird von selbst berechnet, wenn der freie Arbeitsspeicher für die Datei reicht – auch neben einer laufenden Umwandlung (dann mit 4 statt 8 Threads); sonst erst nach Klick auf „Vorschau berechnen“. Sie baut sich auf, während gerechnet wird: alle paar Sekunden kommt ein Zwischenstand, tragende Struktur zuerst (Gelände, Decken, Dächer, Wände, Stützen, Träger, Treppen, Fassaden, Fenster, Türen). Das Einlesen der IFC allein dauert etwa 35 s je 600 MB; danach erscheint das erste Bild innerhalb weniger Sekunden.
-- Möbel, Haustechnik (Rohre, Kanäle, Leitungen, Armaturen), Befestigungen, Bewehrung und sehr tief verschachtelte Bauteile bleiben weg; die Infozeile nennt sie („3.210 Details weggelassen (Möbel, Haustechnik)“). Bei Abbruch, Absturz oder Fehler bleibt das bisher Gezeigte stehen; nach dem zweiten Absturz des Geometriekerns wird nicht weiter versucht, „Erneut versuchen“ startet neu.
-- Eine berechnete Vorschau wird gemerkt und erscheint beim nächsten Mal sofort, auch nach einem Neustart des Programms (solange die Datei unverändert ist).
-- Wechselt man zu einer anderen Datei, wird eine von selbst gestartete Berechnung abgebrochen; eine per Klick gestartete läuft weiter und steht danach bereit.
+### Rhino (.3dm)
 
-Die Vorschau zeigt das Modell zum Drehen und Anschauen, zu Beginn schräg von Südwesten oben, ganz im Bild. Z ist oben.
+- **Polysurfaces** (default): walls, slabs, windows, doors, beams etc. become closed, planar polysurfaces in metres; coplanar faces are merged, window and door openings are real holes. Faceted round things (pipes, ducts, round columns, reinforcement, sanitary objects), very detailed objects (over 1000 triangles) and Revit placeholders (RPC trees/people) stay meshes, as does anything that does not give a valid polysurface.
+- **Meshes:** every element becomes one mesh object – the smallest file and the fastest conversion. Round surfaces are shaded smooth, edges stay sharp.
+- **Curved surfaces** stay faceted, because Revit & Co. store them as triangles in the IFC already. The converter does not create NURBS surfaces.
+- **Layers** follow the spatial structure: `Storey::IfcClass` (e.g. `Ground floor::IfcWall`), with the building in front when a file holds several; bridges, roads and rail (IFC4.3): `Facility::Part::IfcClass`. Elements outside the structure go to `No storey`. Alignments (`IfcAlignment`) and grids (`IfcGrid`) become polylines.
+- **Object name** = IFC name, colour from the IFC material or style. An element with several materials (window: frame and glass) becomes one object per material, grouped under the element's name, so glass stays transparent. Assemblies (`IfcElementAssembly`, curtain walls, stairs, roofs made of parts) form a group named after the assembly.
+- **User text** on every object: GlobalId, IFC class, name, type name, `IfcPredefinedType`, `IfcObjectType`, `IfcTag` (e.g. the Revit element ID), storey, the property sets and the standard quantities (`BaseQuantities` / `Qto_…`: areas, volumes, lengths in m, m², m³). Placeholder values (“N/A”, “-”, “UNSET” …) and vendor quantity dumps (`ArchiCADQuantities`) are left out. Document user text holds the IFC file name, schema, project name and the georeferencing from `IfcMapConversion` if present.
+- **Blocks** (option, off by default; `--blocks`): type geometry shared by several elements (windows, doors, furniture) is stored once as a block definition and each element as a block instance with its own user text, layer and colour. Files get 20–45 % smaller, conversions with polysurfaces faster. Block instances must be exploded in Rhino before editing (`_Explode`); the block definitions sit on the layer `Block definitions`, which must stay visible.
+- Written in the Rhino 7 format, opens in Rhino 7 and 8.
 
-| Aktion | Maus / Taste |
+### GLB, OBJ, DAE
+
+Meshes with colours, Z up, metres. GLB stores every element around its insertion point, so georeferenced models keep full precision; OBJ writes coordinates with 15 digits. GLB is limited to 4 GB of output – use 3DM or OBJ for huge models.
+
+### Only the building hull
+
+The checkbox **“Only the building hull”** under the output format (command line: `--envelope`, short `--hull`; any output format) converts only what is seen from outside: exterior walls, roofs, windows, doors, balconies, canopies, terrain. Interior walls, floors, furniture, sanitary fittings, pipes and ducts – most of the geometry of a building model – are left out.
+
+- **For:** context models (the neighbouring building in an urban model), weaker workstations and models whose full output would be several GB. Elements are only left out, never changed: what arrives is as accurate as always.
+- **How it decides:** a coarse pass computes all geometry roughly first (the first 25 % of the progress, “Determining the building hull …”). Surfaces are entered into a 5 cm grid (coarser for very large models or little RAM; the log names the cell size), outside air is flooded in from the edge of the grid, and an element belongs to the hull as soon as any of its cells touches outside air. Glass counts as opaque. Elements marked external in the IFC (`IsExternal`) are always kept, as are elements the coarse pass could not compute. If the model has no closed hull (no roof or slabs), the properties and element classes decide instead, and the log says so.
+- **Cost:** small models take somewhat longer than without the option, large ones get faster, because only the hull is computed precisely and written. The log reports how many elements were inside and left out.
+
+### Settings (Tools → Settings)
+
+- **Performance:** threads and priority. The default keeps about half the logical cores busy at low priority, so Rhino, Revit and other programs stay responsive; “Automatic” uses fewer when little RAM is free.
+- **Geometry kernel:** **Accurate** (default) computes every element with OpenCASCADE and is complete and identical on every run; only pure triangle meshes (terrain) take the fast path. **Fast** (hybrid) is 3–13× faster but may drop or duplicate faces of single elements. **OpenCASCADE only** computes terrain with OpenCASCADE as well.
+- **Output:** identical elements as blocks (see above).
+- **Log file:** anonymise the log while writing (see below).
+
+## 3D preview
+
+Below the file list a preview shows the selected file (View → Preview, F3). It is computed in a child process at low priority and cached, so a file shows at once the next time.
+
+- The preview starts on its own when the free memory has room for the file – also beside a running conversion (then with 4 instead of 8 threads); otherwise after a click on “Compute preview”. It builds up while it is computed: every few seconds a new batch arrives, structure first (terrain, slabs, roofs, walls, columns, beams, stairs, façades, windows, doors). Reading the IFC alone takes about 35 s per 600 MB; after that the first picture appears within seconds.
+- Furniture, building services (pipes, ducts, cables, fittings), fasteners, reinforcement and very deeply nested elements are left out; the line under the view says how many (“3,210 details left out (furniture, MEP)”). At most 3 million triangles: beyond that the smallest elements go first. After a cancel, crash or error what is shown stays; after the second crash of the geometry kernel the preview stops trying, “Try again” starts over.
+- Drawn with the graphics card (OpenGL 3.3); models with millions of triangles stay fluid. Without a usable graphics driver (remote desktop, virtual machine) Qt falls back to the bundled software OpenGL; if that fails too, the preview draws itself (largest elements only). `IFC_CONVERTER_PREVIEW_RENDERER=software` forces the built-in renderer.
+- Cache: `%LOCALAPPDATA%\IFC Converter\previews` (Linux: `~/.local/state/ifc-converter/previews`), at most about 2 GB, never next to the IFC file.
+
+| Action | Mouse / key |
 |---|---|
-| Drehen | linke Maustaste ziehen (dreht um den angeklickten Punkt, neben dem Modell um die Bildmitte) |
-| Verschieben | mittlere oder rechte Maustaste ziehen, oder Umschalt + linke Maustaste |
-| Zoomen | Mausrad, zum Mauszeiger hin |
-| Ganzes Modell | Doppelklick, Taste `F` oder „Alles“ |
-| Ansichten | Knöpfe oben links oder Tasten `1` Iso, `2` Oben (Norden oben), `3` Vorne (von Süden), `4` Seite (von Osten); `Pos1` = Startansicht |
-| Bauteil anklicken | Klick (ohne Ziehen) auf ein Bauteil zeigt Klasse, GlobalId und Name |
+| Orbit | drag with the left mouse button (around the clicked point) |
+| Pan | drag with the middle or right button, or Shift + left button |
+| Zoom | mouse wheel, towards the cursor |
+| Whole model | double-click, `F` or the “Fit” button |
+| Views | view bar buttons or keys `1` Iso, `2` Top (north up), `3` Front (from south), `4` Side (from east); `Home` = start view |
+| Element info | click an element (without dragging) to see class, GlobalId and name; `Esc` clears |
+| Display | view bar buttons for edge lines (`E`) and perspective/parallel projection (`P`) |
 
-- Gezeichnet wird mit der Grafikkarte (OpenGL 3.3), auch Modelle mit mehreren Millionen Dreiecken bleiben flüssig. Gezeichnet wird nur, wenn sich etwas ändert: eine ruhende Vorschau kostet keine Rechenzeit.
-- Ohne brauchbaren Grafiktreiber (Remotedesktop, virtuelle Maschine) nimmt Qt automatisch das mitgelieferte Software-OpenGL (`opengl32sw.dll`, rechnet auf dem Prozessor). Geht auch das nicht, zeichnet die Vorschau selbst: dann nur die größten Bauteile (je nach Rechnerleistung bis 200 000 Dreiecke), beim Drehen gröber. Meldet die Grafik einen Fehler, wechselt die Vorschau ebenfalls auf die eigene Darstellung, statt das Programm zu beenden; der Grund steht in der Logdatei.
-- Macht ein Grafiktreiber Probleme, erzwingt die Umgebungsvariable `IFC_CONVERTER_PREVIEW_RENDERER=software` die eigene Darstellung.
+## Accuracy
 
-### Vorschau: wie sie berechnet wird
-
-- **Wie eine Umwandlung, nur leichter:** Die Vorschau entsteht im selben eigenen Prozess wie eine Umwandlung, mit niedriger Priorität, unter Windows im Job-Objekt mit Speichergrenze, und endet mit dem Programm. Stürzt der Geometriekern ab oder hängt er, wird wie bei der Umwandlung neu gestartet (siehe „Absturz oder Hänger bei einzelnen Bauteilen“); ein Absturz des schnellen Kerns führt dabei gleich zu einem Versuch nur mit OpenCASCADE, weil er meist viele gleichartige Bauteile trifft (alle Träger einer Brücke).
-- **Schnell statt genau:** Kern „Schnell“ (Hybrid), Rundungen gröber facettiert (Sehnen bis 1 cm statt 0,5 mm; auf den Testmodellen nur 1–3 % weniger Dreiecke, weil Revit & Co. ohnehin Dreiecke speichern), höchstens 8 Threads, neben einer Umwandlung 4 (auf kleinen PCs weniger), damit eine Vorschau neben einer Umwandlung und anderen Programmen Platz hat. Öffnungen werden ausgeschnitten; Räume (`IfcSpace`), Öffnungskörper, Zonen, Annotationen, virtuelle Elemente sowie Achsen und Raster fehlen.
-- **Farben** wie in Rhino aus Material/Oberflächenstil der IFC, Glas durchsichtig; Bauteile ohne Farbe grau. Jedes Dreieck kennt sein Bauteil („IfcWall 2O2Fr… „Name““).
-- **Höchstens 3 Millionen Dreiecke:** Bei größeren Modellen fallen zuerst die kleinsten Bauteile weg (nach der Größe ihres umschließenden Quaders: Schrauben, Armaturen, Kleinteile); die Vorschau nennt, wie viele. Clinic Plumbing (56 MB, Revit-TGA) erreicht die Grenze.
-- **Koordinaten:** In Metern, Lage wie in der IFC; gespeichert relativ zur Modellmitte, sodass auch georeferenzierte Modelle (Hunderte km vom Ursprung) auf unter 1 mm genau bleiben.
-- **Zwischenspeicher:** Fertige Vorschauen liegen in `%LOCALAPPDATA%\IFC Converter\previews` (Linux: `~/.local/state/ifc-converter/previews`), nie neben der IFC-Datei. Wird dieselbe, unveränderte Datei wieder gewählt, erscheint die Vorschau sofort. Ändert sich die Datei (Größe oder Änderungszeit), kommt eine neue IfcOpenShell-Version oder ändern sich die Vorschau-Einstellungen, wird neu gerechnet. Der Ordner wird höchstens ca. 2 GB groß; darüber werden die am längsten nicht benutzten Vorschauen gelöscht. Er kann jederzeit von Hand geleert werden.
-- **Dauer** (Laptop, 3 Threads, Vorschau gegenüber `.3dm` Netze mit dem Standardkern): duplex (2 MB) 1,2 statt 2,8 s, Clinic Architectural (13 MB) 4,5 statt 15 s, Schependomlaan (49 MB) 6,5 statt 33 s.
-
-### Rhino-Export (.3dm)
-
-- **Geometrie „Polyflächen“ (Standard):**
-  - Wände, Decken, Fenster, Türen, Träger usw. werden geschlossene, ebene Polyflächen in Metern.
-  - Koplanare Flächen sind zusammengeführt, Fenster- und Türöffnungen sind echte Löcher in den Flächen.
-  - Facettiert-Rundes (Rohre, Kanäle, runde Stützen, Bewehrung, Sanitärobjekte), sehr detaillierte Objekte (über 1000 Dreiecke) und Revit-Platzhalter (RPC-Bäume/-Personen) bleiben Netze, ebenso alles, was keine gültige Polyfläche ergibt.
-  - Die Datei wird je nach Modell etwa 1,2–4,5× so groß wie mit Netzen (siehe „Große Modelle“).
-- **Geometrie „Netze“:** Jedes Bauteil wird ein Mesh-Objekt, die kleinste Datei und die schnellste Umwandlung. Runde Flächen werden glatt schattiert, Kanten bleiben scharf.
-- **Gekrümmte Flächen:** Rundes bleibt facettiert, weil Revit & Co. es schon in der IFC als Dreiecke speichern. Echte NURBS-Flächen erzeugt der Converter nicht.
-- **Layer** folgen der räumlichen Struktur:
-  - Gebäude: `Geschoss::IfcKlasse`, z. B. `EG::IfcWall`. Bei mehreren Gebäuden in einer Datei steht das Gebäude davor.
-  - Brücken, Straßen, Bahn (IFC4.3): `Bauwerk::Bauwerksteil::IfcKlasse`, z. B. `Talbrücke::Pfeiler::IfcColumn`.
-  - Bauteile außerhalb davon landen unter `Ohne Geschoss`.
-- **Achsen:** Trassierungsachsen (`IfcAlignment`) und Achsraster (`IfcGrid`) werden Rhino-Polylinien.
-- Objektname = IFC-Name, Farbe aus dem IFC-Material/-Stil.
-- **Mehrere Materialien:** Ein Bauteil mit mehreren Materialien (Fenster: Rahmen und Glas, Türen, Möbel) wird ein Objekt je Material, zusammengefasst als Gruppe mit dem Namen des Bauteils. Glas bleibt so durchsichtig. Gezählt wird weiterhin je IFC-Bauteil.
-- **Baugruppen:** Die Teile von Baugruppen ohne eigene Geometrie (`IfcElementAssembly`, Vorhangfassaden, Treppen, Dächer aus Einzelteilen …) bilden eine Gruppe mit dem Namen der Baugruppe; ein Klick wählt alle Teile.
-- **Benutzertexte (Attribute User Text)** am Objekt: GlobalId (`IfcGlobalId`), IFC-Klasse, Name, Typname (`IfcType`), `IfcPredefinedType` (bei USERDEFINED der vergebene Name), `IfcObjectType`, `IfcTag` (z. B. die Revit-Element-ID), Geschoss (`IfcStorey`), dazu die Property-Sets und die Standard-Mengen (`BaseQuantities` bzw. `Qto_…`: Flächen, Volumen, Längen in m, m², m³).
-  - Platzhalterwerte ohne Inhalt („N/A“, „-“, „NOTDEFINED“, „UNSET“, „None“, „<default>“, leer …) und Werte, die nur den Namen ihrer Eigenschaft wiederholen (Revits COBie-Parameter: „SerialNumber“ = „SerialNumber“), werden weggelassen. Bei Revit-Modellen waren das bis zur Hälfte aller Benutzertexte (Clinic: Datei 41 % kleiner).
-  - Herstellereigene Mengenlisten (z. B. `ArchiCADQuantities`) werden weggelassen; sie wiederholen meist die Standardwerte und machten bei ArchiCAD-Dateien fast die Hälfte der Datei aus.
-- **Dokument-Benutzertext** (Rhino: `GetDocumentUserText`): Name der IFC-Datei, IFC-Schema, Projektname und, falls vorhanden, die Georeferenzierung aus `IfcMapConversion` (Rechts-/Hochwert und Höhe in m, Drehung in Grad, Maßstab, Koordinatensystem z. B. „EPSG:25832“).
-- **Blöcke (Option, Standard aus):** Mit „Gleiche Bauteile als Blöcke (kleinere Datei)“ in den Einstellungen bzw. `--blocks` wird Typ-Geometrie, die mehrere Bauteile gemeinsam haben (Fenster, Türen, Möbel, Formteile), einmal als Blockdefinition gespeichert und jedes Bauteil als Blockinstanz an seiner Stelle, mit seinen Benutzertexten, seinem Layer und seiner Farbe. Die Lage ist dieselbe wie ohne Blöcke, auch bei gespiegelten Typen. Gemessen an drei Revit-Modellen: Datei 20–45 % kleiner, Schreiben 0,6–0,75× so lang; mit Polyflächen auch die ganze Umwandlung schneller (revit_arc 33 statt 50 s, Clinic 23 statt 37 s), weil jede Typ-Geometrie nur einmal zur Polyfläche wird. Aber: Blockinstanzen verhalten sich in Rhino anders als normale Objekte – zum Bearbeiten der Geometrie muss eine Instanz erst aufgelöst werden (`_Explode`). Die Objekte der Blockdefinitionen liegen auf dem Layer `Blockdefinitionen`, der sichtbar bleiben muss.
-- **Georeferenzierte Modelle** (Koordinaten in UTM/Gauß-Krüger, z. B. bei Brücken) behalten volle Genauigkeit.
-- Die Datei wird im Rhino-7-Format geschrieben und lässt sich damit in Rhino 7 und 8 öffnen.
-
-### Nur Gebäudehülle
-
-Mit dem Häkchen **„Nur Gebäudehülle“** unter dem Zielformat (im Terminal `--envelope`, kurz `--hull`) wird nur umgewandelt, was von außen zu sehen ist: Außenwände, Dächer, Fenster, Türen, Balkone, Vordächer, Gelände. Innenwände, Decken, Möbel, Einrichtung, Sanitär, Rohre und Kanäle – also der größte Teil der Geometrie eines Gebäudemodells – bleiben weg. Die Option gilt für jedes Zielformat.
-
-- **Wofür:** Umgebungsmodelle (das Nachbargebäude im Städtebaumodell, in dem nur die Kubatur zählt), schwächere Arbeitsplätze und Modelle, deren vollständige Ausgabe mehrere GB groß würde. Was ankommt, ist maßhaltig wie immer: Bauteile werden nur weggelassen, nie verändert – Maße und Lage der umgewandelten Bauteile sind dieselben wie ohne die Option.
-- **Wie entschieden wird:** Vor der eigentlichen Umwandlung berechnet ein zusätzlicher Durchgang die Geometrie aller Bauteile grob vor (schneller Kern, grobe Toleranz; die ersten 25 % des Fortschritts, im Fenster „Gebäudehülle wird bestimmt …“). Die Oberflächen werden in Zellen von 5 cm eingetragen (bei sehr großen Modellen oder wenig RAM gröber; das Protokoll nennt das Rastermaß). Das ganze Modell wird auf einem viermal gröberen Raster vom Rand aus mit Außenluft „geflutet“: Alles, was von dort durch leere Zellen erreichbar ist, ist „außen“. Rund um diese Außenluft wird mit den feinen Zellen nachgefüllt, damit auch schmale Spalte (unter einem Sturz, zwischen Rahmen und Decke) offen bleiben und was sie auskleidet als außen zählt. Ein Bauteil gehört zur Hülle, sobald irgendeine seiner Zellen an Außenluft grenzt – weggelassen wird nur, was von außen an keiner Stelle zu sehen ist, die Hülle bleibt also geschlossen. Fenster und Verglasungen gelten dabei als undurchsichtig, Öffnungen sind durch ihre Fenster und Türen geschlossen – die Außenluft dringt also nicht ins Gebäude ein.
-- **Im Zweifel bleibt ein Bauteil erhalten:** Bauteile, die in der IFC als außen liegend gekennzeichnet sind (`IsExternal` in `Pset_WallCommon`, `Pset_SlabCommon` usw.), werden immer übernommen, auch wenn das Raster sie nicht sieht. Bauteile, deren Geometrie der grobe Durchgang nicht berechnen konnte, ebenfalls. Fehlt dem Modell das Dach oder fehlen die Decken (typisch für ein Architektur-Teilmodell, dessen Rohbau im Tragwerksmodell liegt), strömt die Außenluft ins Gebäude, und fast alles gilt als außen. Dann entscheiden stattdessen die Eigenschaften: Als innen gekennzeichnete Bauteile (`IsExternal` = Nein) sowie Möbel, Einrichtung, Leitungen (IfcFurnishingElement, IfcDistributionElement …) und Decken- und Bodenbeläge (IfcCovering CEILING/FLOORING) werden weggelassen, alles andere bleibt – das Protokoll sagt, dass so entschieden wurde. Innenhöfe und Loggien zählen als außen, sobald sie zum Himmel offen sind. Ist das Gelände als Netz modelliert, gelten Bauteile darin (Pfähle, Fundamente unter dem Gelände) als innen; ohne Gelände bleibt die Unterseite der Bodenplatte Teil der Hülle. Baumassen – einfache Körper, die den größten Teil des Modells umschließen (Revit-Massenkörper, ein Gelände als Block) – werden nicht als undurchsichtig gewertet, damit sie die eigentliche Hülle nicht verdecken; sie bleiben selbst erhalten.
-- **Kosten:** Der zusätzliche Durchgang braucht etwas Zeit (die Geometrie aller Bauteile wird einmal grob vorberechnet); bei kleinen Modellen dauert die Umwandlung dadurch insgesamt länger als ohne die Option, bei großen wird sie kürzer, weil nur noch die Hülle genau berechnet und geschrieben wird. Das Protokoll nennt am Ende, wie viele Bauteile innen lagen und weggelassen wurden („812 Bauteile, 2.431 innen liegende weggelassen“) und welche Klassen das waren („Weggelassen: 34 IfcWallStandardCase, 16 IfcSlab, …“); die Liste „Übersprungene Bauteile…“ zählt sie mit, führt sie aber nicht einzeln auf.
-
-### Maßhaltigkeit
-
-- **Einheiten:** Die Ausgabe ist immer in Metern, ob die IFC in mm, m, Fuß oder Zoll vorliegt. Die Rhino-Datei hat die Einheit Meter, die absolute Toleranz 0,001 m (1 mm) und die Winkeltoleranz 1°.
-- **Koordinaten:** Die Bauteile liegen in den Projektkoordinaten der IFC, wie im Autorenprogramm. Eine Georeferenzierung (`IfcMapConversion`: Rechts-/Hochwert, Drehung, Maßstab) wird nicht angewendet; in `.3dm` stehen ihre Werte im Dokument-Benutzertext. Auch Hunderte Kilometer vom Ursprung bleiben die Koordinaten genau: `.3dm` speichert sie in doppelter Genauigkeit, `.obj` mit 15 Stellen, `.glb` jedes Bauteil um seinen Einfügepunkt.
-- **Ebene Geometrie** (Wände, Decken, Öffnungen, Profile) kommt eckpunktgenau heraus. Gemessen an 11 echten Modellen (mm, m, Fuß; IFC2X3, IFC4, IFC4X3) gegen IfcOpenShells eigene Geometrie und gegen die Maße in der IFC (Profile, Extrusionen, Mengen): Abweichung unter 0,001 mm in `.3dm` und `.obj`, unter 0,02 mm in `.glb`.
-- **Runde Geometrie** (Stützen, Rohre, Bögen) wird facettiert: Die Eckpunkte liegen genau auf der Rundung, die Sehnen höchstens 0,5 mm innen (mit OpenCASCADE, also im Standard „Genau“, 0,25 mm). Ein dünnes Rohr (Ø 10 cm) hat dadurch etwa 0,6 % weniger Volumen.
-- **Vollständig und reproduzierbar:** Der Standard-Geometriekern „Genau“ liefert jedes Bauteil vollständig und bei jedem Lauf gleich, unabhängig von der Zahl der Threads (siehe „Geometriekern“).
-- **Selbst prüfen:** `tools/accuracy.py` wandelt eine IFC in allen Formaten um und vergleicht jedes Bauteil mit IfcOpenShells Geometrie und den Maßen aus der IFC:
+- **Units:** output is always in metres, whether the IFC is in mm, m, feet or inches. The Rhino file has unit metres, absolute tolerance 0.001 m and angle tolerance 1°.
+- **Coordinates:** elements lie in the project coordinates of the IFC, as in the authoring program. A georeference (`IfcMapConversion`) is not applied; in `.3dm` its values are in the document user text. Hundreds of kilometres from the origin the coordinates stay exact: `.3dm` stores them in double precision, `.obj` with 15 digits, `.glb` per element around its insertion point.
+- **Flat geometry** (walls, slabs, openings, profiles) comes out exact to the vertex. Measured on 11 real models (mm, m, feet; IFC2X3, IFC4, IFC4X3) against IfcOpenShell's own geometry and the dimensions in the IFC: deviation below 0.001 mm in `.3dm` and `.obj`, below 0.02 mm in `.glb`.
+- **Round geometry** (columns, pipes, arcs) is faceted: the vertices lie exactly on the curve, the chords at most 0.25 mm inside with the default kernel. A thin pipe (Ø 10 cm) has about 0.6 % less volume.
+- **Check it yourself:** `tools/accuracy.py` converts an IFC in all formats and compares every element with IfcOpenShell's geometry and the dimensions in the IFC:
 
 ```bash
-python tools/accuracy.py modell.ifc --out-dir out --report genauigkeit.md
+python tools/accuracy.py model.ifc --out-dir out --report accuracy.md
 ```
 
-### Große Modelle (mehrere GB)
+## Large models
 
-- **Arbeitsspeicher:** Die IFC-Datei wird komplett eingelesen. Das allein braucht etwa das 6-Fache ihrer Größe, die Umwandlung 1–2 GB mehr; bei `.3dm` bleibt zusätzlich die Ausgabe bis zum Speichern im Speicher. **Faustregel: eine 2-GB-IFC braucht ca. 14–16 GB RAM.** Ist absehbar zu wenig frei, warnt der Converter vor dem Start, wandelt aber trotzdem um.
-- **Geometrie in Paketen:** Die Geometrie wird in Paketen zu 200 Bauteilen berechnet (50 je Thread, höchstens 2000), und der Speicher wird nach jedem Paket wieder freigegeben. Die Zahl der Rechen-Threads passt sich dem freien RAM an.
-  - **Keine wartenden Threads:** Rechnen nur noch die letzten Bauteile eines Pakets (höchstens ein Viertel der Threads ist beschäftigt), beginnt schon das nächste Paket. Hält ein einzelnes langsames Bauteil sein Paket auf, rechnen die übrigen Threads bis zu 16 Pakete voraus, solange mindestens 4 GB RAM frei sind. Die Ergebnisse warten im Speicher, bis das Paket davor fertig ist; die Reihenfolge in der Ausgabe bleibt dieselbe.
-- **Geometriekern** (Einstellungen bzw. `--kernel`):
-  - **Genau** (Standard, `accurate`): Alle Bauteile werden mit OpenCASCADE berechnet, nur reine Dreiecksnetze ab 1000 Dreiecken (Geländemodelle, `IfcTriangulatedFaceSet` ohne Öffnungen) mit IfcOpenShells schnellem Hybrid-Kern, der sie unverändert übernimmt (auf allen Testmodellen identisch mit OpenCASCADE). Ein Gelände dauert so Sekunden statt über 20 Minuten.
-  - **Schnell** (`hybrid`): alles mit dem Hybrid-Kern (CGAL + OpenCASCADE), auf echten Modellen 3–13× schneller. Er lässt aber bei einzelnen Bauteilen Flächen weg oder erzeugt sie doppelt, je nach Zahl der Threads (z. B. fehlte einer ArchiCAD-Wand ein Viertel ihrer Fläche).
-  - **Nur OpenCASCADE** (`opencascade`): alles mit OpenCASCADE, auch Geländemodelle.
-  - Stürzt der Hybrid-Kern bei der Bauteilberechnung ab („Genau“ und „Schnell“) und lässt sich das betroffene Bauteil nicht eingrenzen, wird die ganze Datei automatisch nur mit OpenCASCADE wiederholt. Ein Absturz beim Lesen der IFC-Datei oder beim Schreiben der Ausgabe wird nicht so wiederholt, er käme wieder.
-- **Absturz oder Hänger bei einzelnen Bauteilen:** Stürzt die Umwandlung ab oder rechnet sie nicht mehr (alle Prozesse bei 0 % CPU), wird sie beendet und automatisch neu gestartet. Hängt sie nach einem gemeldeten Stapelüberlauf, wird das nach einer Minute erkannt, sonst nach 10 Minuten ohne Rechenaktivität. Verdächtig sind nur die Bauteile, die dabei noch nicht fertig waren; sie werden im neuen Versuch zuerst und einzeln berechnet, und ein Bauteil, an dem es erneut hängt oder abstürzt, wird übersprungen. Nach der Umwandlung nennt das Fenster die übersprungenen Bauteile mit Klasse, GlobalId und Name (z. B. „IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc“), damit sie sich im CAD-Programm finden lassen. Die vollständige Liste – übersprungene Bauteile und Bauteile ohne Geometrie – zeigt ein Rechtsklick auf die Datei → „Übersprungene Bauteile…“ (oder der gleichnamige Knopf unter der Liste); dort lässt sie sich markieren und kopieren (Strg+A, Strg+C, „Alles kopieren“), als Tabelle zum Einfügen in Excel. Geometrie, die sich selbst enthält (fehlerhafte Datei), wird gar nicht erst berechnet.
-  - **Kein Neuberechnen nach einem Absturz** (Rhino-Ausgabe): Die fertig berechnete Geometrie wird nach jedem Paket im Temp-Ordner zwischengespeichert. Ein Neustart nach einem Absturz oder Hänger liest diese Pakete wieder ein und berechnet nur den Rest, das Ergebnis ist dasselbe wie ohne Absturz. Nur das Einlesen der IFC-Datei wiederholt sich. Der Zwischenstand braucht etwa das Dreifache der IFC-Größe an freiem Platz (sonst wird ohne ihn umgewandelt) und wird am Ende gelöscht. Wechselt der Neustart auf den OpenCASCADE-Kern, wird alles neu berechnet. Für GLB/OBJ gibt es das nicht.
-  - **Gemerkt pro Datei:** Übersprungene Bauteile merkt sich der Converter in `%LOCALAPPDATA%\IFC Converter\quarantine.json` (Linux: `~/.local/state/ifc-converter/`), zur Datei mit Name, Größe und Änderungszeit, Geometriekern-Strategie und IfcOpenShell-Version. Wird dieselbe, unveränderte Datei wieder umgewandelt, werden sie gleich übersprungen und wieder gemeldet, ohne neue Versuche. Ändert sich die Datei (oder die Kern-Strategie, oder kommt eine neue IfcOpenShell-Version), wird alles neu versucht. Gemerkt werden höchstens 100 Bauteile für die 50 zuletzt umgewandelten Dateien; ist die Datei beschädigt, fängt der Converter einfach neu an.
-  - **Achsen:** Stürzt die Umwandlung bei den Achsen der Rhino-Ausgabe ab (`IfcAlignment`, `IfcGrid`, die nach den Bauteilen berechnet werden) oder hängt sie dort, wird sie einmal ohne diese Achsen wiederholt; sie werden als übersprungen gemeldet.
-- **Eigener Prozess:** Jede Umwandlung läuft in einem eigenen Prozess (im Fenster wie im Terminal). Reicht der Arbeitsspeicher nicht und das System beendet die Umwandlung (oder sie stürzt ab), wird nur diese Datei als Fehler markiert, und die nächste wird umgewandelt. „Abbrechen“ im Fenster wirkt sofort, auch während die IFC-Datei noch gelesen wird. Im Terminal zeigt eine Zeile den Fortschritt in Prozent.
-- **Fortschritt:** Das Einlesen großer Dateien dauert einige Minuten. Das Fenster zeigt solange „IFC wird gelesen …“. Auch beim Schreiben der Ausgabe (bei großen Modellen ebenfalls Minuten) steht dort, was gerade passiert, mit der schon geschriebenen Größe; die Logdatei hält jede Phase mit ihrer Dauer fest und schreibt jede Minute ein Lebenszeichen.
-- **Netzlaufwerke:** Liegt der Ausgabeordner auf einem Netzlaufwerk (`\\server\…` oder ein verbundenes Laufwerk), wird die Datei erst lokal im Temp-Ordner geschrieben und dann in einem Zug kopiert – openNURBS schreibt in vielen kleinen Stücken, was über das Netz sehr langsam ist. Bricht die Verbindung beim Kopieren ab, wird es bis zu viermal erneut versucht, über eine `.part`-Datei, also nie halb unter dem richtigen Namen. Klappt es gar nicht, bleibt die fertige Datei lokal in `%LOCALAPPDATA%\IFC Converter\Ausgabe`, und die Meldung sagt das.
-- **Standby:** Während einer Umwandlung geht Windows nicht von selbst in den Standby; der Bildschirm darf sich trotzdem abschalten und sperren.
-- **Rücksicht auf andere Programme** (der Converter läuft auf Arbeitsrechnern neben Rhino, Revit & Co.):
-  - **Rechenleistung:** Standardmäßig hält eine Umwandlung etwa die Hälfte der logischen Kerne beschäftigt: zwei Drittel davon als Geometrie-Threads (höchstens 16), den Rest für die Hilfsprozesse, die bei `.3dm` ab 500 Bauteilen die Polyflächen bauen (einer je zwei Threads, höchstens 8). Auf 32 logischen Kernen sind das 11 Threads und 5 Hilfsprozesse, auf 8 Kernen 3 Threads und 1 Hilfsprozess. Mehr Threads lassen sich in den Einstellungen bzw. mit `-j` wählen.
-  - **Priorität:** Umwandlungsprozess und Hilfsprozesse laufen mit niedriger Priorität („Niedriger als normal“), unter Windows auch mit niedrigerer Speicherpriorität: Wird der Arbeitsspeicher knapp, behält Windows die Seiten der anderen Programme zuerst im RAM. Die Ein-/Ausgabe-Priorität wird nicht geändert (das ginge nur über eine undokumentierte Windows-Funktion); die IFC-Datei wird ohnehin einmal am Stück gelesen und die Ausgabe am Stück geschrieben.
-  - **Speichergrenze (Windows):** Umwandlungsprozess und Hilfsprozesse laufen in einem Windows-Job-Objekt und dürfen zusammen höchstens 85 % des Arbeitsspeichers belegen, damit eine außer Kontrolle geratene Umwandlung andere Programme nicht in die Auslagerungsdatei drängt. Wird die Grenze erreicht, endet die Umwandlung mit „Der Arbeitsspeicher hat nicht gereicht …“, ohne neuen Versuch. Das Job-Objekt sorgt außerdem dafür, dass alle Prozesse der Umwandlung mit dem Programm enden, auch wenn es abstürzt oder im Task-Manager beendet wird. Lässt sich das Job-Objekt nicht einrichten, läuft die Umwandlung ohne diese Grenze (steht in der Logdatei).
-- **Tief verschachtelte Geometrie:** Bauteile mit mehr als 100 Ebenen verschachtelter Ausschnitte (`IfcBooleanResult`) oder Typ-Geometrien (`IfcMappedItem`) werden vor allen anderen einzeln in einem Thread mit 240 MB Stack berechnet; das Fenster zeigt dabei, welches gerade dran ist. Mit Windows' Standard von 1 MB liefen solche Modelle in einen Stapelüberlauf (Fehlercode `0xC00000FD`) oder blieben hängen. Zusätzlich reservieren die Windows-Programme 256 MB Stack für jeden Thread.
-- **GLB:** Das Format ist auf 4 GB Ausgabe begrenzt. Für riesige Modelle `.3dm` oder `.obj` nehmen.
+- **Memory:** the IFC file is read completely; that alone takes about 6× its size, the conversion 1–2 GB more, and with `.3dm` the output stays in memory until it is saved. **Rule of thumb: a 2 GB IFC needs about 14–16 GB of RAM.** The converter warns before starting if too little is free, but converts anyway.
+- **Geometry in batches** of 200 elements; memory is released after every batch and the number of threads adapts to the free RAM. Deeply nested geometry (over 100 levels of `IfcBooleanResult` or `IfcMappedItem`) is computed first, one element at a time in a thread with a big stack – with Windows' default 1 MB stack such models overflowed or hung.
+- **Crash or hang of single elements:** if the conversion crashes or stops computing, it is ended and restarted automatically; only the elements that were not finished are suspect and are computed first and one by one in the new attempt, and an element that hangs or crashes again is skipped. A geometry kernel that keeps a thread busy without delivering anything (20 min in the fine pass, 5 min in the hull pass, 3 min in the preview) is abandoned the same way. Skipped elements are named in the window with class, GlobalId and name and listed under right-click → “Skipped elements…” (copy as a table for Excel); they are remembered per file, so the next conversion of the same unchanged file skips them at once. For Rhino output the finished batches are checkpointed in the temp folder, so a restart computes only the rest.
+- **Own process:** every conversion runs in its own process. If the system kills it for lack of memory, only that file is marked as failed and the next one is converted. “Cancel” acts immediately, even while the IFC is still being read.
+- **Network drives:** output to a network folder is written locally first and then copied in one go (up to four retries over a `.part` file); if the copy fails, the finished file stays in `%LOCALAPPDATA%\IFC Converter\Ausgabe` and the message says so.
+- **Consideration for other programs:** a conversion keeps about half the logical cores busy (two thirds as geometry threads, the rest for the helper processes that build polysurfaces), at “below normal” priority and, on Windows, lower memory priority; conversion and helpers run in a Windows job object limited to 85 % of the RAM, so a runaway conversion never pushes other programs into the page file. Windows does not go to standby during a conversion.
+- **GLB** is limited to 4 GB of output; take `.3dm` or `.obj` for huge models.
 
-**Richtwerte** aus dem Stresstest mit 64 frei verfügbaren Modellen (Laptop, 8 Kerne / 8 GB RAM):
+Reference values from the stress test with 64 freely available models (laptop, 8 cores / 8 GB RAM, fast kernel):
 
-| Modell | IFC | Bauteile | `.3dm` Netze | `.3dm` Polyflächen | `.glb` | RAM-Spitze (Netze) |
+| Model | IFC | Elements | `.3dm` meshes | `.3dm` polysurfaces | `.glb` | Peak RAM (meshes) |
 |---|---|---|---|---|---|---|
-| UpTown (35 Geschosse, FZKViewer) | 1,3 GB | 33.132 | 7,5 min | – | 5,5 min | 5,8 GB |
-| UpTown (ARCHICAD) | 445 MB | 50.557 | 9,5 min | – | 5,5 min | 3,5 GB |
-| Holter Tower (50 Geschosse, ArchiCAD) | 177 MB | 60.541 | 4 min | 7 min (818 MB) | 2,5 min | 1,7 GB |
-| Landsarkivet (Revit, georeferenziert) | 178 MB | 10.056 | 5,5 min | 15,5 min (691 MB) | 4,5 min | 3,7 GB |
-| 210 King Street (39 Geschosse, 3 Fachmodelle) | 155 MB | 12.934 | 2 min | 3 min | 1,5 min | 1,3 GB |
-| ACCA Viadotto Acerno (Brücke, IFC4.3) | 33 MB | 6.546 | 1,5 min | 2,5 min | 1,5 min | 1,5 GB |
+| UpTown (35 storeys, FZKViewer) | 1.3 GB | 33,132 | 7.5 min | – | 5.5 min | 5.8 GB |
+| UpTown (ARCHICAD) | 445 MB | 50,557 | 9.5 min | – | 5.5 min | 3.5 GB |
+| Holter Tower (50 storeys, ArchiCAD) | 177 MB | 60,541 | 4 min | 7 min (818 MB) | 2.5 min | 1.7 GB |
+| Landsarkivet (Revit, georeferenced) | 178 MB | 10,056 | 5.5 min | 15.5 min (691 MB) | 4.5 min | 3.7 GB |
+| 210 King Street (39 storeys, 3 models) | 155 MB | 12,934 | 2 min | 3 min | 1.5 min | 1.3 GB |
+| ACCA Viadotto Acerno (bridge, IFC4.3) | 33 MB | 6,546 | 1.5 min | 2.5 min | 1.5 min | 1.5 GB |
 
-Die Zeiten wurden mit dem Kern „Schnell“ gemessen. Mit dem Standard „Genau“ dauert die Umwandlung auf dem Laptop (4 Threads) meist 1,2–2× so lang (210 King: `.3dm` Netze 2,2 statt 1,4 min, `.glb` 1,7 statt 0,8 min), bei kleinen Modellen mit vielen detaillierten Revit-Familien bis 8× (revit_arc, 14 MB: 22 statt 3 s); Geländemodelle sind gleich schnell. Auf Rechnern mit vielen Kernen schrumpft der Unterschied, weil dann das Schreiben der Datei den Takt vorgibt.
+With the default kernel “Accurate” conversions take 1.2–2× as long on the laptop, up to 8× for small models with many detailed Revit families; on machines with many cores the difference shrinks. Polysurfaces make the output 1.2–4.5× larger than meshes and keep it in memory until it is saved – for models above a few hundred MB, meshes are usually the better choice.
 
-**Polyflächen bei sehr großen Modellen:** Die Ausgabe wird 1,2–4,5× so groß wie mit Netzen und liegt bis zum Speichern komplett im Arbeitsspeicher (Landsarkivet: 5,7 GB statt 3,7 GB). Für Modelle ab einigen hundert MB ist „Netze“ meist die bessere Wahl; Polyflächen lohnen sich vor allem, wenn in Rhino an Wänden, Decken und Öffnungen weitergearbeitet wird.
+**What the converter repairs itself:** merged discipline models with several `IfcProject` (units would otherwise be ignored), wrongly declared units (feet without type, area as length), empty representations of single elements, structural analysis models (nodes and member axes are skipped, surface members converted), IFC2X2 read as IFC2X3 and the IFC4X4 draft as IFC4X3 with substitute classes. Elements without computable geometry are counted and reported.
 
-### Was der Converter bei fehlerhaften Dateien selbst repariert
+## Language
 
-- **Zusammengeführte Fachmodelle** mit mehreren `IfcProject` (Architektur + Tragwerk + TGA in einer Datei): IfcOpenShell würde sonst alle Einheiten ignorieren (Fuß als Meter, Grad als Bogenmaß, Öffnungen fehlen). Die Projekte werden im Speicher zusammengeführt, wenn ihre Einheiten übereinstimmen.
-- **Falsch deklarierte Einheiten** (z. B. OpenRoads: Fuß ohne Typ, Fläche als Länge) werden korrigiert.
-- **Leere Geometrie-Darstellungen** einzelner Bauteile blockieren nicht mehr die Nachbarn.
-- **Statik-Analysemodelle** (z. B. RFEM): Knoten, Stabachsen und Lasten werden übersprungen, Flächenbauteile umgewandelt.
-- Bauteile, deren Geometrie sich nicht berechnen lässt, werden gezählt und gemeldet („236 Bauteile (3 ohne Geometrie)“). Kommt gar keine Geometrie heraus, gibt es einen Fehler statt einer leeren Datei.
-- **Fremde Schemas:** IFC2X2 (vor 2006) wird als IFC2X3 gelesen, der Entwurf IFC4X4 (Tunnel) als IFC4X3 mit Ersatzklassen (siehe Schnellstart); andere Versionen bekommen eine klare Meldung. Brücken im Zwischenformat IFC4X2 mit `IfcSectionedSolidHorizontal` kann IfcOpenShell nicht berechnen.
+The window, dialogs, status lines, tooltips and log messages are available in English (default), German, French, Spanish, Italian, Portuguese, Dutch, Polish and Turkish: Tools → Language, then restart. Without a saved setting – and for the command line – the environment variable `IFC_CONVERTER_LANG` (`de`, `fr`, …) counts; `ifc-convert` also takes `--lang`. Layer names, user text and the output files themselves are not translated; the German texts are the originals.
 
-### Terminal-Modus (Drag & Drop ins Konsolenfenster)
+## Log file, privacy and feedback
 
-Die alte Konsolen-Variante gibt es weiterhin: `IFC_CONVERTER_CLI=1 ./start.sh` (Linux/macOS) bzw. `python -m ifc_converter` in der Umgebung. Dort Dateien ins Fenster ziehen, Enter drücken, `3dm`, `glb` oder `obj` eingeben, um das Format zu wechseln, und `q`, um zu beenden. Strg+C bricht die laufende Umwandlung ab (ohne halbe Ausgabe und ohne Reste im Temp-Ordner).
+- The converter writes a log to `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (Linux: `~/.local/state/ifc-converter/logs/ifc-converter.log`; about 4 MB, older parts are overwritten); Help → Open log file. It stays on this PC: the converter sends nothing and needs no internet connection.
+- The log contains file paths (with user and server names), file and element names. **To send it,** choose Help → “Save anonymised log file…” (also in the error dialog): a copy of the whole log, by default `ifc-converter-log-anonym.txt` on the Desktop, with user and computer names replaced by `<user>` / `<computer>`, servers and shares by `<server>` / `<share>`, folders by `<folder>` and file names by `File-1.ifc`, `File-1.3dm` …; element names are dropped. IFC class and GlobalId, times, sizes, versions and error messages stay. Have a look before sending.
+- Tools → Settings → “Anonymise log file” anonymises the log while it is written.
 
-Voraussetzung: Python 3.10 oder neuer ([python.org](https://www.python.org/downloads/), unter Windows den Haken bei „Add python.exe to PATH“ setzen).
+**How to report a problem:** save the anonymised log file, take a screenshot in Rhino or the target program if something is visibly wrong (missing parts, wrong position), and send both with one sentence (“file X, meshes, hull only – windows missing on the ground floor”).
 
-## Sprache der Oberfläche
+## Command line
 
-Das Programmfenster, die Dialoge, Statuszeilen, Tooltips und die Meldungen im Protokollfenster gibt es in mehreren Sprachen; **Englisch ist die Voreinstellung**. Umschalten über das Menü Extras → Sprache (Language): Englisch, Deutsch, Französisch, Spanisch, Italienisch, Portugiesisch, Niederländisch, Polnisch, Türkisch. Die Wahl wird in den Einstellungen gespeichert (`language` in `settings.ini`) und gilt nach dem nächsten Programmstart für das ganze Programm, auch für die Hinweise, die die Konvertierungsprozesse melden. Eine Sprache ohne vollständige Übersetzung zeigt die fehlenden Texte auf Englisch.
-
-Ohne gespeicherte Einstellung – und für die Kommandozeile – zählt die Umgebungsvariable `IFC_CONVERTER_LANG` (`de`, `fr`, …; auch `de-DE` oder `de_AT.UTF-8`). Für `ifc-convert` gibt es außerdem `--lang {en,de,fr,es,it,pt,nl,pl,tr}`; es betrifft die Hinweise zu den Umwandlungen (übersprungene Bauteile, Fehlermeldungen); die Hilfe und die Ergebniszeilen bleiben englisch, der Terminal-Modus deutsch. Die Platzhalter der anonymisierten Logdatei folgen der Sprache: auf Englisch `<user>`, `<folder>`, `File-1.ifc` statt `<Benutzer>`, `<Ordner>`, `Datei-1.ifc`.
-
-Die Meldungen der Konvertierung (auch in der Logdatei) erscheinen in der gewählten Sprache. Nicht übersetzt werden Layer- und Attributnamen in den Rhino-Dateien und die Ausgabedateien selbst: sie bleiben, wie sie sind.
-
-## Logdatei und Datenschutz
-
-- Der Converter schreibt ein Protokoll nach `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (Linux: `~/.local/state/ifc-converter/logs/ifc-converter.log`; höchstens ca. 4 MB, ältere Teile werden überschrieben); Hilfe → Logdatei öffnen. Es bleibt auf diesem PC: Der Converter versendet nichts, er braucht keine Internetverbindung.
-- Das Protokoll enthält Dateipfade (mit Benutzer- und Servernamen), Datei- und Bauteilnamen. **Zum Verschicken** Hilfe → „Anonymisierte Logdatei speichern…“ wählen (auch im Fehlerdialog und unter Einstellungen): Das speichert eine Kopie des ganzen Protokolls, standardmäßig als `ifc-converter-log-anonym.txt` auf dem Desktop. Darin sind Benutzer- und Rechnername durch `<Benutzer>`/`<Rechner>` ersetzt, Server und Freigaben von Netzlaufwerken durch `<Server>`/`<Freigabe>`, Ordner durch `<Ordner>` und Dateinamen durch `Datei-1.ifc`, `Datei-1.3dm` … (gleicher Name, gleiche Nummer); Bauteilnamen fallen weg. Erhalten bleiben IFC-Klasse und GlobalId, Zeiten, Größen, Versionen und Fehlermeldungen. Vor dem Versenden kurz durchsehen.
-- Mit Extras → Einstellungen → „Logdatei anonymisieren“ wird das Protokoll schon beim Schreiben anonymisiert (ab dann; ältere Einträge bleiben, wie sie sind). Die Nummern der Dateien beginnen dabei mit jedem Programmstart neu.
-
-## Manuelle Einrichtung
-
-Das Projekt liegt auf einer exFAT-Platte, die keine Symlinks kann. Die virtuelle Umgebung liegt deshalb auf der internen SSD:
+`ifc-convert` (Windows: `ifc-convert.exe` next to `IFC Converter.exe`) has the same options as the window:
 
 ```bash
-python3 -m venv ~/.local/share/venvs/ifc-file-converter
-source ~/.local/share/venvs/ifc-file-converter/bin/activate
-pip install -e ".[dev]"
+ifc-convert house.ifc                      # → house.glb
+ifc-convert house.ifc -f obj               # → house.obj + house.mtl
+ifc-convert house.ifc -f dae               # → house.dae (Collada, meshes with colours, Z up, metres)
+ifc-convert house.ifczip                   # packed IFC is read directly
+ifc-convert house.ifc -f 3dm               # → house.3dm (Rhino, polysurfaces)
+ifc-convert house.ifc -f 3dm -g mesh       # → house.3dm with meshes only
+ifc-convert house.ifc --envelope           # only the building hull
+ifc-convert house.ifc -o export/model.glb  # own output path
+ifc-convert *.ifc -d output/               # several files into one folder
 ```
 
-## Benutzung als Kommandozeilen-Tool
+| Option | Meaning |
+|---|---|
+| `-f, --format {glb,obj,3dm,dae}` | output format (default `glb`) |
+| `-g, --geometry {brep,mesh}` | 3dm only: polysurfaces or meshes (default `brep`) |
+| `--blocks` | 3dm only: identical elements as blocks |
+| `--envelope`, `--hull` | only the building hull; the result line names the elements left out (“… inside left out”) |
+| `-o, --output PATH` | output file (one input file only) |
+| `-d, --out-dir FOLDER` | output folder for several files |
+| `-j, --threads N` | geometry threads (default: automatic, about half the cores together with the helper processes; `ifc-convert --help` shows the number for this PC) |
+| `--normal-priority` | convert at normal instead of low priority |
+| `--kernel {accurate,hybrid,opencascade}` | geometry kernel (default `accurate`) |
+| `--lang {en,de,fr,es,it,pt,nl,pl,tr}` | language of the conversion messages (default `IFC_CONVERTER_LANG`, else English) |
 
-```bash
-source ~/.local/share/venvs/ifc-file-converter/bin/activate
+Ctrl+C cancels: exit code 130, half-written output and temporary files are removed. Without arguments (double-click) `ifc-convert` starts a terminal mode: drop files into the console window, press Enter, type `3dm`, `glb` or `obj` to switch the format, `q` to quit.
 
-ifc-converter-gui                         # Programmfenster starten
-
-ifc-convert haus.ifc                      # → haus.glb
-ifc-convert haus.ifc -f obj               # → haus.obj + haus.mtl
-ifc-convert haus.ifc -f dae               # → haus.dae (Collada, Netze mit Farben, Z nach oben, Meter)
-ifc-convert haus.ifczip                   # gepackte IFC wird direkt gelesen
-ifc-convert haus.ifc -f 3dm               # → haus.3dm (Rhino, Polyflächen)
-ifc-convert haus.ifc -f 3dm -g mesh       # → haus.3dm nur mit Netzen
-ifc-convert haus.ifc --envelope           # nur die Gebäudehülle, ohne innen liegende Bauteile
-ifc-convert haus.ifc -o export/modell.glb # eigener Ausgabepfad
-ifc-convert *.ifc -d output/              # mehrere Dateien in einen Ordner
-```
-
-Optionen:
-
-- `-f, --format {glb,obj,3dm}`: Zielformat (Standard: `glb`)
-- `-g, --geometry {brep,mesh}`: nur für 3dm, Polyflächen oder Netze (Standard: `brep`)
-- `--blocks`: nur für 3dm, gleiche Bauteile als Blöcke (siehe „Rhino-Export“)
-- `--envelope` (auch `--hull`): nur die Gebäudehülle – innen liegende Bauteile (Innenwände, Möbel, Einrichtung, Leitungen) werden weggelassen, die Ausgabe wird deutlich kleiner (siehe „Nur Gebäudehülle“); die Ergebniszeile nennt die Zahl der weggelassenen Bauteile („… inside left out“)
-- `-o, --output PFAD`: Ausgabedatei (nur bei einer Eingabedatei)
-- `-d, --out-dir ORDNER`: Ausgabeordner für mehrere Dateien
-- `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: automatisch wie im Programmfenster – zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte der Kerne, siehe „Rücksicht auf andere Programme“; `ifc-convert --help` zeigt die Zahl für diesen PC)
-- `--normal-priority`: mit normaler statt niedriger Priorität umwandeln
-- `--kernel {accurate,hybrid,opencascade}`: Geometriekern (Standard: `accurate`, siehe „Geometriekern“)
-- `--lang {en,de,fr,es,it,pt,nl,pl,tr}`: Sprache der Hinweise zu den Umwandlungen (Standard: `IFC_CONVERTER_LANG`, sonst Englisch; siehe „Sprache der Oberfläche“)
-
-Strg+C (bzw. Strg+Untbr) bricht ab: Exit-Code 130, halbe Ausgabedateien und Zwischendateien werden entfernt.
-
-Auch aus Python nutzbar:
+From Python:
 
 ```python
 from ifc_converter import convert
 
-result = convert("haus.ifc", fmt="3dm", progress=lambda pct: print(f"{pct} %"))
+result = convert("house.ifc", fmt="3dm", progress=lambda pct: print(f"{pct} %"))
 print(result.output, result.elements)
 ```
 
-## Tests
+## Development
+
+### Setup and tests
+
+Python 3.10 or newer. From the source, `start.bat` (Windows) or `./start.sh` (Linux/macOS) sets up a virtual environment on first start (internet needed for IfcOpenShell, rhino3dm and Qt) and opens the window. By hand:
 
 ```bash
+python3 -m venv ~/.local/share/venvs/ifc-file-converter   # on a drive with symlinks (not exFAT)
+source ~/.local/share/venvs/ifc-file-converter/bin/activate
+pip install -e ".[dev]"
 pytest
 ```
 
-## Windows- und Linux-App bauen und veröffentlichen
+The tests run with `QT_QPA_PLATFORM=offscreen` and need no display.
 
-Die Apps sind mit [PyInstaller](https://pyinstaller.org) gebaute Programmordner aus derselben Spec (`packaging/ifc_converter.spec`): unter Windows `IFC Converter.exe` ohne Konsole und `ifc-convert.exe` für die Kommandozeile, unter Linux `ifc-converter` und `ifc-convert`, Bibliotheken jeweils in `_internal`. Daraus entstehen unter Windows die portable ZIP und mit [Inno Setup](https://jrsoftware.org/isinfo.php) der Installer, unter Linux das tar.gz mit `.desktop`-Datei, Symbol, MIME-Typ, `install.sh` und `uninstall.sh` (`packaging/linux/`). Alles dazu liegt in `packaging/`.
+### Building the Windows and Linux apps
 
-**Automatisch (GitHub Actions, `.github/workflows/build.yml`)** bei jedem Push:
+The apps are [PyInstaller](https://pyinstaller.org) program folders from one spec (`packaging/ifc_converter.spec`): on Windows `IFC Converter.exe` without console and `ifc-convert.exe`, on Linux `ifc-converter` and `ifc-convert`. From them come the portable ZIP and, with [Inno Setup](https://jrsoftware.org/isinfo.php), the installer on Windows, and the tarball with `.desktop` file, icon, MIME type, `install.sh` and `uninstall.sh` on Linux (`packaging/linux/`).
 
-1. Tests unter Linux und Windows.
-2. Build der App, der portablen ZIP und des Installers unter Windows; parallel dazu Build der Linux-App und des tar.gz unter Ubuntu.
-3. Test der gebauten exe (`packaging/smoke_test.py`): eine 5 × 0,2 × 3 m große Wand wird in einem Ordner mit Umlauten und Leerzeichen in alle Formate umgewandelt (3DM Polyflächen mit dem Standardkern und dem Hybrid-Kern, 3DM Netze, GLB, OBJ). Jede Ausgabe muss genau diese Maße haben. Dazu: Ausgabe auf ein Netzlaufwerk (UNC), tief verschachtelte Geometrie, eine mit Strg+Untbr abgebrochene und eine hart beendete Umwandlung; im Temp-Ordner darf nichts liegen bleiben (Reste einer hart beendeten räumt ein späterer Start weg). Außerdem muss das Programmfenster starten, und die Bibliotheken der 3D-Vorschau (QtOpenGL, `opengl32sw.dll`) müssen im Build sein.
-4. Test des Installers (`packaging/installer_test.py`): Update von der letzten veröffentlichten Version (Einstellungen bleiben, das Programm läuft), stille Neuinstallation mit Umwandlung durch das installierte Programm, Installer und Deinstallation verweigern sich bei laufendem Programm, Installation mit „Öffnen mit“-Eintrag; jede Deinstallation muss Programm, Verknüpfung und Registry-Einträge entfernen.
-5. Test der Linux-App (`packaging/smoke_test_linux.py`, ohne Display mit `QT_QPA_PLATFORM=offscreen`): dieselben Umwandlungen der Wand in allen Formaten mit Maßprüfung, das 600-Wände-Modell mit Hilfsprozessen, das 5000-fach verschachtelte Modell, abgebrochene (SIGTERM) und hart beendete Umwandlung ohne Reste im Temp-Ordner, Start des Programmfensters; dazu ein `ldd`-Durchlauf über alle Bibliotheken des Builds (keine darf fehlen), die Qt-Plattform-Plugins xcb, Wayland und offscreen sowie QtOpenGL müssen dabei sein. Das tar.gz wird entpackt und in einem Test-HOME installiert, aktualisiert, bei laufendem Programm verweigert und deinstalliert; die installierte Kopie muss umwandeln.
-6. Installer und ZIP liegen 7 Tage als Artefakt „IFC-Converter-windows“ am Workflow-Lauf, das tar.gz als „IFC-Converter-linux“.
+**GitHub Actions** (`.github/workflows/build.yml`) on every push: tests on Linux and Windows; build of the Windows app, portable ZIP and installer; build of the Linux app and tarball; smoke test of the built exe (`packaging/smoke_test.py`: a 5 × 0.2 × 3 m wall in all formats with dimension checks, UNC output, deeply nested geometry, cancelled and killed conversions without leftovers in the temp folder, window start); installer test (`packaging/installer_test.py`: update from the last release, silent install, refusal while running, uninstall); Linux smoke test (`packaging/smoke_test_linux.py`: the same conversions, `ldd` over all libraries, the Qt platform plugins xcb, Wayland and offscreen; the tarball installed, updated and uninstalled in a test HOME); the user guide PDF (`packaging/guide.py`). Installer and ZIP are kept 7 days as the artifact `IFC-Converter-windows`, the tarball as `IFC-Converter-linux`.
 
-**Neue Version veröffentlichen:** `version` in `pyproject.toml` erhöhen, committen und pushen, dann ein Tag setzen:
+**Releasing a version:** raise `version` in `pyproject.toml`, add the section to `CHANGELOG.md` (its top section becomes the release text, `packaging/release_notes.py`), commit, push, then tag:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
-Der Workflow baut und testet wie oben und legt danach ein GitHub-Release mit Installer, portabler ZIP, Linux-tar.gz und einer `SHA256SUMS.txt` über alle drei an (die Prüfsummen der einzelnen Builds werden vorher kontrolliert). Der Release-Text ist der oberste Abschnitt von `CHANGELOG.md` (`packaging/release_notes.py`), der diese Version nennen und ausgefüllt sein muss, plus eine Download-Zeile. Passt das Tag nicht zur Version in `pyproject.toml` oder zum Changelog, bricht der Build bzw. das Release ab.
+The workflow builds and tests as above and creates a GitHub release with installer, portable ZIP, Linux tarball, guide PDF and `SHA256SUMS.txt`. A tag that does not match the version in `pyproject.toml` or the changelog stops the build. Tags are never moved: a failed release gets a new patch version.
 
-**Lokal unter Windows bauen** (Python 3.13 und [Inno Setup 6](https://jrsoftware.org/isdl.php) installiert):
+**Building locally** – Windows (Python 3.13 and [Inno Setup 6](https://jrsoftware.org/isdl.php)):
 
 ```bat
 py -3.13 -m venv .venv-build
@@ -296,9 +248,7 @@ py -3.13 -m venv .venv-build
 .venv-build\Scripts\python packaging\smoke_test.py "dist\IFC Converter" --gui
 ```
 
-Ergebnis in `dist\`. Ohne Inno Setup: `build.py --no-installer`.
-
-**Lokal unter Linux bauen** (Python 3.13 oder neuer):
+Linux (Python 3.13 or newer):
 
 ```bash
 python3 -m venv ~/.local/share/venvs/ifc-build
@@ -307,14 +257,11 @@ python3 -m venv ~/.local/share/venvs/ifc-build
 python packaging/smoke_test_linux.py dist/ifc-converter --gui --tarball dist/IFC-Converter-*-linux-x86_64.tar.gz
 ```
 
-Ergebnis in `dist/` (`ifc-converter/`, das tar.gz, `SHA256SUMS.txt`). Der Programmordner enthält symbolische Links; liegt das Projekt auf einer Platte ohne Links (exFAT), `build.py --build-root ~/pfad` verwenden – `dist/` und `build/` landen dann dort. `smoke_test_linux.py` braucht ein Python mit ifcopenshell und rhino3dm (z. B. die Entwicklungsumgebung) und mit `--work` einen Ordner auf einer Platte mit Links.
+The program folder contains symbolic links; on a drive without them (exFAT) use `build.py --build-root ~/path`, and give `smoke_test_linux.py --work` a folder on a drive with links. `packaging/constraints.txt` pins the exact versions of IfcOpenShell, rhino3dm, Qt, NumPy and PyInstaller for tests and builds; after updating them, check the accuracy on real models again.
 
-**Feste Versionen:** `packaging/constraints.txt` legt die genauen Versionen von IfcOpenShell, rhino3dm, Qt, NumPy und PyInstaller für Tests und Build fest, damit ein Release genau das enthält, was getestet wurde. Beim Aktualisieren die Maßhaltigkeit mit echten Modellen erneut prüfen (`tools/benchmark.py`).
+### Tools
 
-## Stresstest mit echten Modellen
-
-`tools/benchmark.py` wandelt IFC-Dateien in allen Formaten um, jede Umwandlung in einem eigenen Prozess, und schreibt Zeit, RAM-Spitze, Ausgabegröße und Prüfungen der Ausgabe (gültige Polyflächen, Attribute, Koordinaten) in einen Bericht:
-
-```bash
-python tools/benchmark.py modelle/*.ifc --modes 3dm-brep,3dm-mesh,glb --out-dir out --report bericht.md
-```
+- `tools/accuracy.py` – compares every element of the output with IfcOpenShell's geometry and the dimensions in the IFC.
+- `tools/benchmark.py` – converts IFC files in all formats, each in its own process, and reports time, peak RAM, output size and output checks: `python tools/benchmark.py models/*.ifc --modes 3dm-brep,3dm-mesh,glb --out-dir out --report report.md`.
+- `tools/hull_check.py` – checks the building hull option against `IsExternal` and renders the kept and left-out elements.
+- `tools/guide_screens.py` – renders the preview figure of the user guide offscreen.

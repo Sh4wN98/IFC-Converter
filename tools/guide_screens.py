@@ -1,14 +1,14 @@
-"""Render the preview figure of the user guide offscreen: docs/guide/viewer-de.png and viewer-en.png.
+"""Render the preview figure of the user guide offscreen: docs/guide/viewer-en.png (English guide).
 
     python tools/guide_screens.py MODEL.ifc [--out-dir docs/guide] [--width 560] [--height 370] [--light]
-        [--languages de,en] [--prefix viewer]
+        [--languages en] [--prefix viewer]
 
 The figure is the preview pane as it sits in the window (title, the view bar, the 3D view with the
 axis triad, the info line), with the model's preview (computed into the preview cache if it is not
 there yet, like the program does), a wall clicked (its tint, chip and label), the Fusion style and
 the dark palette of the window screenshots (``--light`` for the light one). The 3D view is drawn with
 OpenGL where an offscreen context exists, else in software; both look the same. Each language gets
-its own image, like window-de.png / window-en.png.
+its own image, like window-en.png.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("model", type=Path, help="an IFC file, e.g. duplex.ifc of the test corpus")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "docs" / "guide")
     parser.add_argument("--prefix", default="viewer", help="file name before -<language>.png")
-    parser.add_argument("--languages", default="de,en")
+    parser.add_argument("--languages", default="en")
     parser.add_argument("--width", type=int, default=560)
     parser.add_argument("--height", type=int, default=370)
     parser.add_argument("--light", action="store_true", help="the light palette instead of the dark one")
