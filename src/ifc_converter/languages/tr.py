@@ -582,10 +582,6 @@ TEXTS: dict[str, str] = {
     # --- lead, 2026-10-21 ---
     "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
         "Dosya farklı birimlere sahip {count} proje içeriyor; tümü ilk projenin ({name}) birimleriyle okunur. Lütfen ölçüleri kontrol edin.",
-    'cancelled':
-        'iptal edildi',
-    'Reading IFC …':
-        'IFC okunuyor …',
     '{declared} is read as {target} (the same schema under another name).':
         '{declared}, {target} olarak okunur (aynı şemanın başka adı).',
     'Not enough free space in the temp folder for a working copy of the file ({needed} needed, {free} free).':
