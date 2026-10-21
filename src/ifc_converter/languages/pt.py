@@ -578,6 +578,7 @@ TEXTS: dict[str, str] = {
     "View from the south (3)": "Vista de sul (3)",
     "Side": "Lado",
     "View from the east (4)": "Vista de este (4)",
-    "All": "Tudo",
     "Show the whole model (F, double-click)": "Mostrar o modelo inteiro (F, duplo clique)",
+    "Show edges (E)": "Mostrar arestas (E)",
+    "Parallel projection instead of perspective (P)": "Projeção paralela em vez de perspetiva (P)",
 }

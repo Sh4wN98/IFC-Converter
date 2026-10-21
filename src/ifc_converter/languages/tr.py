@@ -577,6 +577,7 @@ TEXTS: dict[str, str] = {
     "View from the south (3)": "Güneyden görünüm (3)",
     "Side": "Yan",
     "View from the east (4)": "Doğudan görünüm (4)",
-    "All": "Tümü",
     "Show the whole model (F, double-click)": "Tüm modeli göster (F, çift tık)",
+    "Show edges (E)": "Kenarları göster (E)",
+    "Parallel projection instead of perspective (P)": "Perspektif yerine paralel izdüşüm (P)",
 }

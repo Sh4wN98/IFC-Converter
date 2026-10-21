@@ -13,7 +13,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ifc_converter.converter import size_text
@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 # Files up to this size get their preview as soon as they are selected (reading a 150 MB IFC takes
 # about 10 s); larger ones on request.
 AUTO_PREVIEW_SIZE = 150 * 1024 ** 2
-
+# The view's options in the settings: option name -> (settings key, default).
+VIEW_OPTIONS = {"edges": ("preview_edges", True), "projection": ("preview_projection", "perspective")}
 
 
 def no_file_text() -> str:
@@ -112,9 +113,11 @@ class PreviewPane(QWidget):
         busy: Callable[[], bool] = lambda: False,
         view_factory: Callable[[], QWidget] = _make_view,
         parent: QWidget | None = None,
+        settings: QSettings | None = None,
     ):
         super().__init__(parent)
         self._busy = busy  # whether a conversion is running
+        self._settings = settings  # keeps the view's options (edges, projection), if given
         self.path: Path | None = None
         self._task: _Task | None = None
         self._thread: QThread | None = None
@@ -153,6 +156,7 @@ class PreviewPane(QWidget):
         self.view.element_clicked.connect(self._element_clicked)
         self.reset_button.clicked.connect(self.view.reset_view)
         layout.addWidget(self.view, stretch=1)
+        self._restore_view_options()
 
         self.info = muted(ElidedLabel())
         self.info.setObjectName("PreviewInfo")
@@ -247,6 +251,25 @@ class PreviewPane(QWidget):
 
     # -------------------------------------------------------------- internals
 
+    def _restore_view_options(self) -> None:
+        """Apply the view's options from the settings and keep them there when they change."""
+        option_changed = getattr(self.view, "option_changed", None)
+        if option_changed is None:  # the message stand-in, or a test double
+            return
+        if self._settings is not None:
+            for option, (key, default) in VIEW_OPTIONS.items():
+                value = self._settings.value(key, default, type=type(default))
+                if option == "edges":
+                    self.view.set_edges(bool(value))
+                elif option == "projection":
+                    self.view.set_projection(str(value))
+        option_changed.connect(self._view_option_changed)
+
+    @Slot(str, object)
+    def _view_option_changed(self, option: str, value) -> None:
+        if self._settings is not None and option in VIEW_OPTIONS:
+            self._settings.setValue(VIEW_OPTIONS[option][0], value)
+
     def _start(self, task: _Task, done: Callable) -> None:
         thread = QThread(self)
         task.moveToThread(thread)
@@ -319,6 +342,7 @@ class PreviewPane(QWidget):
 
     @Slot(str)
     def _element_clicked(self, label: str) -> None:
+        """The clicked element's label in the info line (the view highlights it); "" shows the summary again."""
         if self._mesh is not None:
             self.info.setText(f"{label}" if label else self._info_text(self._mesh))
 

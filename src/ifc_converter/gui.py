@@ -796,7 +796,7 @@ class MainWindow(QMainWindow):
         files_layout.addLayout(list_buttons)
 
         # Below the list: a 3D preview of the selected file (Ansicht → Vorschau).
-        self.preview = PreviewPane(busy=lambda: self.is_running)
+        self.preview = PreviewPane(busy=lambda: self.is_running, settings=self.settings)
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(files)
