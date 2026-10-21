@@ -72,11 +72,14 @@ INTERIOR_CLASSES = ("IfcFurnishingElement", "IfcDistributionElement", "IfcDistri
                     "IfcFastener", "IfcMechanicalFastener", "IfcReinforcingElement", "IfcDiscreteAccessory")
 # Coverings of these types are never part of a hull (cladding and roofing are).
 INTERIOR_COVERINGS = ("CEILING", "FLOORING", "SKIRTINGBOARD")
-# A product with at most this many coarse triangles whose bounding box holds the centres of at
-# least this share of all other products is a massing volume: not opaque for the fill. (The model's
-# own extent is no yardstick: a terrain dwarfs the building.)
-MASS_TRIANGLES = 200
-MASS_SHARE = 0.5
+# A product with at most this many coarse triangles whose bounding box holds the centres of at least
+# MASS_HELD other products (or of MASS_SHARE of all other products in a small model) is a massing
+# volume: not opaque for the fill. Two wings as two masses hold less than half each, and a mass with
+# subdivided faces has hundreds of triangles; a real element never holds dozens of others. (The
+# model's own extent is no yardstick: a terrain dwarfs the building.)
+MASS_TRIANGLES = 5000
+MASS_SHARE = 0.25
+MASS_HELD = 25
 # The sampled cells of all products are kept until the grids are built (8 bytes each, packed; about
 # 60 bytes each while the exposure is computed); above this many the cell is doubled. Both limits
 # grow with the free memory of the PC, see budgets().
@@ -356,7 +359,7 @@ class _Sampler:
                 if self.triangles[product_id] > MASS_TRIANGLES:
                     continue
                 held = ((centres >= lows[index]) & (centres <= highs[index])).all(axis=1).sum() - 1
-                if held >= MASS_SHARE * (count - 1):
+                if held >= min(max(2, MASS_SHARE * (count - 1)), MASS_HELD):
                     self.masses.add(product_id)
                     opaque[owners == index] = False
         del coarse, lows, highs, centres

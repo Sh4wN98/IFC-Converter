@@ -255,11 +255,28 @@ def test_projects_are_merged_if_their_units_agree(federated_ifc):
     (project,) = model.by_type("IfcProject")
     assert sorted(site.Name for rel in project.IsDecomposedBy for site in rel.RelatedObjects) == ["Linked site", "Site"]
 
+    # A linked project without units of its own has no say: without the merge IfcOpenShell would
+    # read the whole file as metres (a model in mm 1000x too large).
+    model = ifcopenshell.open(str(federated_ifc))
+    model.by_type("IfcProject")[1].UnitsInContext = None
+    assert merge_projects(model) is None
+    assert len(model.by_type("IfcProject")) == 1
+
+    # Projects with different units are merged all the same, with a note.
     model = ifcopenshell.open(str(federated_ifc))
     metres = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
     model.by_type("IfcProject")[1].UnitsInContext = model.createIfcUnitAssignment([metres])
-    merge_projects(model)
-    assert len(model.by_type("IfcProject")) == 2
+    note = merge_projects(model)
+    assert len(model.by_type("IfcProject")) == 1
+    assert note.startswith("Die Datei enthält 2 Projekte mit unterschiedlichen Einheiten")
+
+
+def test_a_linked_project_without_units_does_not_break_the_scale(federated_ifc, tmp_path):
+    model = ifcopenshell.open(str(federated_ifc))
+    model.by_type("IfcProject")[1].UnitsInContext = None
+    model.write(str(federated_ifc))
+    vertices, _ = _obj_mesh(convert(federated_ifc, tmp_path / "linked.obj", fmt="obj").output)
+    assert vertices.max(0) - vertices.min(0) == pytest.approx((9.144, 0.3048, 3.048))
 
 
 def test_only_products_with_3d_geometry_go_to_the_kernel(wall_ifc):

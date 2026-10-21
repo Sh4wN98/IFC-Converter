@@ -181,6 +181,22 @@ def test_a_massing_volume_does_not_seal_the_house(house_ifc):
     assert selection.inside == 2
 
 
+def test_two_wing_masses_do_not_seal_the_house(house_ifc):
+    # Two massing volumes, each around one half of the house: neither holds half of all products,
+    # but each holds enough of them to be a mass and not a wall.
+    model = ifcopenshell.open(str(house_ifc))
+    body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")
+    storey = model.by_type("IfcBuildingStorey")[0]
+    _box(model, body, "IfcBuildingElementProxy", "Mass West", (5, 12, 5), (-1, -1, -1), storey)
+    _box(model, body, "IfcBuildingElementProxy", "Mass East", (9, 12, 5), (4, -1, -1), storey)
+    _box(model, body, "IfcFurniture", "Chair", (0.5, 0.5, 1), (1, 4, 0), storey)
+    selection = envelope.select(model, 2, shape_products(model, EXCLUDED_CLASSES))
+    assert selection.masses == 2
+    kept = _names(model, selection.keep)
+    assert {"South", "North", "West", "East", "Floor", "Roof", "Column", "Mass West", "Mass East"} <= kept
+    assert "Table" not in kept and "Chair" not in kept and "Inner" not in kept
+
+
 def test_ceilings_and_floorings_go_with_the_open_hull_fallback(house_ifc):
     model = ifcopenshell.open(str(house_ifc))
     body = next(c for c in model.by_type("IfcGeometricRepresentationSubContext") if c.ContextIdentifier == "Body")

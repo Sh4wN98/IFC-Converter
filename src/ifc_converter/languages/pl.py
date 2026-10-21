@@ -577,4 +577,15 @@ TEXTS: dict[str, str] = {
     "View from the east (4)": "Widok ze wschodu (4)",
     "All": "Wszystko",
     "Show the whole model (F, double-click)": "Pokaż cały model (F, dwuklik)",
+    # --- lead, 2026-10-21 ---
+    "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
+        "Plik zawiera {count} projektów o różnych jednostkach; wszystkie są wczytywane w jednostkach pierwszego ({name}). Proszę sprawdzić wymiary.",
+    'cancelled':
+        'przerwano',
+    'Reading IFC …':
+        'Wczytywanie IFC …',
+    '{declared} is read as {target} (the same schema under another name).':
+        '{declared} jest wczytywany jako {target} (ten sam schemat pod inną nazwą).',
+    'Not enough free space in the temp folder for a working copy of the file ({needed} needed, {free} free).':
+        'Za mało wolnego miejsca w folderze tymczasowym na kopię roboczą pliku (potrzeba {needed}, wolne {free}).',
 }
