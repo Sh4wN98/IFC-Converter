@@ -153,6 +153,9 @@ class PreviewPane(QWidget):
         layout.addLayout(header)
 
         self.view = view_factory()
+        toolbar = getattr(self.view, "toolbar", None)  # the view's buttons (views, edges, projection) in the header
+        if toolbar is not None:
+            header.insertWidget(header.indexOf(self.reset_button), toolbar)
         self.view.setMinimumHeight(120)
         self.view.element_clicked.connect(self._element_clicked)
         self.reset_button.clicked.connect(self.view.reset_view)

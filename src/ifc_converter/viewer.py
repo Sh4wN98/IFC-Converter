@@ -10,13 +10,20 @@ window's palette), flat-shaded faces lit by the sky, the ground and a key light 
 with a touch of gloss, dark feature edges along creases of 30° and more (switchable), a soft shadow on
 the ground under the model, and an axis triad (x red, y green, z blue) in the lower left corner.
 
+The triad and the label chip of the selected element are part of the rendered image (drawn with
+QPainter by both renderers), not a widget over the view: on some Windows/NVIDIA setups a translucent
+widget over a QOpenGLWidget is not composited and vanished together with the hover-only toolbar.
+
 Controls: left drag orbits (around the clicked point), middle or right drag and Shift+left drag pan,
 the wheel zooms towards the cursor, a double-click shows the whole model, a click on an element
 highlights it, shows its label and emits element_clicked. Keys 1-4 (or the buttons) for the views
 Iso, Top, Front, Side, F for the whole model, Home for the start view, E shows or hides the edges,
 P switches between perspective and orthographic (parallel) projection, Esc clears the selection.
-The view changes animate briefly (ANIMATION_MS); the options are reported through option_changed so
-that the window can keep them in its settings.
+The buttons are a separate widget, ``view.toolbar`` (ViewToolbar), that the preview pane puts into
+its header: always visible, enabled while a model is shown. The view changes animate briefly
+(ANIMATION_MS); the options are reported through option_changed so that the window can keep them in
+its settings. ``update_mesh`` replaces the model while it is still growing (progressive preview)
+without resetting the view.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QMatrix4x4, QOffscreenSurface, QOpenGLContext, \
     QPainter, QPalette, QPen, QPixmap, QPolygonF, QRadialGradient, QSurfaceFormat, QTransform, \
     QVector3D, QVector4D
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QStackedLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStackedLayout, QWidget
 
 from ifc_converter.i18n import tr
 from ifc_converter.preview import PreviewMesh
@@ -87,6 +94,8 @@ EDGE_TOLERANCE = 1e-4  # metres: vertices this close count as one (unwelded or s
 EDGES_IN_BACKGROUND = 300_000  # meshes with more triangles get their edges in a thread
 EDGE_LIMIT = 6_000_000  # at most this many segments are kept
 EDGES_WHILE_MOVING = 1_000_000  # more segments than this are drawn on still frames only (OpenGL)
+# A growing model (update_mesh): its edges are computed in a thread once no newer mesh came for this long.
+EDGE_SETTLE_MS = 3000
 # The ground shadow: an ellipse this much larger than the model's footprint, just under its lowest point.
 SHADOW_SPREAD = 1.35
 SHADOW_FADE_PITCH = 12.0  # degrees: the shadow fades out as the camera looks up from below
@@ -156,6 +165,7 @@ GL_POLYGON_OFFSET_FILL, GL_LINE_SMOOTH = 0x8037, 0x0B20
 GL_LESS, GL_LEQUAL = 0x0201, 0x0203
 GL_ONE, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA = 0x0001, 0x0302, 0x0303
 GL_VENDOR, GL_RENDERER, GL_VERSION = 0x1F00, 0x1F01, 0x1F02
+GL_SCISSOR_TEST, GL_STENCIL_TEST = 0x0C11, 0x0B90
 
 VERTEX_SHADER = """
 #version 330 core
@@ -877,6 +887,7 @@ def _gl_view_class() -> type:
             self._moving = False
             self.detail = ""  # OpenGL version and graphics card, once initialized
             self.samples = 0  # MSAA samples of the context, once initialized
+            self._decoration_error = False
 
         # -- what PreviewView calls
 
@@ -965,6 +976,24 @@ def _gl_view_class() -> type:
                 self._paint()
             except Exception as exc:
                 self._fail(f"{type(exc).__name__}: {exc}")
+                return
+            if self._scene is not None:
+                self._paint_decorations()
+
+        def _paint_decorations(self) -> None:
+            """The triad and the label chip, with QPainter into the widget's framebuffer (after the GL
+            passes, so the GL state they leave does not matter; _paint resets what it needs)."""
+            painter = QPainter(self)
+            if not painter.isActive():
+                return
+            try:
+                self._owner.paint_decorations(painter, self.width(), self.height())
+            except Exception:  # a missing font must not take the model with it
+                if not self._decoration_error:
+                    self._decoration_error = True
+                    log.exception("Vorschau: Achsenkreuz nicht gezeichnet")
+            finally:
+                painter.end()
 
         # -- drawing
 
@@ -1040,6 +1069,10 @@ def _gl_view_class() -> type:
             f = self._gl["f"]
             _clear_errors(f)  # e.g. left by Qt's own drawing: only errors of this frame count
             theme = self._owner.theme
+            # QPainter (the decorations of the last frame) may leave a scissor or stencil test behind.
+            f.glDisable(GL_SCISSOR_TEST)
+            f.glDisable(GL_STENCIL_TEST)
+            f.glDepthMask(True)
             f.glClearColor(theme.bottom.redF(), theme.bottom.greenF(), theme.bottom.blueF(), 1.0)
             f.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             f.glDisable(GL_CULL_FACE)
@@ -1310,6 +1343,14 @@ class _SoftwareView(QWidget):
                     self._seconds_per_triangle = (self._seconds_per_triangle + measured) / 2
             except Exception:  # a broken frame must not end the program
                 log.exception("Vorschau: Fehler beim Zeichnen")
+        if self._scene is not None:
+            painter = QPainter(image)
+            try:
+                owner.paint_decorations(painter, camera.width, camera.height)
+            except Exception:
+                log.exception("Vorschau: Achsenkreuz nicht gezeichnet")
+            finally:
+                painter.end()
         self._cache = (key, image)
         return image
 
@@ -1406,83 +1447,58 @@ class _SoftwareView(QWidget):
         self.drawn = len(points)
 
 
-# --------------------------------------------------------------------------- overlay and toolbar
+# --------------------------------------------------------------------------- triad, chip and toolbar
 
 
-class _Overlay(QWidget):
-    """Over the renderer, transparent for the mouse: the axis triad and the label of the selection."""
+def draw_triad(painter: QPainter, camera: Camera, theme: Theme, origin: QPointF) -> None:
+    """The world axes as seen, x red, y green, z blue, letters at the tips (far axes first)."""
+    right, up, forward = camera.basis()
+    axes = []
+    for name, axis in (("x", (1, 0, 0)), ("y", (0, 1, 0)), ("z", (0, 0, 1))):
+        axis = numpy.asarray(axis, float)
+        axes.append((float(axis @ forward), name, float(axis @ right), -float(axis @ up)))
+    font = painter.font()
+    font.setPointSizeF(max(font.pointSizeF() * 0.8, 6.5))
+    font.setBold(True)
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    for away, name, dx, dy in sorted(axes):
+        colour = QColor(AXIS_COLORS[name])
+        if away > 0.3:  # pointing away from the viewer: fainter
+            colour.setAlphaF(0.55)
+        tip = QPointF(origin.x() + dx * TRIAD_SIZE, origin.y() + dy * TRIAD_SIZE)
+        pen = QPen(colour, 2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(origin, tip)
+        label = QPointF(origin.x() + dx * (TRIAD_SIZE + 8), origin.y() + dy * (TRIAD_SIZE + 8))
+        width = metrics.horizontalAdvance(name)
+        painter.setPen(QPen(theme.text if away > 0.3 else colour))
+        painter.drawText(QPointF(label.x() - width / 2, label.y() + metrics.ascent() / 2 - 1), name)
+    painter.setPen(QPen(theme.text, 1.0))
+    painter.setBrush(theme.chip)
+    painter.drawEllipse(origin, 2.5, 2.5)
 
-    def __init__(self, owner: PreviewView) -> None:
-        super().__init__(owner)
-        self._owner = owner
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-    def paintEvent(self, event) -> None:
-        if self._owner.mesh is None:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        try:
-            self.draw_triad(painter, QPointF(12 + TRIAD_SIZE, self.height() - 12 - TRIAD_SIZE))
-            self.draw_chip(painter)
-        finally:
-            painter.end()
-
-    def draw_triad(self, painter: QPainter, origin: QPointF) -> None:
-        """The world axes as seen, x red, y green, z blue, letters at the tips (far axes first)."""
-        right, up, forward = self._owner.camera.basis()
-        theme = self._owner.theme
-        axes = []
-        for name, axis in (("x", (1, 0, 0)), ("y", (0, 1, 0)), ("z", (0, 0, 1))):
-            axis = numpy.asarray(axis, float)
-            axes.append((float(axis @ forward), name, float(axis @ right), -float(axis @ up)))
-        font = painter.font()
-        font.setPointSizeF(max(font.pointSizeF() * 0.8, 6.5))
-        font.setBold(True)
-        painter.setFont(font)
-        metrics = painter.fontMetrics()
-        for away, name, dx, dy in sorted(axes):
-            colour = QColor(AXIS_COLORS[name])
-            if away > 0.3:  # pointing away from the viewer: fainter
-                colour.setAlphaF(0.55)
-            tip = QPointF(origin.x() + dx * TRIAD_SIZE, origin.y() + dy * TRIAD_SIZE)
-            pen = QPen(colour, 2.0)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawLine(origin, tip)
-            label = QPointF(origin.x() + dx * (TRIAD_SIZE + 8), origin.y() + dy * (TRIAD_SIZE + 8))
-            width = metrics.horizontalAdvance(name)
-            painter.setPen(QPen(theme.text if away > 0.3 else colour))
-            painter.drawText(QPointF(label.x() - width / 2, label.y() + metrics.ascent() / 2 - 1), name)
-        painter.setPen(QPen(theme.text, 1.0))
-        painter.setBrush(theme.chip)
-        painter.drawEllipse(origin, 2.5, 2.5)
-
-    def draw_chip(self, painter: QPainter) -> None:
-        """The label of the selected element in a rounded chip at the bottom, shortened to the width."""
-        label = self._owner.selected_label
-        if not label:
-            return
-        theme = self._owner.theme
-        font = painter.font()
-        font.setBold(False)
-        painter.setFont(font)
-        metrics = painter.fontMetrics()
-        room = self.width() - 2 * (TRIAD_SIZE + 24) - 24
-        if room < 60:
-            return
-        text = metrics.elidedText(label, Qt.TextElideMode.ElideMiddle, room)
-        width, height = metrics.horizontalAdvance(text) + 20, metrics.height() + 8
-        rect = QRectF((self.width() - width) / 2, self.height() - height - 10, width, height)
-        painter.setPen(QPen(theme.chip_border, 1.0))
-        painter.setBrush(theme.chip)
-        painter.drawRoundedRect(rect, height / 2, height / 2)
-        painter.setPen(QPen(theme.text))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+def draw_chip(painter: QPainter, theme: Theme, label: str, width: float, height: float) -> None:
+    """The label of the selected element in a rounded chip at the bottom, shortened to the width."""
+    if not label:
+        return
+    font = painter.font()
+    font.setBold(False)
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    room = width - 2 * (TRIAD_SIZE + 24) - 24
+    if room < 60:
+        return
+    text = metrics.elidedText(label, Qt.TextElideMode.ElideMiddle, int(room))
+    chip_width, chip_height = metrics.horizontalAdvance(text) + 20, metrics.height() + 8
+    rect = QRectF((width - chip_width) / 2, height - chip_height - 10, chip_width, chip_height)
+    painter.setPen(QPen(theme.chip_border, 1.0))
+    painter.setBrush(theme.chip)
+    painter.drawRoundedRect(rect, chip_height / 2, chip_height / 2)
+    painter.setPen(QPen(theme.text))
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
 
 def _icon(kind: str, colour: QColor, size: int = 16) -> QIcon:
@@ -1502,6 +1518,14 @@ def _icon(kind: str, colour: QColor, size: int = 16) -> QIcon:
         _draw_icon(painter, kind, size, colour)
         painter.end()
         icon.addPixmap(pixmap)
+        faint = QPixmap(pixmap.size())
+        faint.setDevicePixelRatio(ratio)
+        faint.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(faint)
+        painter.setOpacity(0.35)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+        icon.addPixmap(faint, QIcon.Mode.Disabled)
     return icon
 
 
@@ -1560,6 +1584,74 @@ def toolbar_actions() -> list[tuple[str, str, str]]:
     ]
 
 
+class ViewToolbar(QFrame):
+    """The view buttons as a compact row: Iso, Top, Front, Side | whole model, edges, projection.
+
+    Made by PreviewView as ``view.toolbar`` without a parent; the preview pane puts it into its header
+    (a layout's addWidget takes it over). It is enabled while the view shows a model and disabled
+    otherwise, never hidden, so the user sees what the view can do. The view keeps the checkable
+    buttons (edges, projection) in step with its options; the keys work when the view has the focus.
+    """
+
+    def __init__(self, view: PreviewView) -> None:
+        super().__init__()
+        self.setObjectName("viewButtons")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(2, 2, 2, 2)
+        row.setSpacing(1)
+        self.buttons: dict[str, QPushButton] = {}
+        slots = {
+            "fit": lambda _=False: view.fit_view(),
+            "edges": lambda checked: view.set_edges(bool(checked)),
+            "projection": lambda checked: view.set_projection(ORTHOGRAPHIC if checked else PERSPECTIVE),
+        }
+        for name, kind, tooltip in toolbar_actions():
+            if name == "fit":
+                line = QFrame(self)
+                line.setObjectName("viewSeparator")
+                line.setFixedSize(1, 16)
+                row.addWidget(line)
+            button = QPushButton(self)
+            button.setObjectName(f"view_{name}")
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip.split(" – ")[0])
+            button.setIconSize(TOOLBAR_ICON)
+            button.setFixedSize(26, 24)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            if name in ("edges", "projection"):
+                button.setCheckable(True)
+                button.setChecked(name == "edges")
+                button.toggled.connect(slots[name])
+            else:
+                button.clicked.connect(slots.get(name) or (lambda _=False, v=name: view.set_view(v)))
+            row.addWidget(button)
+            self.buttons[name] = button
+        self.setEnabled(False)
+        self.adjustSize()
+
+    def restyle(self, palette: QPalette, theme: Theme) -> None:
+        """Colours after the window's palette: a flat row with a faint frame, icons in the text colour."""
+        text = palette.color(QPalette.ColorRole.WindowText)
+        base = palette.color(QPalette.ColorRole.Button)
+        border = QColor(text)
+        border.setAlpha(45)
+        highlight = palette.color(QPalette.ColorRole.Highlight)
+        self.setStyleSheet(
+            f"#viewButtons {{ background: {base.name()};"
+            f" border: 1px solid rgba({border.red()}, {border.green()}, {border.blue()}, {border.alpha()});"
+            " border-radius: 6px; }"
+            "#viewButtons QPushButton { border: none; padding: 0; margin: 0; background: transparent; border-radius: 4px; }"
+            f"#viewButtons QPushButton:hover {{ background: rgba({text.red()}, {text.green()}, {text.blue()}, 30); }}"
+            f"#viewButtons QPushButton:checked {{ background: rgba({highlight.red()}, {highlight.green()}, {highlight.blue()}, 70);"
+            f" border: 1px solid rgba({highlight.red()}, {highlight.green()}, {highlight.blue()}, 160); }}"
+            f"#viewSeparator {{ background: rgba({text.red()}, {text.green()}, {text.blue()}, 60); margin: 0 3px; }}"
+        )
+        for name, kind, _ in toolbar_actions():
+            self.buttons[name].setIcon(_icon(kind, text))
+
+
 # --------------------------------------------------------------------------- the widget
 
 
@@ -1600,50 +1692,21 @@ class PreviewView(QWidget):
         self._message.setWordWrap(True)
         self._stack.addWidget(self._message)
 
-        self._overlay = _Overlay(self)
-        self._overlay.setGeometry(self.rect())
-        self._buttons = QFrame(self)
-        self._buttons.setObjectName("viewButtons")
-        row = QHBoxLayout(self._buttons)
-        row.setContentsMargins(2, 2, 2, 2)
-        row.setSpacing(1)
-        self._tool_buttons: dict[str, QPushButton] = {}
-        slots = {
-            "fit": self.fit_view,
-            "edges": lambda checked: self.set_edges(bool(checked)),
-            "projection": lambda checked: self.set_projection(ORTHOGRAPHIC if checked else PERSPECTIVE),
-        }
-        for name, kind, tooltip in toolbar_actions():
-            if name == "fit":
-                line = QFrame(self._buttons)
-                line.setObjectName("viewSeparator")
-                line.setFixedSize(1, 16)
-                row.addWidget(line)
-            button = QPushButton(self._buttons)
-            button.setObjectName(f"view_{name}")
-            button.setToolTip(tooltip)
-            button.setAccessibleName(tooltip.split(" – ")[0])
-            button.setIconSize(TOOLBAR_ICON)
-            button.setFixedSize(26, 24)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            if name in ("edges", "projection"):
-                button.setCheckable(True)
-                button.setChecked(name == "edges")
-                button.toggled.connect(slots[name])
-            else:
-                button.clicked.connect(slots.get(name) or (lambda _=False, v=name: self.set_view(v)))
-            row.addWidget(button)
-            self._tool_buttons[name] = button
+        # The buttons live outside the view (the pane's header); the view keeps them in step.
+        self.toolbar = ViewToolbar(self)
+        self._tool_buttons = self.toolbar.buttons
         self._restyle()
-        self._buttons.adjustSize()
-        self._buttons.hide()
 
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
         self._settle.setInterval(SETTLE_MS)
         self._settle.timeout.connect(lambda: self._renderer is not None and self._renderer.set_moving(False))
         self._edges_ready.connect(self._edges_computed)
+        self._edge_worker: threading.Thread | None = None  # at most one edge computation at a time
+        self._edge_timer = QTimer(self)  # a growing model: edges once no newer mesh came for a while
+        self._edge_timer.setSingleShot(True)
+        self._edge_timer.timeout.connect(lambda: self._prepare_edges(background=True))
+        self._animation_end: tuple | None = None
 
         problem = opengl_problem()
         if problem:
@@ -1699,21 +1762,57 @@ class PreviewView(QWidget):
             self.camera.set_model(*mesh.bounds(), _fit_points(mesh))
         else:
             self.camera.set_model(numpy.zeros(3), numpy.zeros(3))
+        self._edge_timer.stop()
         self._renderer.set_scene(self._scene)
         self._message.setText("")
         self._stack.setCurrentWidget(self._renderer)
-        self._overlay.setVisible(True)
         self.reset_view(animate=False)
-        self._update_buttons()
+        self._update_toolbar()
         if self._edges:
             self._prepare_edges()
+
+    def update_mesh(self, mesh: PreviewMesh | None) -> None:
+        """Replace the shown model by ``mesh`` (a preview still growing, every few seconds) without
+        resetting the view: the camera keeps its pose; while the view is still fitted (not orbited,
+        zoomed or panned since the last fit) and the model grew beyond its old bounds, it is fitted
+        again without animation. The selection stays if the selected element's label still exists.
+        The feature edges are computed in a thread once no newer mesh came for EDGE_SETTLE_MS and never
+        twice at once, so this stays cheap for millions of triangles (the upload is all it costs).
+        Without a model shown yet (or with None) it is set_mesh."""
+        old = self._scene
+        if old is None or mesh is None:
+            self.set_mesh(mesh)
+            return
+        label = self.selected_label
+        if self.animating:  # the view ends up where the animation was heading
+            end = self._animation_end
+            self._stop_animation()
+            if end is not None:
+                self.camera.set_pose(end)
+                self._fitted = True
+        scene = _Scene(mesh)
+        self._scene = scene
+        self._selected = scene.element_named(label)
+        self.camera.set_model(*mesh.bounds(), _fit_points(mesh))
+        self._edge_timer.stop()
+        self._renderer.set_scene(scene)
+        self._message.setText("")
+        self._stack.setCurrentWidget(self._renderer)
+        grew = bool((scene.low < old.low - 1e-3).any() or (scene.high > old.high + 1e-3).any())
+        if self._fitted and grew:
+            self._sync_viewport()
+            self.camera.fit()
+        self._wheel_point = None
+        self._redraw()
+        self._update_toolbar()
+        if self._edges:
+            self._prepare_edges(delay=True)
 
     def set_message(self, text: str) -> None:
         """Show ``text`` instead of the model (e.g. "Vorschau wird berechnet … 34 %"); "" shows the model."""
         self._message.setText(text)
         self._stack.setCurrentWidget(self._message if text else self._renderer)
-        self._update_buttons()
-        self._overlay.setVisible(not text)
+        self._update_toolbar()
 
     def message(self) -> str:
         return self._message.text()
@@ -1780,9 +1879,20 @@ class PreviewView(QWidget):
         return "" if self._scene is None else self._scene.label(triangle)
 
     def image(self) -> QImage:
-        """The model as currently drawn (without message, overlay and buttons), e.g. for tests or a thumbnail."""
+        """The model as currently drawn, with the triad and the label chip (not the message), e.g. for
+        tests or a thumbnail."""
         self._sync_viewport()
         return self._renderer.image()
+
+    def paint_decorations(self, painter: QPainter, width: float, height: float) -> None:
+        """The axis triad (lower left) and the chip with the selected element's label (bottom centre)
+        over a drawn model of ``width`` x ``height`` logical pixels; both renderers call this last."""
+        if self._scene is None:
+            return
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        draw_triad(painter, self.camera, self.theme, QPointF(12 + TRIAD_SIZE, height - 12 - TRIAD_SIZE))
+        draw_chip(painter, self.theme, self.selected_label, width, height)
 
     def wait_for_edges(self, timeout: float = 30.0) -> bool:
         """Block until the current scene's edges are computed (for tests); False on timeout."""
@@ -1823,34 +1933,13 @@ class PreviewView(QWidget):
         self._stack.addWidget(renderer)
         if showing_model and not self._message.text():
             self._stack.setCurrentWidget(renderer)
-        self._overlay.raise_()
-        self._buttons.raise_()
 
     # -- theme and toolbar
 
     def _restyle(self) -> None:
         """Colours of the toolbar, icons and message after the palette (light or dark)."""
         self.theme = theme_for(self.palette())
-        palette = self.palette()
-        text = palette.color(QPalette.ColorRole.WindowText)
-        chip, border = self.theme.chip, self.theme.chip_border
-        highlight = palette.color(QPalette.ColorRole.Highlight)
-        hover = QColor(text)
-        hover.setAlpha(30)
-        checked = QColor(highlight)
-        checked.setAlpha(60)
-        self._buttons.setStyleSheet(
-            f"#viewButtons {{ background: rgba({chip.red()}, {chip.green()}, {chip.blue()}, {chip.alpha()});"
-            f" border: 1px solid rgba({border.red()}, {border.green()}, {border.blue()}, {border.alpha()});"
-            " border-radius: 6px; }"
-            "#viewButtons QPushButton { border: none; padding: 0; margin: 0; background: transparent; border-radius: 4px; }"
-            f"#viewButtons QPushButton:hover {{ background: rgba({hover.red()}, {hover.green()}, {hover.blue()}, 30); }}"
-            f"#viewButtons QPushButton:checked {{ background: rgba({checked.red()}, {checked.green()}, {checked.blue()}, 70);"
-            f" border: 1px solid rgba({checked.red()}, {checked.green()}, {checked.blue()}, 160); }}"
-            f"#viewSeparator {{ background: rgba({border.red()}, {border.green()}, {border.blue()}, 90); margin: 0 3px; }}"
-        )
-        for name, kind, _ in toolbar_actions():
-            self._tool_buttons[name].setIcon(_icon(kind, text))
+        self.toolbar.restyle(self.palette(), self.theme)
         self._message.setStyleSheet(
             f"background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 {self.theme.top.name()},"
             f" stop: 1 {self.theme.bottom.name()}); color: {self.theme.text.name()}; padding: 12px;")
@@ -1863,27 +1952,42 @@ class PreviewView(QWidget):
 
     # -- edges
 
-    def _prepare_edges(self) -> None:
+    def _prepare_edges(self, delay: bool = False, background: bool = False) -> None:
+        """Compute the current scene's edges: at once for a small mesh, else in a thread (``background``:
+        in a thread whatever the size; ``delay``: only once no newer mesh came for EDGE_SETTLE_MS).
+        Never more than one thread at a time: a scene replaced while its edges are computed is
+        finished and dropped, then the current one gets its turn (see _edges_computed)."""
         scene = self._scene
-        if scene is None or scene.edges is not None or scene.edge_error:
+        if scene is None or not self._edges or scene.edges is not None or scene.edge_error \
+                or scene.edge_thread is not None:
             return
-        if scene.triangle_count <= EDGES_IN_BACKGROUND:
+        if delay:
+            self._edge_timer.start(EDGE_SETTLE_MS)
+            return
+        if scene.triangle_count <= EDGES_IN_BACKGROUND and not background:
             scene.compute_edges()
             self._redraw()
             return
-        if scene.edge_thread is not None:
-            return
+        if self._edge_worker is not None and self._edge_worker.is_alive():
+            return  # an older scene's edges are still being computed: _edges_computed comes back here
 
         def work() -> None:
             scene.compute_edges()
             self._edges_ready.emit(scene)
 
         scene.edge_thread = threading.Thread(target=work, name="preview-edges", daemon=True)
+        self._edge_worker = scene.edge_thread
         scene.edge_thread.start()
 
     def _edges_computed(self, scene) -> None:
-        if scene is self._scene and self._renderer is not None:
+        if self._edge_worker is scene.edge_thread:
+            self._edge_worker = None  # its work is done (the thread itself may still be about to exit)
+        if self._renderer is None:
+            return
+        if scene is self._scene:
             self._redraw()
+        elif not self._edge_timer.isActive():
+            self._prepare_edges(background=True)  # the current scene waited for this thread
 
     # -- animation
 
@@ -1899,6 +2003,7 @@ class PreviewView(QWidget):
             self._view_changed(fitted=True)
             return
         start, end = self.camera.pose(), goal.pose()
+        self._animation_end = end
         animation = QVariantAnimation(self)
         animation.setDuration(ANIMATION_MS)
         animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
@@ -1914,6 +2019,7 @@ class PreviewView(QWidget):
         def done() -> None:
             if self._animation is animation:
                 self._animation = None
+                self._animation_end = None
                 self.camera.set_pose(end)
                 self._renderer.set_moving(False)
                 self._view_changed(fitted=True)
@@ -1924,6 +2030,7 @@ class PreviewView(QWidget):
 
     def _stop_animation(self) -> None:
         animation, self._animation = self._animation, None
+        self._animation_end = None
         if animation is not None:
             animation.stop()
             if self._renderer is not None:
@@ -2061,24 +2168,14 @@ class PreviewView(QWidget):
     def _redraw(self) -> None:
         if self._renderer is not None:
             self._renderer.update()
-        self._overlay.update()
 
     def _sync_viewport(self) -> None:
         widget = self._renderer if self._renderer is not None and self._renderer.width() > 1 else self
         self.camera.set_viewport(widget.width(), widget.height())
 
-    def _update_buttons(self) -> None:
-        """The view buttons show while the mouse is over a model (the keys work anyway)."""
-        self._buttons.setVisible(self._scene is not None and not self._message.text() and self.underMouse()
-                                 and self.width() >= self._buttons.width() + 12)
-
-    def enterEvent(self, event) -> None:
-        super().enterEvent(event)
-        self._update_buttons()
-
-    def leaveEvent(self, event) -> None:
-        super().leaveEvent(event)
-        self._update_buttons()
+    def _update_toolbar(self) -> None:
+        """The buttons work while a model is shown (the keys too); otherwise they are greyed out."""
+        self.toolbar.setEnabled(self._scene is not None and not self._message.text())
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -2086,6 +2183,3 @@ class PreviewView(QWidget):
         if self._fitted and not self.animating:
             self.camera.fit()
         self._wheel_point = None
-        self._buttons.move(6, 6)
-        self._overlay.setGeometry(self.rect())
-        self._update_buttons()
