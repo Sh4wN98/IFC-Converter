@@ -758,6 +758,10 @@ class SkippedDialog(_Dialog):
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
         self.table.resizeColumnsToContents()
+        # Without rows (only counts to report) the columns would shrink below their headings.
+        header_font = self.table.horizontalHeader().fontMetrics()
+        for column, heading in enumerate(self.columns()):
+            self.table.setColumnWidth(column, max(self.table.columnWidth(column), header_font.horizontalAdvance(heading) + 24))
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSortingEnabled(True)
         copy = QAction(tr("Copy"), self.table)

@@ -184,6 +184,33 @@ def test_cli_failure_keeps_a_file_that_existed_before(wall_ifc, tmp_path, monkey
     assert existing.read_text() == "alt"
 
 
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs file permissions")
+def test_cli_refuses_an_unwritable_output_folder_before_converting(wall_ifc, tmp_path, monkeypatch, capsys):
+    from ifc_converter.cli import main
+
+    use_child_func(monkeypatch, child_helpers.raise_error)
+    read_only = tmp_path / "ro"
+    read_only.mkdir()
+    read_only.chmod(0o555)
+    try:
+        assert main([str(wall_ifc), "-d", str(read_only)]) == 1
+        err = capsys.readouterr().err
+        assert "In den Ausgabeordner " in err and "Permission denied" in err
+        assert "Interner Fehler" not in err
+        assert "ist kaputt" not in err  # the child was never started
+    finally:
+        read_only.chmod(0o755)
+
+
+def test_cli_cancel_message_follows_the_language(capsys):
+    from ifc_converter import i18n
+
+    i18n.set_language("en")
+    assert i18n.tr("cancelled") == "cancelled"
+    i18n.set_language("de")
+    assert i18n.tr("cancelled") == "abgebrochen"
+
+
 @posix_only
 def test_session_continues_after_killed_conversion(wall_ifc, tmp_path, monkeypatch):
     use_child_func(monkeypatch, child_helpers.killed_if_named_crash)

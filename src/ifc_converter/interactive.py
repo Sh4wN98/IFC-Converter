@@ -361,6 +361,25 @@ class ProgressLine:
         self._percent, self._detail = None, ""
 
 
+def check_output_folder(folder: Path) -> None:
+    """Make sure something can be written into ``folder`` (created if missing), else raise PermissionError.
+
+    Checked before a conversion starts: the serializers do not report a folder they cannot write to
+    as such (the GLB writer e.g. says it "took none of the elements"), and a 3dm would be computed for
+    minutes before the write fails.
+    """
+    import tempfile
+
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix=".ifc-converter-", dir=folder)
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as exc:
+        raise PermissionError(tr("Cannot write to the output folder {folder} ({error})", folder=folder,
+                                 error=exc.strerror or exc)) from exc
+
+
 def output_files(target: Path, fmt: str) -> list[Path]:
     """Every file converting to ``target`` may write: OBJ adds a .mtl, and IfcOpenShell's GLB
     serializer buffers in two temporary files that a crashed or terminated conversion leaves behind."""
@@ -396,17 +415,18 @@ def convert_in_terminal(
     ``envelope`` only the building hull is converted (option "Nur Gebäudehülle").
     """
     target = Path(target) if target else source.with_suffix(f".{fmt}")
+    check_output_folder(target.parent)
     created = [path for path in output_files(target, fmt) if not path.exists()]
     line = ProgressLine(label)
     # convert() reports 0 % only once the IFC file is read, which can take minutes.
-    line.show("IFC wird gelesen …")
+    line.show(tr("Reading IFC …"))
 
     def retrying(message: str) -> None:
         # After a crash or hang the file is read and converted once more.
         line.clear()
         if on_retry:
             on_retry(message)
-        line.show("IFC wird gelesen …")
+        line.show(tr("Reading IFC …"))
 
     options = {}
     if blocks and fmt == "3dm":
