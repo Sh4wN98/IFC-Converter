@@ -575,7 +575,6 @@ TEXTS: dict[str, str] = {
     "View from the south (3)": "Widok z południa (3)",
     "Side": "Bok",
     "View from the east (4)": "Widok ze wschodu (4)",
-    "All": "Wszystko",
     "Show the whole model (F, double-click)": "Pokaż cały model (F, dwuklik)",
     # --- lead, 2026-10-21 ---
     "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
@@ -588,4 +587,6 @@ TEXTS: dict[str, str] = {
         'Plik IFC wydaje się ucięty (brak END-ISO-10303-21 na końcu): wynik może być niekompletny.',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Nie można zapisać do folderu wyjściowego {folder} ({error})",
+    "Show edges (E)": "Pokaż krawędzie (E)",
+    "Parallel projection instead of perspective (P)": "Rzut równoległy zamiast perspektywy (P)",
 }

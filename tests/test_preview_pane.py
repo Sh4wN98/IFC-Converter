@@ -179,7 +179,7 @@ def test_a_failed_preview_says_why(app, tmp_path, previews):
 def test_the_window_previews_the_selected_file_and_can_hide_it(app, tmp_path, previews, monkeypatch):
     calls, *_ = previews
     monkeypatch.setattr(preview_pane, "_make_view", FakeView)
-    monkeypatch.setattr(gui.PreviewPane.__init__, "__defaults__", (lambda: False, FakeView, None))
+    monkeypatch.setattr(gui.PreviewPane.__init__, "__defaults__", (lambda: False, FakeView, None, None))
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     window = gui.MainWindow(settings=settings)
     try:
@@ -215,3 +215,57 @@ def test_title_and_info_line_shorten_long_names_instead_of_widening(app, tmp_pat
     assert pane.info.minimumHeight() > 0
     pane.shutdown()
     pane.close()
+
+
+class OptionView(FakeView):
+    """A view with options, like PreviewView: edges and projection, reported through option_changed."""
+
+    option_changed = Signal(str, object)
+
+    def __init__(self):
+        super().__init__()
+        self.edges = True
+        self.projection = "perspective"
+
+    def set_edges(self, visible):
+        self.edges = visible
+
+    def set_projection(self, projection):
+        self.projection = projection
+
+
+def test_view_options_are_restored_from_and_kept_in_the_settings(app, tmp_path):
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("preview_edges", False)
+    settings.setValue("preview_projection", "orthographic")
+    pane = preview_pane.PreviewPane(view_factory=OptionView, settings=settings)
+    assert pane.view.edges is False and pane.view.projection == "orthographic"
+    pane.view.option_changed.emit("edges", True)
+    pane.view.option_changed.emit("projection", "perspective")
+    pane.view.option_changed.emit("unknown", 1)
+    assert settings.value("preview_edges", type=bool) is True
+    assert settings.value("preview_projection") == "perspective" and settings.value("unknown") is None
+    fresh = preview_pane.PreviewPane(view_factory=OptionView, settings=QSettings(str(tmp_path / "new.ini"),
+                                                                                QSettings.Format.IniFormat))
+    assert fresh.view.edges is True and fresh.view.projection == "perspective"  # the defaults
+    plain = preview_pane.PreviewPane(view_factory=OptionView)  # without settings: nothing restored, nothing kept
+    plain.view.option_changed.emit("edges", False)
+    assert plain.view.edges is True
+    preview_pane.PreviewPane(view_factory=FakeView, settings=settings)  # a view without options is fine
+    for widget in (pane, fresh, plain):
+        widget.shutdown()
+
+
+def test_the_real_view_in_the_pane_keeps_its_options(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("IFC_CONVERTER_PREVIEW_RENDERER", "software")
+    from ifc_converter import viewer
+
+    viewer.opengl_problem.cache_clear()
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("preview_projection", "orthographic")
+    pane = preview_pane.PreviewPane(view_factory=viewer.PreviewView, settings=settings)
+    assert pane.view.projection == "orthographic" and pane.view.edges_visible
+    pane.view.set_edges(False)
+    assert settings.value("preview_edges", type=bool) is False
+    pane.shutdown()
+    viewer.opengl_problem.cache_clear()

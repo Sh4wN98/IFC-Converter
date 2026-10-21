@@ -576,7 +576,6 @@ TEXTS: dict[str, str] = {
     "View from the south (3)": "Aanzicht vanuit het zuiden (3)",
     "Side": "Zij",
     "View from the east (4)": "Aanzicht vanuit het oosten (4)",
-    "All": "Alles",
     "Show the whole model (F, double-click)": "Hele model tonen (F, dubbelklik)",
     # --- lead, 2026-10-21 ---
     "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
@@ -589,4 +588,6 @@ TEXTS: dict[str, str] = {
         'Het IFC-bestand lijkt afgekapt (geen END-ISO-10303-21 aan het einde): de uitvoer kan onvolledig zijn.',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Kan niet schrijven naar de uitvoermap {folder} ({error})",
+    "Show edges (E)": "Randen tonen (E)",
+    "Parallel projection instead of perspective (P)": "Parallelprojectie in plaats van perspectief (P)",
 }
