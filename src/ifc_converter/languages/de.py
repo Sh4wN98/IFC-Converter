@@ -592,4 +592,6 @@ TEXTS: dict[str, str] = {
         'Zu wenig freier Platz im Temp-Ordner für eine Arbeitskopie der Datei ({needed} nötig, {free} frei).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Die IFC-Datei scheint abgeschnitten zu sein (kein END-ISO-10303-21 am Ende): die Ausgabe kann unvollständig sein.',
+    # interactive.py (night-app)
+    "Cannot write to the output folder {folder} ({error})": "In den Ausgabeordner {folder} kann nicht geschrieben werden ({error})",
 }

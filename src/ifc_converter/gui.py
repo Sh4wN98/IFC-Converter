@@ -81,6 +81,7 @@ from ifc_converter.dialogs import (
 from ifc_converter.interactive import (
     DETAIL_PHASES,
     check_memory,
+    check_output_folder,
     collect_ifc_files,
     crashed_warning,
     desktop_dir,
@@ -321,6 +322,8 @@ class FileQueue:
             item = self.items[row]
             item.status, item.progress, item.error, item.warning = Status.WAITING, 0, "", ""
             item.queued, item.crashed, item.no_geometry = False, [], []
+            item.elements = item.skipped = item.inside = 0
+            item.output, item.detail, item.phase, item.internal_error = None, "", "", False
         return rows
 
 
@@ -415,6 +418,8 @@ class ConversionWorker(QObject):
                 self.file_progress.emit(row, percent)
 
         try:
+            # A folder that cannot be written to fails here with a clear message, not minutes later.
+            check_output_folder(target.parent)
             # The geometry mode only exists for Rhino, so GLB/OBJ calls leave it out.
             options = {"geometry": self.geometry} if self.fmt == "3dm" else {}
             if self.fmt == "3dm" and self.blocks:
@@ -825,6 +830,7 @@ class MainWindow(QMainWindow):
         side_scroll.setFrameShape(QFrame.Shape.NoFrame)
         side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         side_scroll.setFixedWidth(SIDE_WIDTH)
+        side_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Tab goes to the options, not to the scroll area
         body.addWidget(side_scroll)
 
         format_box = QGroupBox(tr("Output format"))

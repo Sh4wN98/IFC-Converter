@@ -592,4 +592,6 @@ TEXTS: dict[str, str] = {
         'Dosyanın çalışma kopyası için geçici klasörde yeterli boş alan yok ({needed} gerekli, {free} boş).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'IFC dosyası kesilmiş görünüyor (sonunda END-ISO-10303-21 yok): çıktı eksik olabilir.',
+    # interactive.py (night-app)
+    "Cannot write to the output folder {folder} ({error})": "Çıktı klasörüne {folder} yazılamıyor ({error})",
 }
