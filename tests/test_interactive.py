@@ -463,7 +463,7 @@ def test_error_messages_are_german_and_internal_errors_marked():
     assert error_message(internal) == "Interner Fehler (KeyError): 'Name'"
     assert is_internal_error(internal)
     assert error_message(process.ConversionFailed("KeyError", "")) == "Interner Fehler (KeyError)"
-    assert failure_hint(True) == "Bitte die Logdatei (Hilfe → Logdatei öffnen) mitschicken, wenn Sie den Fehler melden."
+    assert failure_hint(True) == "Bitte die Logdatei (Hilfe → Logdatei speichern…) mitschicken, wenn Sie den Fehler melden."
 
     user = process.ConversionFailed("ValueError", "Die Datei enthält keine Bauteile mit Geometrie.")
     assert error_message(user) == "Die Datei enthält keine Bauteile mit Geometrie."
@@ -718,7 +718,7 @@ def test_error_texts_in_english(english):
         "The file could not be read as IFC (damaged or not an IFC file): Unable to parse")
     assert error_message(process.ConversionFailed("PermissionError", "[Errno 13] Permission denied: 'x.3dm'")) == (
         "File or network error: [Errno 13] Permission denied: 'x.3dm'")
-    assert failure_hint(True) == "Please attach the log file (Help → Open log file) when reporting the error."
+    assert failure_hint(True) == "Please attach the log file (Help → Save log file…) when reporting the error."
     assert failure_hint(False, "C:\\log.txt") == "Details are in the log file (C:\\log.txt)."
 
 

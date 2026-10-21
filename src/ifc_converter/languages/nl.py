@@ -238,7 +238,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Deze elementen hebben geometrie die niet kon worden geconverteerd – bijv. niet-ondersteunde "
         "geometrietypen, of hun openingen snijden ze volledig weg.",
-    "Help → Open log file": "Help → Logbestand openen",
     "1 element without geometry": "1 element zonder geometrie",
     "{count} elements without geometry": "{count} elementen zonder geometrie",
     " … and {count} more (all of them in the log file)": " … en {count} meer (alle in het logbestand)",
@@ -303,14 +302,7 @@ TEXTS: dict[str, str] = {
         "bestandsnamen (Bestand-1.ifc, Bestand-1.3dm …) en laat elementnamen weg. IFC-klasse en GlobalId, "
         "tijden, groottes, versies en foutmeldingen blijven behouden.",
     "There is no log file yet in {folder}.": "Er is nog geen logbestand in {folder}.",
-    "Save anonymised log file": "Geanonimiseerd logbestand opslaan",
     "Text files (*.txt);;All files (*)": "Tekstbestanden (*.txt);;Alle bestanden (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Het geanonimiseerde logbestand kon niet worden opgeslagen:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "Het geanonimiseerde logbestand is opgeslagen:\n{path}\n\n{hint}\n\n"
-        "Kijk het even door voordat u het verstuurt. Map nu openen?",
     # dialogs.py: settings
     "Settings": "Instellingen",
     "Performance": "Prestaties",
@@ -368,15 +360,6 @@ TEXTS: dict[str, str] = {
         "bewerken moet een blokinstantie eerst worden geëxplodeerd (_Explode).",
     "Log file:": "Logbestand:",
     "Settings:": "Instellingen:",
-    "Open log file": "Logbestand openen",
-    "Opens the current log file in the default program for text files.":
-        "Opent het huidige logbestand in het standaardprogramma voor tekstbestanden.",
-    "Save anonymised…": "Geanonimiseerd opslaan…",
-    "Anonymise log file": "Logbestand anonimiseren",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "Het logbestand blijft op deze pc; er wordt niets automatisch verzonden. Ingeschakeld bevat het "
-        "vanaf nu geen gebruikers-, computer-, server-, map-, bestands- of elementnamen meer.",
     "With this, a conversion uses {resources}.": "Een conversie gebruikt hiermee {resources}.",
     # dialogs.py: about
     "About {app}": "Over {app}",
@@ -488,7 +471,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Gereed",
     "Progress over all files in the list": "Voortgang over alle bestanden in de lijst",
     "Log – here you can see what happened to each file.": "Logboek – hier ziet u wat er met elk bestand is gebeurd.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Logboek van deze sessie. Alles staat ook in het logbestand (Help → Logbestand openen).",
     "Drag to enlarge or shrink the log": "Slepen: logboek vergroten of verkleinen",
     "Log": "Logboek",
     "Show or hide the log (F4)": "Logboek tonen of verbergen (F4)",
@@ -500,7 +482,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Map toevoegen…",
     "Quit": "Afsluiten",
     "Settings…": "Instellingen…",
-    "Save anonymised log file…": "Geanonimiseerd logbestand opslaan…",
     "Preview": "Voorbeeld",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "IFC-bestanden kiezen (Ctrl+O). Mappen: Bestand → Map toevoegen…",
     "&File": "&Bestand",
@@ -622,4 +603,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "Kan niet schrijven naar de uitvoermap {folder} ({error})",
     "Show edges (E)": "Randen tonen (E)",
     "Parallel projection instead of perspective (P)": "Parallelprojectie in plaats van perspectief (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Help → Logbestand opslaan…",
+    "Save log file": "Logbestand opslaan",
+    "The log file could not be saved:\n{error}": "Het logbestand kon niet worden opgeslagen:\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "Het logbestand is opgeslagen:\n{path}\n\n{hint}\n\nKijk het even door voor het verzenden. Map nu openen?",
+    "Save log…": "Log opslaan…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "Het logbestand blijft op deze pc; er wordt niets automatisch verzonden. Het bevat geen gebruikers-, computer-, server-, map-, bestands- of elementnamen.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Log van deze sessie. Alles staat ook in het logbestand (Help → Logbestand opslaan…).",
+    "Save log file…": "Logbestand opslaan…",
 }

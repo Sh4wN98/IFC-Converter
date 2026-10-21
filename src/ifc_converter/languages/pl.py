@@ -237,7 +237,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Te elementy mają geometrię, której nie udało się skonwertować – np. nieobsługiwane typy geometrii, "
         "albo ich otwory wycinają je w całości.",
-    "Help → Open log file": "Pomoc → Otwórz plik dziennika",
     "1 element without geometry": "1 element bez geometrii",
     "{count} elements without geometry": "{count} elementów bez geometrii",
     " … and {count} more (all of them in the log file)": " … i jeszcze {count} (wszystkie w pliku dziennika)",
@@ -302,14 +301,7 @@ TEXTS: dict[str, str] = {
         "(<folder>) i plików (Plik-1.ifc, Plik-1.3dm …) oraz pomija nazwy elementów. Zachowane zostają klasa "
         "IFC i GlobalId, czasy, rozmiary, wersje i komunikaty o błędach.",
     "There is no log file yet in {folder}.": "W {folder} nie ma jeszcze pliku dziennika.",
-    "Save anonymised log file": "Zapisz zanonimizowany plik dziennika",
     "Text files (*.txt);;All files (*)": "Pliki tekstowe (*.txt);;Wszystkie pliki (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Nie udało się zapisać zanonimizowanego pliku dziennika:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "Zanonimizowany plik dziennika został zapisany:\n{path}\n\n{hint}\n\n"
-        "Przed wysłaniem proszę go krótko przejrzeć. Otworzyć teraz folder?",
     # dialogs.py: settings
     "Settings": "Ustawienia",
     "Performance": "Wydajność",
@@ -367,15 +359,6 @@ TEXTS: dict[str, str] = {
         "wystąpienie bloku trzeba najpierw rozbić (_Explode).",
     "Log file:": "Plik dziennika:",
     "Settings:": "Ustawienia:",
-    "Open log file": "Otwórz plik dziennika",
-    "Opens the current log file in the default program for text files.":
-        "Otwiera bieżący plik dziennika w domyślnym programie dla plików tekstowych.",
-    "Save anonymised…": "Zapisz zanonimizowany…",
-    "Anonymise log file": "Anonimizuj plik dziennika",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "Plik dziennika pozostaje na tym komputerze; nic nie jest wysyłane automatycznie. Po włączeniu od tej "
-        "chwili nie zawiera nazw użytkowników, komputerów, serwerów, folderów, plików ani elementów.",
     "With this, a conversion uses {resources}.": "Konwersja używa wtedy: {resources}.",
     # dialogs.py: about
     "About {app}": "O programie {app}",
@@ -487,7 +470,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Gotowy",
     "Progress over all files in the list": "Postęp dla wszystkich plików na liście",
     "Log – here you can see what happened to each file.": "Dziennik – tu widać, co się stało z każdym plikiem.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Dziennik tej sesji. Wszystko jest też w pliku dziennika (Pomoc → Otwórz plik dziennika).",
     "Drag to enlarge or shrink the log": "Przeciągnij, aby powiększyć lub zmniejszyć dziennik",
     "Log": "Dziennik",
     "Show or hide the log (F4)": "Pokaż lub ukryj dziennik (F4)",
@@ -499,7 +481,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Dodaj folder…",
     "Quit": "Zakończ",
     "Settings…": "Ustawienia…",
-    "Save anonymised log file…": "Zapisz zanonimizowany plik dziennika…",
     "Preview": "Podgląd",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "Wybierz pliki IFC (Ctrl+O). Foldery: Plik → Dodaj folder…",
     "&File": "&Plik",
@@ -621,4 +602,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "Nie można zapisać do folderu wyjściowego {folder} ({error})",
     "Show edges (E)": "Pokaż krawędzie (E)",
     "Parallel projection instead of perspective (P)": "Rzut równoległy zamiast perspektywy (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Pomoc → Zapisz plik dziennika…",
+    "Save log file": "Zapisz plik dziennika",
+    "The log file could not be saved:\n{error}": "Nie udało się zapisać pliku dziennika:\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "Plik dziennika został zapisany:\n{path}\n\n{hint}\n\nPrzejrzyj go krótko przed wysłaniem. Otworzyć folder teraz?",
+    "Save log…": "Zapisz dziennik…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "Plik dziennika pozostaje na tym komputerze; nic nie jest wysyłane automatycznie. Nie zawiera nazw użytkowników, komputerów, serwerów, folderów, plików ani elementów.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Dziennik tej sesji. Wszystko jest też w pliku dziennika (Pomoc → Zapisz plik dziennika…).",
+    "Save log file…": "Zapisz plik dziennika…",
 }

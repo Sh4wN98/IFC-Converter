@@ -75,8 +75,7 @@ from ifc_converter.dialogs import (
     SkippedDialog,
     app_icon,
     muted,
-    open_log,
-    save_anonymized_log,
+    save_log,
 )
 from ifc_converter.interactive import (
     DETAIL_PHASES,
@@ -668,7 +667,6 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.settings = settings or open_settings()
         self.preferences = Preferences.load(self.settings)
-        app_info.set_log_anonymized(self.preferences.anonymize_log)
         self.queue = FileQueue()
         self._thread: QThread | None = None
         self._worker: ConversionWorker | None = None
@@ -898,7 +896,7 @@ class MainWindow(QMainWindow):
         self.log_view.setPlaceholderText(tr("Log – here you can see what happened to each file."))
         self.log_view.setMinimumHeight(60)
         self.log_view.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # Tab skips it; it is only read
-        self.log_view.setToolTip(tr("Log of this session. Everything is also in the log file (Help → Open log file)."))
+        self.log_view.setToolTip(tr("Log of this session. Everything is also in the log file (Help → Save log file…)."))
         self.log_splitter = QSplitter(Qt.Orientation.Vertical)
         self.log_splitter.setChildrenCollapsible(False)
         self.log_splitter.addWidget(upper)
@@ -962,8 +960,7 @@ class MainWindow(QMainWindow):
         self.clear_action = action(tr("Clear list"), self.clear_list)
         self.settings_action = action(tr("Settings…"), self.show_settings, ["Ctrl+,"])
         self.open_output_action = action(tr("Open output folder"), self.open_output_dir)
-        self.open_log_action = action(tr("Open log file"), open_log)
-        self.save_log_action = action(tr("Save anonymised log file…"), lambda: save_anonymized_log(self))
+        self.save_log_action = action(tr("Save log file…"), lambda: save_log(self))
         self.about_action = action(tr("About {app}", app=APP_NAME), self.show_about)
         self.preview_action = action(tr("Preview"), self.set_preview_visible, ["F3"])
         self.preview_action.setCheckable(True)
@@ -987,7 +984,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.settings_action)
         self._build_language_menu(tools_menu)
         help_menu = menus.addMenu(tr("&Help"))
-        help_menu.addActions([self.open_output_action, self.open_log_action, self.save_log_action])
+        help_menu.addActions([self.open_output_action, self.save_log_action])
         help_menu.addSeparator()
         help_menu.addAction(self.about_action)
 
@@ -1163,7 +1160,6 @@ class MainWindow(QMainWindow):
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self.preferences = dialog.preferences()
             self.preferences.save(self.settings)
-            app_info.set_log_anonymized(self.preferences.anonymize_log)
             log.info("Einstellungen: %s", self.preferences)
 
     def show_about(self) -> None:
@@ -1598,7 +1594,7 @@ class MainWindow(QMainWindow):
         folder.setEnabled(item.status is Status.DONE and item.output is not None)
         folder.triggered.connect(lambda: self._open_row_folder(row, 0))
         if item.status is Status.FAILED:
-            menu.addAction(tr("Open log file")).triggered.connect(open_log)
+            menu.addAction(tr("Save log file…")).triggered.connect(lambda: save_log(self))
         menu.popup(self.table.viewport().mapToGlobal(position))
 
     def _open_row_folder(self, row: int, _column: int) -> None:

@@ -106,14 +106,8 @@ def open_path(path: Path) -> bool:
     return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
-def open_log() -> bool:
-    """Open the log file, or its folder if nothing has been logged yet."""
-    path = app_info.log_path()
-    return open_path(path if path.is_file() else app_info.log_dir())
-
-
-# Name of the anonymised copy of the log, saved on the desktop by default.
-ANONYMIZED_LOG_NAME = "ifc-converter-log-anonym.txt"
+# Name of the copy of the log, saved on the desktop by default.
+LOG_COPY_NAME = "ifc-converter-log.txt"
 
 
 def anonymize_hint() -> str:
@@ -125,8 +119,9 @@ def anonymize_hint() -> str:
     )
 
 
-def save_anonymized_log(parent: QWidget | None = None) -> Path | None:
-    """Ask where to save an anonymised copy of the whole log, save it and offer to open its folder."""
+def save_log(parent: QWidget | None = None) -> Path | None:
+    """Ask where to save a copy of the whole log (anonymised, as the log is), save it and offer to open
+    its folder. The only way the program offers to get at the log: it is written for passing on."""
     from ifc_converter.interactive import desktop_dir
 
     if not app_info.log_files():
@@ -135,7 +130,7 @@ def save_anonymized_log(parent: QWidget | None = None) -> Path | None:
         )
         return None
     path, _ = QFileDialog.getSaveFileName(
-        parent, tr("Save anonymised log file"), str(desktop_dir() / ANONYMIZED_LOG_NAME),
+        parent, tr("Save log file"), str(desktop_dir() / LOG_COPY_NAME),
         tr("Text files (*.txt);;All files (*)"),
     )
     if not path:
@@ -144,12 +139,12 @@ def save_anonymized_log(parent: QWidget | None = None) -> Path | None:
         target = app_info.write_anonymized_log(Path(path))
     except OSError as exc:
         QMessageBox.warning(
-            parent, APP_NAME, tr("The anonymised log file could not be saved:\n{error}", error=exc),
+            parent, APP_NAME, tr("The log file could not be saved:\n{error}", error=exc),
         )
         return None
     answer = QMessageBox.question(
         parent, APP_NAME,
-        tr("The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
+        tr("The log file has been saved:\n{path}\n\n{hint}\n\n"
            "Please look through it briefly before sending. Open the folder now?",
            path=target, hint=anonymize_hint()),
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes,
@@ -262,7 +257,6 @@ class Preferences:
     kernel: str = DEFAULT_KERNEL
     low_priority: bool = True
     open_output: bool = False  # open the output folder after a batch
-    anonymize_log: bool = False  # write the log file without personal data (see anonymize)
     blocks: bool = False  # Rhino: type geometry placed several times as blocks (convert(blocks=...))
 
     @classmethod
@@ -283,7 +277,6 @@ class Preferences:
             kernel=kernel if kernel in KERNELS else defaults.kernel,
             low_priority=settings.value("low_priority", defaults.low_priority, type=bool),
             open_output=settings.value("open_output_dir", defaults.open_output, type=bool),
-            anonymize_log=settings.value("anonymize_log", defaults.anonymize_log, type=bool),
             blocks=settings.value("rhino_blocks", defaults.blocks, type=bool),
         )
 
@@ -292,7 +285,6 @@ class Preferences:
         settings.setValue("kernel_strategy", self.kernel)
         settings.setValue("low_priority", self.low_priority)
         settings.setValue("open_output_dir", self.open_output)
-        settings.setValue("anonymize_log", self.anonymize_log)
         settings.setValue("rhino_blocks", self.blocks)
         settings.sync()
 
@@ -454,23 +446,16 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
         button_row = QHBoxLayout()
         button_row.setSpacing(8)
-        open_log_button = QPushButton(tr("Open log file"))
-        open_log_button.setToolTip(tr("Opens the current log file in the default program for text files."))
-        open_log_button.clicked.connect(open_log)
-        save_log_button = QPushButton(tr("Save anonymised…"))
-        save_log_button.setToolTip(anonymize_hint())
-        save_log_button.clicked.connect(lambda: save_anonymized_log(self))
-        button_row.addWidget(open_log_button)
-        button_row.addWidget(save_log_button)
+        self.save_log_button = QPushButton(tr("Save log…"))
+        self.save_log_button.setToolTip(anonymize_hint())
+        self.save_log_button.clicked.connect(lambda: save_log(self))
+        button_row.addWidget(self.save_log_button)
         button_row.addStretch()
         layout.addLayout(button_row)
         layout.addSpacing(8)
-        self.anonymize_check = QCheckBox(tr("Anonymise log file"))
-        self.anonymize_check.setToolTip(anonymize_hint())
-        layout.addWidget(self.anonymize_check)
         layout.addWidget(_hint(tr(
-            "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-            "no user, computer, server, folder, file or element names."
+            "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, "
+            "server, folder, file or element names."
         )))
         layout.addStretch()
         return page
@@ -489,7 +474,6 @@ class SettingsDialog(QDialog):
         self._show_usage()
         self.kernel_buttons.get(preferences.kernel, self.kernel_buttons[DEFAULT_KERNEL]).setChecked(True)
         self.open_output_check.setChecked(preferences.open_output)
-        self.anonymize_check.setChecked(preferences.anonymize_log)
         self.blocks_check.setChecked(preferences.blocks)
 
     def preferences(self) -> Preferences:
@@ -499,7 +483,6 @@ class SettingsDialog(QDialog):
             kernel=kernel,
             low_priority=self.priority_check.isChecked(),
             open_output=self.open_output_check.isChecked(),
-            anonymize_log=self.anonymize_check.isChecked(),
             blocks=self.blocks_check.isChecked(),
         )
 
@@ -639,11 +622,9 @@ class ErrorDialog(_Dialog):
         buttons = QDialogButtonBox()
         self.copy_button = buttons.addButton(tr("Copy details"), QDialogButtonBox.ButtonRole.ActionRole)
         self.copy_button.clicked.connect(self.copy_details)
-        log_button = buttons.addButton(tr("Open log file"), QDialogButtonBox.ButtonRole.ActionRole)
-        log_button.clicked.connect(open_log)
-        save_log_button = buttons.addButton(tr("Save anonymised…"), QDialogButtonBox.ButtonRole.ActionRole)
+        save_log_button = buttons.addButton(tr("Save log…"), QDialogButtonBox.ButtonRole.ActionRole)
         save_log_button.setToolTip(anonymize_hint())
-        save_log_button.clicked.connect(lambda: save_anonymized_log(self))
+        save_log_button.clicked.connect(lambda: save_log(self))
         close = buttons.addButton(tr("Close"), QDialogButtonBox.ButtonRole.AcceptRole)
         close.setDefault(True)
         buttons.accepted.connect(self.accept)

@@ -26,6 +26,7 @@ Input: IFC2x3, IFC4 and IFC4.3 (also IFC2x2 and the IFC4x4 draft), as `.ifc` or 
 9. [Log file, privacy and feedback](#log-file-privacy-and-feedback)
 10. [Command line](#command-line)
 11. [Development](#development)
+12. [License](#license)
 
 ## Installation on Windows
 
@@ -54,7 +55,7 @@ cd IFC-Converter-<version>-linux-x86_64
 - **Uninstall:** `~/.local/opt/ifc-converter/uninstall.sh` (also in the unpacked folder) removes program, commands, menu entry, icon and MIME type. Settings and log files are left in place.
 - **Wayland / X11:** Qt picks the display system itself; both plugins are included. If one of them makes trouble (no window, black preview), force the other: `QT_QPA_PLATFORM=xcb ifc-converter` or `QT_QPA_PLATFORM=wayland ifc-converter`. The 3D preview draws with OpenGL 3.3 (Mesa is enough, also in a VM); without it, it falls back to its own software renderer.
 - **System libraries:** Qt, IfcOpenShell, rhino3dm, NumPy and their dependencies are included; from the system the program only needs OpenGL/EGL, xcb, the Wayland client libraries, fontconfig, D-Bus and GLib. `install.sh` reports what is missing (Ubuntu/Debian: `sudo apt install libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0 libxcb-sync1 libxcb-xkb1 libxcb-shm0 libxcb-glx0 libgl1 libegl1`).
-- **Where things are:** settings `~/.config/ifc-converter/settings.ini`; log file `~/.local/state/ifc-converter/logs/ifc-converter.log` (Help → Open log file); remembered problem elements `~/.local/state/ifc-converter/quarantine.json`; preview cache `~/.local/state/ifc-converter/previews`; output that could not be copied `~/.local/state/ifc-converter/rescued`. `XDG_CONFIG_HOME` / `XDG_STATE_HOME` are respected; temporary files go to `/tmp`.
+- **Where things are:** settings `~/.config/ifc-converter/settings.ini`; log file `~/.local/state/ifc-converter/logs/ifc-converter.log` (Help → Save log file…); remembered problem elements `~/.local/state/ifc-converter/quarantine.json`; preview cache `~/.local/state/ifc-converter/previews`; output that could not be copied `~/.local/state/ifc-converter/rescued`. `XDG_CONFIG_HOME` / `XDG_STATE_HOME` are respected; temporary files go to `/tmp`.
 - **Checksums:** `SHA256SUMS.txt` in the release covers all files: `sha256sum -c SHA256SUMS.txt` in the download folder.
 - Not available on Linux: the memory limit (job object) and the standby lock exist on Windows only; low priority, the separate conversion process and the restart after a crash work on both.
 
@@ -67,7 +68,7 @@ cd IFC-Converter-<version>-linux-x86_64
 3. **Check the output folder** (default: Desktop) or tick “Save next to the IFC file”. If a file name exists already, “(2)”, “(3)” … is appended – nothing is overwritten.
 4. **Click Convert.** Progress is shown per file; “Open output folder” takes you to the result. Files added during a conversion are queued and converted right after it with the same settings.
 
-If a file fails, the log says where the details are (Help → Open log file). “Internal error (…)” means an error in the program itself – please send the anonymised log file (see [feedback](#log-file-privacy-and-feedback)).
+If a file fails, the log says where the details are (Help → Save log file…). “Internal error (…)” means an error in the program itself – please send the log file (see [feedback](#log-file-privacy-and-feedback)).
 
 ## Output formats and options
 
@@ -99,7 +100,7 @@ The checkbox **“Only the building hull”** under the output format (command l
 - **Performance:** threads and priority. The default keeps about half the logical cores busy at low priority, so Rhino, Revit and other programs stay responsive; “Automatic” uses fewer when little RAM is free.
 - **Geometry kernel:** **Accurate** (default) computes every element with OpenCASCADE and is complete and identical on every run; only pure triangle meshes (terrain) take the fast path. **Fast** (hybrid) is 3–13× faster but may drop or duplicate faces of single elements. **OpenCASCADE only** computes terrain with OpenCASCADE as well.
 - **Output:** identical elements as blocks (see above).
-- **Log file:** anonymise the log while writing (see below).
+- **Log file:** where the log and the settings are, and “Save log…”.
 
 ## 3D preview
 
@@ -163,11 +164,11 @@ The window, dialogs, status lines, tooltips and log messages are available in En
 
 ## Log file, privacy and feedback
 
-- The converter writes a log to `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (Linux: `~/.local/state/ifc-converter/logs/ifc-converter.log`; about 4 MB, older parts are overwritten); Help → Open log file. It stays on this PC: the converter sends nothing and needs no internet connection.
-- The log contains file paths (with user and server names), file and element names. **To send it,** choose Help → “Save anonymised log file…” (also in the error dialog): a copy of the whole log, by default `ifc-converter-log-anonym.txt` on the Desktop, with user and computer names replaced by `<user>` / `<computer>`, servers and shares by `<server>` / `<share>`, folders by `<folder>` and file names by `File-1.ifc`, `File-1.3dm` …; element names are dropped. IFC class and GlobalId, times, sizes, versions and error messages stay. Have a look before sending.
-- Tools → Settings → “Anonymise log file” anonymises the log while it is written.
+- The converter writes a log to `%LOCALAPPDATA%\IFC Converter\logs\ifc-converter.log` (Linux: `~/.local/state/ifc-converter/logs/ifc-converter.log`; about 4 MB, older parts are overwritten). It stays on this PC: the converter sends nothing and needs no internet connection.
+- **The log is always anonymised.** It never contains user or computer names (`<user>` / `<computer>`), servers and shares of network drives (`<server>` / `<share>`), folder names (`<folder>`), file names (`File-1.ifc`, `File-1.3dm` … – the same file keeps the same number) or element names. IFC class and GlobalId, times, sizes, versions and error messages stay, so problems can be traced without personal data. There is no switch for this.
+- **To send it,** choose Help → “Save log file…” (also in the error dialog and under Settings → Log file): a copy of the whole log, by default `ifc-converter-log.txt` on the Desktop. Have a look before sending.
 
-**How to report a problem:** save the anonymised log file, take a screenshot in Rhino or the target program if something is visibly wrong (missing parts, wrong position), and send both with one sentence (“file X, meshes, hull only – windows missing on the ground floor”).
+**How to report a problem:** save the log file, take a screenshot in Rhino or the target program if something is visibly wrong (missing parts, wrong position), and send both with one sentence (“file X, meshes, hull only – windows missing on the ground floor”).
 
 ## Command line
 
@@ -265,3 +266,7 @@ The program folder contains symbolic links; on a drive without them (exFAT) use 
 - `tools/benchmark.py` – converts IFC files in all formats, each in its own process, and reports time, peak RAM, output size and output checks: `python tools/benchmark.py models/*.ifc --modes 3dm-brep,3dm-mesh,glb --out-dir out --report report.md`.
 - `tools/hull_check.py` – checks the building hull option against `IsExternal` and renders the kept and left-out elements.
 - `tools/guide_screens.py` – renders the preview figure of the user guide offscreen.
+
+## License
+
+IFC Converter is free software under the [GNU General Public License, version 3 or later](LICENSE). The released programs bundle IfcOpenShell (LGPL-3.0, with OpenCASCADE, CGAL and others), Qt / PySide6 (LGPL-3.0), rhino3dm (MIT), NumPy (BSD) and Python (PSF); see `packaging/THIRD-PARTY-NOTICES.txt` and the `licenses` folder next to the program.

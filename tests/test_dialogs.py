@@ -29,7 +29,7 @@ def test_settings_dialog_in_english(app, english):
     assert dialog.threads_spin.specialValueText().startswith("Automatic (")
     assert dialog.kernel_buttons["accurate"].text() == "Accurate (recommended)"
     assert dialog.threads_usage.text().startswith("With this, a conversion uses up to ")
-    assert "<folder>" in dialog.anonymize_check.toolTip() and "File-1.ifc" in dialog.anonymize_check.toolTip()
+    assert "<folder>" in dialog.save_log_button.toolTip() and "File-1.ifc" in dialog.save_log_button.toolTip()
     dialog.deleteLater()
 
 

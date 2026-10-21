@@ -237,7 +237,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Estes elementos têm geometria que não pôde ser convertida – p. ex. tipos de geometria não suportados, ou "
         "as suas aberturas recortam-nos por completo.",
-    "Help → Open log file": "Ajuda → Abrir ficheiro de registo",
     "1 element without geometry": "1 elemento sem geometria",
     "{count} elements without geometry": "{count} elementos sem geometria",
     " … and {count} more (all of them in the log file)": " … e mais {count} (todos no ficheiro de registo)",
@@ -303,14 +302,7 @@ TEXTS: dict[str, str] = {
         "pastas (<pasta>) e de ficheiros (Ficheiro-1.ifc, Ficheiro-1.3dm …) e omite os nomes dos elementos. "
         "Mantêm-se a classe IFC e o GlobalId, tempos, tamanhos, versões e mensagens de erro.",
     "There is no log file yet in {folder}.": "Ainda não há nenhum ficheiro de registo em {folder}.",
-    "Save anonymised log file": "Guardar ficheiro de registo anonimizado",
     "Text files (*.txt);;All files (*)": "Ficheiros de texto (*.txt);;Todos os ficheiros (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Não foi possível guardar o ficheiro de registo anonimizado:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "O ficheiro de registo anonimizado foi guardado:\n{path}\n\n{hint}\n\n"
-        "Reveja-o brevemente antes de o enviar. Abrir a pasta agora?",
     # dialogs.py: settings
     "Settings": "Definições",
     "Performance": "Desempenho",
@@ -370,15 +362,6 @@ TEXTS: dict[str, str] = {
         "Rhino, uma instância de bloco tem de ser primeiro explodida (_Explode).",
     "Log file:": "Ficheiro de registo:",
     "Settings:": "Definições:",
-    "Open log file": "Abrir ficheiro de registo",
-    "Opens the current log file in the default program for text files.":
-        "Abre o ficheiro de registo atual no programa predefinido para ficheiros de texto.",
-    "Save anonymised…": "Guardar anonimizado…",
-    "Anonymise log file": "Anonimizar o ficheiro de registo",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "O ficheiro de registo fica neste PC; nada é enviado automaticamente. Ativado, a partir de agora não "
-        "contém nomes de utilizadores, computadores, servidores, pastas, ficheiros nem elementos.",
     "With this, a conversion uses {resources}.": "Com isto, uma conversão usa {resources}.",
     # dialogs.py: about
     "About {app}": "Acerca de {app}",
@@ -490,7 +473,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Pronto",
     "Progress over all files in the list": "Progresso de todos os ficheiros da lista",
     "Log – here you can see what happened to each file.": "Registo – aqui vê-se o que aconteceu a cada ficheiro.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Registo desta sessão. Tudo está também no ficheiro de registo (Ajuda → Abrir ficheiro de registo).",
     "Drag to enlarge or shrink the log": "Arraste para aumentar ou reduzir o registo",
     "Log": "Registo",
     "Show or hide the log (F4)": "Mostrar ou ocultar o registo (F4)",
@@ -502,7 +484,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Adicionar pasta…",
     "Quit": "Sair",
     "Settings…": "Definições…",
-    "Save anonymised log file…": "Guardar ficheiro de registo anonimizado…",
     "Preview": "Pré-visualização",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "Escolher ficheiros IFC (Ctrl+O). Pastas: Ficheiro → Adicionar pasta…",
     "&File": "&Ficheiro",
@@ -624,4 +605,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "Não é possível escrever na pasta de saída {folder} ({error})",
     "Show edges (E)": "Mostrar arestas (E)",
     "Parallel projection instead of perspective (P)": "Projeção paralela em vez de perspetiva (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Ajuda → Guardar ficheiro de registo…",
+    "Save log file": "Guardar ficheiro de registo",
+    "The log file could not be saved:\n{error}": "Não foi possível guardar o ficheiro de registo:\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "O ficheiro de registo foi guardado:\n{path}\n\n{hint}\n\nReveja-o brevemente antes de enviar. Abrir a pasta agora?",
+    "Save log…": "Guardar registo…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "O ficheiro de registo fica neste PC; nada é enviado automaticamente. Não contém nomes de utilizador, computador, servidor, pasta, ficheiro nem elemento.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Registo desta sessão. Tudo está também no ficheiro de registo (Ajuda → Guardar ficheiro de registo…).",
+    "Save log file…": "Guardar ficheiro de registo…",
 }

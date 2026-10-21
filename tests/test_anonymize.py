@@ -162,27 +162,20 @@ def test_no_log_no_copy(user_dirs):
         app.write_anonymized_log(user_dirs / "anonym.txt")
 
 
-def test_log_file_written_anonymised_when_set(user_dirs, monkeypatch):
+def test_log_file_is_always_written_anonymised(user_dirs, monkeypatch):
+    # There is no setting for it: the log never holds user, server, folder, file or element names.
     monkeypatch.setenv("USERNAME", USER)
     (user_dirs / "config").mkdir()
-    app.settings_path().write_text("[General]\nformat=3dm\nanonymize_log=true\n", encoding="utf-8")
-    assert app.log_anonymized_setting()
-    path = app.setup_logging("GUI")
-    logging.getLogger("ifc_converter.process").info("Umwandlung: %s -> %s", SOURCE, TARGET)
-    app.set_log_anonymized(False)
-    logging.getLogger("ifc_converter.process").info("Fertig: %s", SOURCE)
-    app.stop_logging()
-    text = path.read_text(encoding="utf-8")
-    assert r"Umwandlung: \\<Server>\<Freigabe>\<Benutzer>\Desktop\<Ordner>\Datei-1.ifc -> " in text
-    assert re.search(r"Fertig: \\\\fileserver01\\", text)  # switched off again
-
-
-def test_log_not_anonymised_by_default(user_dirs):
-    assert not app.log_anonymized_setting()
-    path = app.setup_logging("CLI")
-    logging.getLogger("ifc_converter").info("Datei %s", SOURCE)
-    app.stop_logging()
-    assert SOURCE in path.read_text(encoding="utf-8")
+    app.settings_path().write_text("[General]\nformat=3dm\nanonymize_log=false\n", encoding="utf-8")  # ignored
+    for kind in ("GUI", "CLI"):
+        path = app.setup_logging(kind)
+        logging.getLogger("ifc_converter.process").info("Umwandlung: %s -> %s", SOURCE, TARGET)
+        logging.getLogger("ifc_converter").info("Fertig: IfcWall 1hqIFTRjfV6AWq_bMtnZwI „Wand“")
+        app.stop_logging()
+        text = path.read_text(encoding="utf-8")
+        assert r"Umwandlung: \\<Server>\<Freigabe>\<Benutzer>\Desktop\<Ordner>\Datei-1.ifc -> " in text
+        assert "Fertig: IfcWall 1hqIFTRjfV6AWq_bMtnZwI\n" in text
+        assert SOURCE not in text and "fileserver01" not in text and "Wand" not in text
 
 
 def test_placeholders_follow_the_language():

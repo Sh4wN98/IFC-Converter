@@ -236,7 +236,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Questi elementi hanno una geometria che non è stato possibile convertire – ad es. tipi di geometria non "
         "supportati, oppure le loro aperture li ritagliano completamente.",
-    "Help → Open log file": "Aiuto → Apri file di log",
     "1 element without geometry": "1 elemento senza geometria",
     "{count} elements without geometry": "{count} elementi senza geometria",
     " … and {count} more (all of them in the log file)": " … e altri {count} (tutti nel file di log)",
@@ -301,14 +300,7 @@ TEXTS: dict[str, str] = {
         "(<cartella>) e di file (File-1.ifc, File-1.3dm …) e omette i nomi degli elementi. Restano classe IFC e "
         "GlobalId, tempi, dimensioni, versioni e messaggi di errore.",
     "There is no log file yet in {folder}.": "Non c’è ancora nessun file di log in {folder}.",
-    "Save anonymised log file": "Salva file di log anonimizzato",
     "Text files (*.txt);;All files (*)": "File di testo (*.txt);;Tutti i file (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Impossibile salvare il file di log anonimizzato:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "Il file di log anonimizzato è stato salvato:\n{path}\n\n{hint}\n\n"
-        "Dargli un’occhiata prima di inviarlo. Aprire la cartella adesso?",
     # dialogs.py: settings
     "Settings": "Impostazioni",
     "Performance": "Prestazioni",
@@ -367,15 +359,6 @@ TEXTS: dict[str, str] = {
         "Rhino, un’istanza di blocco va prima esplosa (_Explode).",
     "Log file:": "File di log:",
     "Settings:": "Impostazioni:",
-    "Open log file": "Apri file di log",
-    "Opens the current log file in the default program for text files.":
-        "Apre il file di log corrente nel programma predefinito per i file di testo.",
-    "Save anonymised…": "Salva anonimizzato…",
-    "Anonymise log file": "Anonimizza il file di log",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "Il file di log resta su questo PC; nulla viene inviato automaticamente. Se attivo, da ora in poi non "
-        "contiene più nomi di utenti, computer, server, cartelle, file ed elementi.",
     "With this, a conversion uses {resources}.": "Con questo, una conversione usa {resources}.",
     # dialogs.py: about
     "About {app}": "Informazioni su {app}",
@@ -487,7 +470,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Pronto",
     "Progress over all files in the list": "Avanzamento su tutti i file dell’elenco",
     "Log – here you can see what happened to each file.": "Registro – qui si vede cosa è successo a ogni file.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Registro di questa sessione. Tutto è anche nel file di log (Aiuto → Apri file di log).",
     "Drag to enlarge or shrink the log": "Trascinare per ingrandire o ridurre il registro",
     "Log": "Registro",
     "Show or hide the log (F4)": "Mostra o nascondi il registro (F4)",
@@ -499,7 +481,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Aggiungi cartella…",
     "Quit": "Esci",
     "Settings…": "Impostazioni…",
-    "Save anonymised log file…": "Salva file di log anonimizzato…",
     "Preview": "Anteprima",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "Scegliere i file IFC (Ctrl+O). Cartelle: File → Aggiungi cartella…",
     "&File": "&File",
@@ -621,4 +602,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "Impossibile scrivere nella cartella di output {folder} ({error})",
     "Show edges (E)": "Mostra spigoli (E)",
     "Parallel projection instead of perspective (P)": "Proiezione parallela invece della prospettiva (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Aiuto → Salva file di log…",
+    "Save log file": "Salva file di log",
+    "The log file could not be saved:\n{error}": "Impossibile salvare il file di log:\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "Il file di log è stato salvato:\n{path}\n\n{hint}\n\nControllalo brevemente prima di inviarlo. Aprire la cartella adesso?",
+    "Save log…": "Salva log…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "Il file di log resta su questo PC; nulla viene inviato automaticamente. Non contiene nomi di utenti, computer, server, cartelle, file o elementi.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Log di questa sessione. Tutto è anche nel file di log (Aiuto → Salva file di log…).",
+    "Save log file…": "Salva file di log…",
 }

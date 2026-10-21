@@ -236,7 +236,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Bu elemanların geometrisi dönüştürülemedi – örn. desteklenmeyen geometri türleri ya da açıklıkları "
         "onları tamamen kesip çıkarıyor.",
-    "Help → Open log file": "Yardım → Günlük dosyasını aç",
     "1 element without geometry": "1 geometrisiz eleman",
     "{count} elements without geometry": "{count} geometrisiz eleman",
     " … and {count} more (all of them in the log file)": " … ve {count} tane daha (tümü günlük dosyasında)",
@@ -303,14 +302,7 @@ TEXTS: dict[str, str] = {
         "(<klasör>) ve dosya adlarını (Dosya-1.ifc, Dosya-1.3dm …) değiştirir, eleman adlarını çıkarır. IFC "
         "sınıfı ve GlobalId, süreler, boyutlar, sürümler ve hata iletileri korunur.",
     "There is no log file yet in {folder}.": "{folder} içinde henüz günlük dosyası yok.",
-    "Save anonymised log file": "Anonimleştirilmiş günlük dosyasını kaydet",
     "Text files (*.txt);;All files (*)": "Metin dosyaları (*.txt);;Tüm dosyalar (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Anonimleştirilmiş günlük dosyası kaydedilemedi:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "Anonimleştirilmiş günlük dosyası kaydedildi:\n{path}\n\n{hint}\n\n"
-        "Göndermeden önce lütfen kısaca gözden geçirin. Klasör şimdi açılsın mı?",
     # dialogs.py: settings
     "Settings": "Ayarlar",
     "Performance": "Performans",
@@ -369,15 +361,6 @@ TEXTS: dict[str, str] = {
         "için blok örneğinin önce patlatılması gerekir (_Explode).",
     "Log file:": "Günlük dosyası:",
     "Settings:": "Ayarlar:",
-    "Open log file": "Günlük dosyasını aç",
-    "Opens the current log file in the default program for text files.":
-        "Geçerli günlük dosyasını metin dosyaları için varsayılan programda açar.",
-    "Save anonymised…": "Anonim kaydet…",
-    "Anonymise log file": "Günlük dosyasını anonimleştir",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "Günlük dosyası bu bilgisayarda kalır; hiçbir şey otomatik olarak gönderilmez. Açıkken bundan sonra "
-        "kullanıcı, bilgisayar, sunucu, klasör, dosya veya eleman adı içermez.",
     "With this, a conversion uses {resources}.": "Böylece bir dönüştürme şunları kullanır: {resources}.",
     # dialogs.py: about
     "About {app}": "{app} hakkında",
@@ -489,7 +472,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Hazır",
     "Progress over all files in the list": "Listedeki tüm dosyaların toplam ilerlemesi",
     "Log – here you can see what happened to each file.": "Günlük – her dosyaya ne olduğu burada görülür.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Bu oturumun günlüğü. Her şey günlük dosyasında da var (Yardım → Günlük dosyasını aç).",
     "Drag to enlarge or shrink the log": "Sürükleyin: günlüğü büyütün veya küçültün",
     "Log": "Günlük",
     "Show or hide the log (F4)": "Günlüğü göster veya gizle (F4)",
@@ -501,7 +483,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Klasör ekle…",
     "Quit": "Çıkış",
     "Settings…": "Ayarlar…",
-    "Save anonymised log file…": "Anonimleştirilmiş günlük dosyasını kaydet…",
     "Preview": "Önizleme",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "IFC dosyalarını seçin (Ctrl+O). Klasörler: Dosya → Klasör ekle…",
     "&File": "&Dosya",
@@ -623,4 +604,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "Çıktı klasörüne {folder} yazılamıyor ({error})",
     "Show edges (E)": "Kenarları göster (E)",
     "Parallel projection instead of perspective (P)": "Perspektif yerine paralel izdüşüm (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Yardım → Günlük dosyasını kaydet…",
+    "Save log file": "Günlük dosyasını kaydet",
+    "The log file could not be saved:\n{error}": "Günlük dosyası kaydedilemedi:\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "Günlük dosyası kaydedildi:\n{path}\n\n{hint}\n\nGöndermeden önce lütfen kısaca gözden geçirin. Klasör şimdi açılsın mı?",
+    "Save log…": "Günlüğü kaydet…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "Günlük dosyası bu bilgisayarda kalır; hiçbir şey otomatik gönderilmez. Kullanıcı, bilgisayar, sunucu, klasör, dosya veya eleman adı içermez.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Bu oturumun günlüğü. Her şey günlük dosyasında da bulunur (Yardım → Günlük dosyasını kaydet…).",
+    "Save log file…": "Günlük dosyasını kaydet…",
 }
