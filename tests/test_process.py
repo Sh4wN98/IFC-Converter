@@ -922,3 +922,92 @@ def test_shapes_read_back_from_a_checkpoint_equal_the_kernels(alignment_ifc, tmp
         # repr: a missing transparency is NaN, which never equals itself
         assert [repr((m.name, m.diffuse.r(), m.diffuse.g(), m.diffuse.b(), m.transparency)) for m in b.materials] == [
             repr((m.name, m.diffuse.r(), m.diffuse.g(), m.diffuse.b(), m.transparency)) for m in a.materials]
+
+
+def test_an_element_the_kernel_hangs_on_is_given_up_in_the_child_which_still_ends(
+    many_walls_ifc, tmp_path, monkeypatch, caplog
+):
+    # The conversion itself gives the wall up after the hang limit (no restart, no re-reading of the
+    # file), reports it like a crashed one and remembers it; the child ends right after its result
+    # although a thread of it is stuck in the "kernel" for good and the iterator can never be freed.
+    monkeypatch.setenv(process.converter.HANG_ENV, "0.5")
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 30)
+    gone = []
+    stop = process._stop
+
+    def watching_stop(child, grace=0):
+        child.join(3)
+        gone.append(not child.is_alive())
+        return stop(child, grace)
+
+    monkeypatch.setattr(process, "_stop", watching_stop)
+    retries = []
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        first = convert_in_child(many_walls_ifc, tmp_path / "1.glb", "glb", threads=2, on_retry=retries.append,
+                                 func=child_helpers.hang_in_kernel_on_wall_7)
+    assert retries == [] and gone == [True]
+    assert (first.elements, first.skipped) == (599, 0)
+    assert len(first.crashed) == 1 and first.crashed[0].startswith("IfcWall ") and first.crashed[0].endswith("„Wall 7“")
+    assert "Übersprungen, weil der Geometriekern daran abstürzte oder hängen blieb (1):\n  IfcWall" in caplog.text
+    assert "Der Geometriekern hängt seit mehr als 0 min an IfcWall" in caplog.text
+    key = process._quarantine_key(many_walls_ifc, "accurate")
+    model = ifcopenshell.open(str(many_walls_ifc))
+    wall = next(wall for wall in model.by_type("IfcWall") if wall.Name == "Wall 7")
+    assert process.load_quarantine(key) == {wall.id(): first.crashed[0]}
+
+    # Next time the wall is skipped at once; the parent's list and the child's are merged, not doubled.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        again = convert_in_child(many_walls_ifc, tmp_path / "2.glb", "glb", threads=2, on_retry=retries.append,
+                                 func=child_helpers.hang_in_kernel_on_wall_7)
+    assert retries == [] and gone == [True, True]
+    assert again.crashed == first.crashed and again.elements == 599
+    assert "Bekannt aus früheren Umwandlungen dieser Datei" in caplog.text
+
+
+def test_the_child_may_report_hung_elements_and_they_merge_with_the_quarantine(wall_ifc, tmp_path):
+    result = convert_in_child(wall_ifc, tmp_path / "x.glb", "glb", func=child_helpers.report_hung)
+    assert result.crashed == ["IfcWall 1 „Hung“", "IfcWall 2 „Lost“"]
+
+
+def test_the_phases_collect_hung_elements_without_moving_the_position(tmp_path):
+    watch = process._Phases(tmp_path / "x.3dm", None, None, None)
+    watch.locate("chunk", [1, 2, 3], "")
+    watch.locate("hung", [2], "IfcWall 2")
+    assert watch.hung == {2: "IfcWall 2"}
+    assert watch.position == ("chunk", [1, 2, 3], "") and watch.suspects() == ("chunk", [1, 3], "")
+    watch.locate("hung", [3], "")
+    assert watch.hung == {2: "IfcWall 2", 3: "#3"}
+
+
+def test_a_long_silence_while_computing_is_logged(tmp_path, monkeypatch, caplog):
+    # A child that computes (CPU busy) but reports nothing for NO_PROGRESS_WARNING gets a warning
+    # in the log, nothing more; any progress, status or position message ends the silence.
+    monkeypatch.setattr(process, "NO_PROGRESS_WARNING", 1)
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 600)
+    cpu = [0.0]
+    monkeypatch.setattr(process, "tree_cpu_seconds", lambda pid: cpu[0])
+    watch = process._Phases(tmp_path / "x.3dm", None, None, None)
+    watch.pid = 1
+    watch.enter("geometry", "Geometrie wird berechnet …")
+    with caplog.at_level(logging.WARNING, logger="ifc_converter.process"):
+        cpu[0] = 5.0
+        watch._check_stall(time.monotonic())  # first sample, nothing yet
+        assert "kein Fortschritt" not in caplog.text
+        time.sleep(1.1)
+        cpu[0] = 10.0
+        watch._check_stall(time.monotonic())
+        assert "Seit 0 min kein Fortschritt, obwohl die Umwandlung rechnet (CPU 10.0 s), 0 %: Geometrie" in caplog.text
+        caplog.clear()
+        time.sleep(1.1)
+        watch.locate("delivered", [1], "")  # the silence ends
+        cpu[0] = 15.0
+        watch._check_stall(time.monotonic())
+        assert "kein Fortschritt" not in caplog.text
+        time.sleep(1.1)
+        cpu[0] = 15.0  # no CPU used: no warning either (that is the stall watchdog's business)
+        watch._check_stall(time.monotonic())
+        assert "kein Fortschritt" not in caplog.text
+        cpu[0] = 20.0
+        watch._check_stall(time.monotonic())
+        assert "kein Fortschritt" in caplog.text

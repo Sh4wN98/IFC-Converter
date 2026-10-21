@@ -3,6 +3,7 @@
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -260,10 +261,10 @@ def _fail_on_named(name, how):
 
         return run()
 
-    def failing_deep_shape(settings, product, strategy):
+    def failing_deep_shape(settings, product, strategy, *args):
         if product.Name == name:
             fail()
-        return deep_shape(settings, product, strategy)
+        return deep_shape(settings, product, strategy, *args)
 
     converter._iterate, converter._deep_shape = failing_iterate, failing_deep_shape
 
@@ -392,9 +393,9 @@ def crash_late_on_wall_450(input_path, output_path, fmt, threads, progress=None,
         asked.extend(products)
         return iterate(model, settings, threads, products, library)
 
-    def counting_deep_shape(settings, product, strategy):
+    def counting_deep_shape(settings, product, strategy, *args):
         asked.append(product)
-        return deep_shape(settings, product, strategy)
+        return deep_shape(settings, product, strategy, *args)
 
     converter._iterate, converter._deep_shape = counting_iterate, counting_deep_shape
     try:
@@ -418,3 +419,50 @@ def convert_only_hull(input_path, output_path, fmt, threads, progress=None, **op
 
     envelope.select = select
     return convert(input_path, output_path, fmt, threads, progress, **options)
+
+
+class _StuckShapes:
+    """The shapes of a run whose kernel thread spins on one product for good: ``shapes`` come at
+    once, then nothing ever again; freeing it never returns either, like IfcOpenShell's iterator,
+    whose destructor joins its threads (the child must end all the same)."""
+
+    def __init__(self, shapes, stuck):
+        self.shapes, self.stuck = shapes, stuck
+
+    def __iter__(self):
+        yield from self.shapes
+        if self.stuck:
+            threading.Event().wait()
+
+    def __del__(self):
+        if self.stuck:
+            threading.Event().wait()
+
+
+def _hang_in_kernel_on(name):
+    from ifc_converter import converter
+
+    iterate = converter._iterate
+
+    def stuck_iterate(model, settings, threads, products, library):
+        others = [product for product in products if product.Name != name]
+        shapes = list(iterate(model, settings, threads, others, library)) if others else []
+        return _StuckShapes(shapes, len(others) < len(products))
+
+    converter._iterate = stuck_iterate
+
+
+def hang_in_kernel_on_wall_7(input_path, output_path, fmt, threads, progress=None, **options):
+    """The kernel hangs on "Wall 7" for good (its thread cannot be stopped); the conversion itself must
+    give the wall up (IFC_CONVERTER_HANG_SECONDS is short in the test) and the child end promptly."""
+    _hang_in_kernel_on("Wall 7")
+    return convert(input_path, output_path, fmt, threads, progress, **options)
+
+
+def report_hung(input_path, output_path, fmt, threads, progress=None, **options):
+    """Report two elements as hung through the position channel and one of them in the result as
+    well, like convert() does; the parent must list each once."""
+    options["position"]("hung", [1], "IfcWall 1 „Hung“")
+    options["position"]("hung", [2], "IfcWall 2 „Lost“")
+    Path(output_path).write_text("fake")
+    return ConversionResult(output=Path(output_path), elements=1, crashed=["IfcWall 2 „Lost“"])

@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from multiprocessing.connection import wait
 from pathlib import Path
 
-from ifc_converter import i18n
+from ifc_converter import converter, i18n
 from ifc_converter.converter import (
     DEFAULT_KERNEL, MAX_DEFAULT_THREADS, ConversionResult, ProgressCallback, convert, default_threads, size_text,
 )
@@ -59,6 +59,10 @@ FATAL_STALL_TIMEOUT = 60
 FATAL_MARKERS = {"Windows fatal exception: stack overflow": lambda: tr("stack overflow")}
 STALL_CPU = 1.0
 CPU_SAMPLE = 30
+# A child that reports no change (progress, phase, position) for this long while it keeps using CPU
+# gets a warning in the log, nothing more: the kernel may be spinning on one element (which the
+# child itself gives up after converter.HANG_SECONDS), or a huge element is simply slow.
+NO_PROGRESS_WARNING = 30 * 60
 # A pause this long between two samples means the computer was suspended, not the conversion stuck.
 SUSPEND_GAP = 5 * 60
 # Temp files of conversions untouched for this long are leftovers of a killed app.
@@ -488,6 +492,39 @@ def _child_main(
     finally:
         with lock:
             conn.close()
+        if converter.abandoned():
+            _exit_at_once()
+
+
+def _exit_at_once() -> None:
+    """End the child right now, skipping the interpreter's shutdown: a computation that hung was
+    abandoned (see converter.abandoned) and its kernel thread cannot be stopped.
+
+    The outcome is sent and the pipe closed by now, output files are written. A normal exit would
+    wait forever: the interpreter frees the modules, with them (unless kept, see
+    converter._keep_forever) IfcOpenShell's iterator, whose destructor joins its threads. os._exit
+    ends the process with all its threads at once (Linux: exit_group; Windows: ExitProcess, which
+    first ends the other threads). On Windows, TerminateProcess on ourselves is used instead, which
+    also skips the DLLs' detach routines: with a thread ended in the middle of the kernel, a static
+    destructor there could wait for a lock that thread held. Either way the parent sees the exit
+    code 0, and would terminate a child still alive after 5 s anyway (see _stop).
+    """
+    for stream in (sys.stderr, sys.stdout):
+        try:
+            stream.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.TerminateProcess.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+            kernel32.TerminateProcess(kernel32.GetCurrentProcess(), 0)
+        except (OSError, AttributeError):
+            pass
+    os._exit(0)
 
 
 def convert_in_child(
@@ -553,11 +590,14 @@ def convert_in_child(
                     attempt_options["skip_ids"] = sorted(skipped)
                 if checkpoint:
                     attempt_options["checkpoint_dir"] = checkpoint
+                hung: dict[int, str] = {}  # elements the child gave up as hung in this attempt
                 try:
-                    result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started)
+                    result = _run_child(func, args, attempt_options, progress, cancelled, low_priority, status, started,
+                                        hung)
                     break
                 except (ConversionCrashed, ConversionStalled) as failure:
                     known = len(skipped)
+                    skipped.update(hung)  # skipped at once in the next attempt, like crashed ones
                     kernel_before = options.get("kernel")
                     message = _recover(failure, options, isolate, skipped, attempt + 2, opencascade_first)
                     if len(skipped) > known:
@@ -573,7 +613,10 @@ def convert_in_child(
                     log.warning("%s%s. %s", failure, code, message.split(". ", 1)[-1])
                     if on_retry:
                         on_retry(message)
-            result.crashed = list(skipped.values())
+            # The child reports the elements it gave up as hung in result.crashed as well: one list.
+            skipped.update(hung)
+            labels = list(skipped.values())
+            result.crashed = labels + [label for label in result.crashed if label not in set(labels)]
             if skipped:  # remembered as used recently
                 save_quarantine(quarantine, skipped)
     except Cancelled:
@@ -653,8 +696,10 @@ def _run_child(
     low_priority: bool = True,
     status: Callable[[str, str], None] | None = None,
     started: float | None = None,
+    hung: dict[int, str] | None = None,
 ) -> ConversionResult:
-    """One attempt of convert_in_child()."""
+    """One attempt of convert_in_child(); ``hung`` collects the elements the child gave up as hung
+    ({step id: label}), whether the attempt ends with a result or not."""
     job = _Job.create(low_priority)
     stderr_path = _stderr_file()
     staging = _staging_dir()
@@ -712,6 +757,8 @@ def _run_child(
                     pass
                 break
     finally:
+        if hung is not None:
+            hung.update(watch.hung)
         # A child that delivered its result is just exiting; a cancelled or failed one is stopped now.
         exitcode = _stop(process, grace=5 if outcome else 0)
         reader.close()
@@ -1021,6 +1068,9 @@ class _Phases:
         self.pid: int | None = None
         self.position: tuple | None = None  # where the child is: ("chunk"|"element", ids, label)
         self._remaining: set[int] | None = None  # products of the chunk not delivered yet
+        self.hung: dict[int, str] = {}  # products the child gave up as hung: {step id: label}
+        self._changed = time.monotonic()  # when progress, phase or position last changed
+        self._seen_percent = 0
         self.stderr_path: str | None = None
         self.fatal = ""  # the first fatal error found in the child's stderr
         self._stderr_read = 0
@@ -1036,13 +1086,23 @@ class _Phases:
         if phase != self.phase:
             log.info(tr("{message} (after {seconds} s)", message=text,
                         seconds=f"{time.monotonic() - self.started:.0f}"))
+        if (phase, text) != (self.phase, self.text):
+            self._changed = time.monotonic()
         self.phase, self.text = phase, text
         self._show(text)
 
     def locate(self, kind: str, ids: list, label: str) -> None:
         """Where the child is: computing a "chunk" of products or one "element", or "done"; or which
-        products of the chunk it has "delivered"."""
+        products of the chunk it has "delivered"; or which product it gave up as "hung" (skipped
+        like one the kernel crashed on; the position stays)."""
+        self._changed = time.monotonic()
         if kind == "delivered":
+            if self._remaining is not None:
+                self._remaining.difference_update(ids)
+            return
+        if kind == "hung":
+            for id_ in ids:
+                self.hung[id_] = label or f"#{id_}"
             if self._remaining is not None:
                 self._remaining.difference_update(ids)
             return
@@ -1058,6 +1118,8 @@ class _Phases:
 
     def tick(self) -> None:
         now = time.monotonic()
+        if self.percent != self._seen_percent:
+            self._seen_percent, self._changed = self.percent, now
         if self.pid and now - self._sampled >= CPU_SAMPLE:
             if now - self._sampled > SUSPEND_GAP:
                 # The computer was asleep (this loop runs every second): no reason to stop the child.
@@ -1084,6 +1146,14 @@ class _Phases:
         timeout = FATAL_STALL_TIMEOUT if self.fatal else STALL_TIMEOUT
         if self._active_cpu is None or cpu - self._active_cpu >= STALL_CPU:
             self._active, self._active_cpu = now, cpu
+            if now - self._changed >= NO_PROGRESS_WARNING:
+                # Computing, but nothing to show for it: the kernel may hang on one element (the
+                # child gives it up itself, see converter.HANG_SECONDS). Warned once per silence.
+                silence = now - self._changed
+                self._changed = now
+                log.warning(tr("No progress for {minutes} min although the conversion is computing (CPU {cpu} s), "
+                               "{percent} %: {message}", minutes=f"{silence / 60:.0f}", cpu=f"{cpu:.1f}",
+                               percent=self.percent, message=self.text or "…"))
         elif cpu < self._active_cpu:
             # The tree's CPU time dropped: worker processes exited (the Rhino pool after the geometry).
             # That is a new reference, not activity; the child earns STALL_CPU from here on.
