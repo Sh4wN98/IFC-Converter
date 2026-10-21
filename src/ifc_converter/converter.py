@@ -358,9 +358,10 @@ def convert(
 
 
 def size_text(size: int) -> str:
-    """A file size in German notation, e.g. "1,2 GB" or "345 MB"."""
+    """A file size with the language's decimal mark, e.g. "1.2 GB" / "1,2 GB" or "345 MB"."""
     if size >= 1024 ** 3:
-        return f"{size / 1024 ** 3:.1f} GB".replace(".", ",")
+        integer, _, fraction = f"{size / 1024 ** 3:.1f}".partition(".")
+        return tr("{integer}.{fraction}", integer=integer, fraction=fraction) + " GB"
     return f"{size / 1024 ** 2:.0f} MB"
 
 

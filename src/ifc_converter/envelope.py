@@ -154,11 +154,16 @@ class Selection:
 
 
 def _count(number: int) -> str:
-    return f"{number:,}".replace(",", ".")
+    digits = str(number)
+    text = digits[:len(digits) % 3 or 3]
+    for start in range(len(text), len(digits), 3):
+        text = tr("{thousands},{hundreds}", thousands=text, hundreds=digits[start:start + 3])
+    return text
 
 
 def _decimal(number: float) -> str:
-    return f"{number:g}".replace(".", ",")
+    integer, _, fraction = f"{number:g}".partition(".")
+    return tr("{integer}.{fraction}", integer=integer, fraction=fraction) if fraction else integer
 
 def select(
     model: ifcopenshell.file,

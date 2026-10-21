@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 from ifc_converter.converter import size_text
 from ifc_converter.dialogs import ElidedLabel, muted
 from ifc_converter.i18n import tr
+from ifc_converter.interactive import number_text
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def no_file_text() -> str:
 
 
 def _number(value) -> str:
-    return f"{int(value):,}".replace(",", ".") if isinstance(value, (int, float)) else str(value)
+    return number_text(int(value)) if isinstance(value, (int, float)) else str(value)
 
 
 class _Task(QObject):
