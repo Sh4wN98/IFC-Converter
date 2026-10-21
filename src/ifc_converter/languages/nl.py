@@ -591,4 +591,6 @@ TEXTS: dict[str, str] = {
         'Te weinig vrije ruimte in de tijdelijke map voor een werkkopie van het bestand ({needed} nodig, {free} vrij).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Het IFC-bestand lijkt afgekapt (geen END-ISO-10303-21 aan het einde): de uitvoer kan onvolledig zijn.',
+    # interactive.py (night-app)
+    "Cannot write to the output folder {folder} ({error})": "Kan niet schrijven naar de uitvoermap {folder} ({error})",
 }

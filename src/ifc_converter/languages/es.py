@@ -595,4 +595,6 @@ TEXTS: dict[str, str] = {
         'No hay suficiente espacio libre en la carpeta temporal para una copia de trabajo del archivo ({needed} necesarios, {free} libres).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'El archivo IFC parece estar truncado (sin END-ISO-10303-21 al final): la salida puede estar incompleta.',
+    # interactive.py (night-app)
+    "Cannot write to the output folder {folder} ({error})": "No se puede escribir en la carpeta de salida {folder} ({error})",
 }
