@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy  # noqa: E402
 import pytest  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QWheelEvent  # noqa: E402
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPalette, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from ifc_converter import viewer  # noqa: E402
@@ -28,6 +28,24 @@ WINDOW = "IfcWindow 0LV8Pis1v4AuJh$S0gsL5x „Fenster“"
 @pytest.fixture(scope="session")
 def app():
     return QApplication.instance() or QApplication([])
+
+
+def palette(dark: bool = False) -> QPalette:
+    """A light (or dark) window palette: the view takes its theme from it, whatever the desktop uses."""
+    colours = {"Window": "#2b2f33", "WindowText": "#e6e8ea", "Base": "#1f2326", "Text": "#e6e8ea",
+               "Button": "#3a3f44", "ButtonText": "#e6e8ea", "Highlight": "#4a90d9"} if dark else \
+        {"Window": "#efefef", "WindowText": "#1f2428", "Base": "#ffffff", "Text": "#1f2428",
+         "Button": "#e9e9e9", "ButtonText": "#1f2428", "Highlight": "#3b7dd8"}
+    result = QPalette()
+    for role, colour in colours.items():
+        result.setColor(getattr(QPalette.ColorRole, role), QColor(colour))
+    return result
+
+
+def new_view(dark: bool = False) -> "viewer.PreviewView":
+    view = viewer.PreviewView()
+    view.setPalette(palette(dark))
+    return view
 
 
 def box(low, high):
@@ -82,6 +100,7 @@ def many_boxes(count: int) -> PreviewMesh:
 def renderer_env(monkeypatch):
     """Sets the renderer for views made in the test; the OpenGL check is redone around it."""
     viewer.opengl_problem.cache_clear()
+    monkeypatch.setattr(viewer, "ANIMATION_MS", 0)  # views jump: the end state is what the tests check
 
     def choose(name: str) -> None:
         if name == viewer.SOFTWARE:
@@ -102,8 +121,8 @@ def make_view(request, app, renderer_env):
     renderer_env(request.param)
     views = []
 
-    def make(width=400, height=300, mesh=None):
-        view = viewer.PreviewView()
+    def make(width=400, height=300, mesh=None, dark=False):
+        view = new_view(dark)
         view.resize(width, height)
         view.show()
         app.processEvents()
@@ -134,15 +153,26 @@ def near(colour, expected, tolerance=6) -> bool:
     return all(abs(a - b) <= tolerance for a, b in zip(colour, expected))
 
 
-BACKGROUND = (viewer.BACKGROUND.red(), viewer.BACKGROUND.green(), viewer.BACKGROUND.blue())
+def background(view, image, x, y) -> tuple[int, int, int]:
+    """The background gradient's colour at device pixel (x, y) of ``image``."""
+    return viewer.gradient_color(view.theme, y / max(image.height() - 1, 1))
 
 
-def covered(image) -> float:
-    """Share of the pixels of ``image`` that are not background."""
+def is_background(view, image, x, y, tolerance=6) -> bool:
+    return near(rgb(image, x, y), background(view, image, x, y), tolerance)
+
+
+def pixels_of(image) -> numpy.ndarray:
     image = image.convertToFormat(QImage.Format.Format_RGB888)
     pixels = numpy.frombuffer(image.constBits(), numpy.uint8, image.sizeInBytes())
-    pixels = pixels.reshape(image.height(), image.bytesPerLine())[:, :3 * image.width()].reshape(-1, 3)
-    return float(numpy.mean(numpy.abs(pixels.astype(int) - BACKGROUND).max(axis=1) > 2))
+    return pixels.reshape(image.height(), image.bytesPerLine())[:, :3 * image.width()].reshape(image.height(), -1, 3)
+
+
+def covered(view, image) -> float:
+    """Share of the pixels of ``image`` that are not background."""
+    pixels = pixels_of(image).astype(int)
+    rows = numpy.array([background(view, image, 0, y) for y in range(image.height())])
+    return float(numpy.mean(numpy.abs(pixels - rows[:, None, :]).max(axis=2) > 3))
 
 
 def send_mouse(widget, kind, position, button=Qt.MouseButton.LeftButton, buttons=None,
@@ -358,7 +388,10 @@ def test_renderer_draws_the_model_and_the_background(make_view):
     assert blue[2] > blue[0] + 40 and blue[2] > 120, blue  # blended with what is behind it
     assert blue[0] > 60  # but not opaque: the light background shows through
     for corner in [(2, 2), (image.width() - 3, 2), (2, image.height() - 3), (image.width() - 3, image.height() - 3)]:
-        assert near(rgb(image, *corner), BACKGROUND), corner
+        assert is_background(view, image, *corner), (corner, rgb(image, *corner), background(view, image, *corner))
+    # A gradient: lighter at the bottom than at the top (the light theme).
+    assert view.theme is viewer.LIGHT_THEME
+    assert sum(rgb(image, 2, image.height() - 3)) > sum(rgb(image, 2, 2)) + 60
 
 
 def test_renderer_shades_faces_differently(make_view):
@@ -375,11 +408,12 @@ def test_both_renderers_look_alike(app, renderer_env):
     images = {}
     for name in (viewer.OPENGL, viewer.SOFTWARE):
         renderer_env(name)
-        view = viewer.PreviewView()
+        view = new_view()
         view.resize(320, 240)
         view.show()
         app.processEvents()
         view.set_mesh(two_boxes())
+        view.set_edges(False)  # the lines land on slightly different pixels
         images[name] = view.image().scaled(320, 240)
         view.close()
     differences = []
@@ -428,16 +462,19 @@ def test_view_works_small_and_large(make_view):
 
 def test_empty_and_no_mesh(make_view):
     view = make_view()
-    assert near(rgb(view.image(), 10, 10), BACKGROUND)
+    image = view.image()
+    assert is_background(view, image, 10, 10)
     empty = PreviewMesh(positions=numpy.zeros((0, 3), numpy.float32), colors=numpy.zeros((0, 4), numpy.uint8),
                         indices=numpy.zeros(0, numpy.uint32), triangle_elements=numpy.zeros(0, numpy.uint32),
                         elements=[])
     view.set_mesh(empty)
-    assert near(rgb(view.image(), 200, 150), BACKGROUND)
+    image = view.image()
+    assert is_background(view, image, image.width() // 2, image.height() // 2)
     assert view.element_at(200, 150) == ""
     view.set_mesh(two_boxes())
     view.set_mesh(None)
-    assert near(rgb(view.image(), 200, 150), BACKGROUND)
+    image = view.image()
+    assert is_background(view, image, image.width() // 2, image.height() // 2)
     assert view.element_at(200, 150) == ""
     drag(view._renderer, (100, 100), (200, 150))  # nothing to turn, nothing breaks
     wheel(view._renderer, (100, 100))
@@ -553,13 +590,15 @@ def test_keys_and_buttons_choose_views(make_view):
     assert view.camera.yaw == 180 and view.camera.pitch == 0
     QTest.keyClick(view, Qt.Key.Key_Home)
     assert (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["iso"]
-    buttons = {button.text(): button for button in view._buttons.findChildren(viewer.QPushButton)}
-    assert set(buttons) == {"Iso", "Oben", "Vorne", "Seite", "Alles"}
-    buttons["Vorne"].click()
+    buttons = view._tool_buttons
+    assert set(buttons) == {"iso", "top", "front", "side", "fit", "edges", "projection"}
+    assert buttons["front"].toolTip() == "Vorne – Ansicht von Süden (3)" and not buttons["front"].text()
+    assert not buttons["front"].icon().isNull()
+    buttons["front"].click()
     assert (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["front"]
     fitted = view.camera.distance
     view.camera.zoom(0.3)
-    buttons["Alles"].click()
+    buttons["fit"].click()
     assert view.camera.distance == pytest.approx(fitted)
     view.camera.zoom(0.3)
     QTest.keyClick(view, Qt.Key.Key_F)
@@ -585,7 +624,7 @@ def test_resize_refits_until_the_user_moves_the_view(make_view, app):
 
 def test_software_renderer_when_forced(app, renderer_env):
     renderer_env(viewer.SOFTWARE)
-    view = viewer.PreviewView()
+    view = new_view()
     assert view.renderer_name == viewer.SOFTWARE == "Software"
     assert viewer.opengl_problem() == f"{viewer.RENDERER_ENV}=software"
     assert view.renderer_detail == f"{viewer.RENDERER_ENV}=software"
@@ -598,7 +637,7 @@ def test_fallback_when_no_context_can_be_made(app, renderer_env, monkeypatch):
     monkeypatch.setattr(viewer, "REQUIRED_VERSION", (9, 9))  # no driver offers this
     viewer.opengl_problem.cache_clear()
     assert viewer.opengl_problem()
-    view = viewer.PreviewView()
+    view = new_view()
     view.resize(300, 250)
     view.set_mesh(two_boxes())
     assert view.renderer_name == viewer.SOFTWARE
@@ -614,7 +653,7 @@ def test_fallback_when_the_opengl_widget_is_missing(app, renderer_env, monkeypat
         raise ImportError("DLL load failed while importing QtOpenGLWidgets")
 
     monkeypatch.setattr(viewer, "_gl_view_class", broken)
-    view = viewer.PreviewView()
+    view = new_view()
     assert view.renderer_name == viewer.SOFTWARE
     view.close()
 
@@ -623,7 +662,7 @@ def test_fallback_when_shaders_fail(app, renderer_env, monkeypatch, caplog):
     renderer_env(viewer.OPENGL)
     caplog.set_level(logging.INFO, logger="ifc_converter.viewer")
     monkeypatch.setattr(viewer, "FRAGMENT_SHADER", "#version 330 core\nthis is not GLSL")
-    view = viewer.PreviewView()
+    view = new_view()
     changes = []
     view.renderer_changed.connect(changes.append)
     view.resize(300, 250)
@@ -646,7 +685,7 @@ def test_fallback_when_shaders_fail(app, renderer_env, monkeypatch, caplog):
 
 def test_fallback_when_drawing_fails(app, renderer_env):
     renderer_env(viewer.OPENGL)
-    view = viewer.PreviewView()
+    view = new_view()
     view.resize(300, 250)
     view.show()
     view.set_mesh(two_boxes())
@@ -663,7 +702,7 @@ def test_fallback_when_drawing_fails(app, renderer_env):
 
 def test_software_budget_follows_the_drawing_speed(app, renderer_env):
     renderer_env(viewer.SOFTWARE)
-    view = viewer.PreviewView()
+    view = new_view()
     renderer = view._renderer
     renderer._seconds_per_triangle = 1e-6
     assert renderer.budget(False) == viewer.SOFTWARE_TRIANGLES
@@ -682,7 +721,7 @@ def test_large_mesh_uploads_and_draws_in_time(app, renderer_env, renderer):
     renderer_env(renderer)
     mesh = many_boxes(250_000)  # 3 million triangles, 2 million vertices
     assert mesh.triangle_count == 3_000_000
-    view = viewer.PreviewView()
+    view = new_view()
     view.resize(640, 480)
     view.show()
     app.processEvents()
@@ -705,7 +744,7 @@ def test_large_mesh_uploads_and_draws_in_time(app, renderer_env, renderer):
     pick = time.perf_counter() - started
     print(f"\n{renderer}: 3M triangles, first frame {first:.2f} s, redraw {redraw:.3f} s, pick {pick:.3f} s")
     assert label.startswith("IfcBuildingElementProxy")
-    assert covered(image) > (0.1 if renderer == viewer.OPENGL else 0.0002)  # the software one draws few boxes
+    assert covered(view, image) > (0.1 if renderer == viewer.OPENGL else 0.0002)  # the software one draws few boxes
     assert first < 60 and redraw < 10 and pick < 5
     view.close()
     view.deleteLater()
@@ -728,7 +767,7 @@ def test_wheel_picks_again_after_the_view_turned(make_view):
 def test_fallback_when_the_view_gets_no_context(app, renderer_env, monkeypatch):
     renderer_env(viewer.OPENGL)
     monkeypatch.setattr(viewer._gl_view_class(), "initializeGL", lambda self: None)  # as if Qt never called it
-    view = viewer.PreviewView()
+    view = new_view()
     view.resize(300, 250)
     view.show()
     view.set_mesh(two_boxes())
@@ -744,7 +783,7 @@ def test_software_renderer_draws_less_while_moving(app, renderer_env):
     renderer_env(viewer.SOFTWARE)
     from PySide6.QtTest import QTest
 
-    view = viewer.PreviewView()
+    view = new_view()
     view.resize(400, 300)
     view.show()
     app.processEvents()
@@ -770,3 +809,210 @@ def test_software_renderer_draws_less_while_moving(app, renderer_env):
     view.image()
     assert renderer.drawn > coarse  # full detail again after the wheel stopped
     view.close()
+
+
+# --------------------------------------------------------------------------- looks: edges, shadow, theme, selection
+
+
+def test_feature_edges_of_a_box_are_its_twelve_edges():
+    mesh = two_boxes()
+    segments, flags = viewer.feature_edges(mesh)
+    assert flags.shape == (24, 3) and segments.dtype == numpy.uint32
+    assert len(segments) == 24  # 12 edges per box; the diagonals of the faces are no creases
+    assert int(flags.sum()) == 48  # every edge belongs to two triangles
+    lengths = numpy.linalg.norm(mesh.positions[segments[:, 0]] - mesh.positions[segments[:, 1]], axis=1)
+    assert sorted(numpy.round(lengths, 3).tolist()) == sorted([4, 3, 3] * 4 + [3, 3, 2] * 4)
+    # A flat surface of two coplanar triangles: only its border.
+    flat = PreviewMesh(positions=numpy.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], numpy.float32),
+                       colors=numpy.full((4, 4), 255, numpy.uint8), indices=numpy.array([0, 1, 2, 0, 2, 3], numpy.uint32),
+                       triangle_elements=numpy.zeros(2, numpy.uint32), elements=["IfcSlab 1"])
+    segments, flags = viewer.feature_edges(flat)
+    assert len(segments) == 4 and flags.tolist() == [[True, True, False], [False, True, True]]
+
+
+def test_edges_draw_dark_lines_and_can_be_switched_off(make_view):
+    view = make_view(mesh=two_boxes())
+    assert view.edges_visible and view._tool_buttons["edges"].isChecked()
+    with_edges = pixels_of(view.image()).astype(int)
+    changes = []
+    view.option_changed.connect(lambda key, value: changes.append((key, value)))
+    view.set_edges(False)
+    assert not view._tool_buttons["edges"].isChecked() and changes == [("edges", False)]
+    without = pixels_of(view.image()).astype(int)
+    different = numpy.abs(with_edges - without).max(axis=2) > 20
+    assert 0.002 < different.mean() < 0.15  # thin lines along the boxes' edges, nothing else
+    assert (with_edges[different].sum(axis=1) < without[different].sum(axis=1)).mean() > 0.8  # darker
+    view.setFocus()
+    from PySide6.QtTest import QTest
+
+    QTest.keyClick(view, Qt.Key.Key_E)
+    assert view.edges_visible and changes == [("edges", False), ("edges", True)]
+    view._tool_buttons["edges"].click()
+    assert not view.edges_visible
+
+
+def test_edges_of_a_large_mesh_come_from_a_thread(make_view, monkeypatch, app):
+    monkeypatch.setattr(viewer, "EDGES_IN_BACKGROUND", 10)
+    view = make_view(mesh=many_boxes(100))
+    scene = view._scene
+    assert scene.edge_thread is not None
+    assert view.wait_for_edges()
+    assert len(scene.edges) == 1200
+    deadline = time.monotonic() + 5  # the thread's signal reaches the view, which redraws
+    while scene.edge_thread.is_alive() and time.monotonic() < deadline:
+        app.processEvents()
+    app.processEvents()
+    image = view.image()
+    view.set_edges(False)
+    assert (numpy.abs(pixels_of(image).astype(int) - pixels_of(view.image()).astype(int)).max(axis=2) > 20).any()
+
+
+def test_dark_palette_gives_the_dark_theme(make_view):
+    view = make_view(mesh=two_boxes(), dark=True)
+    assert view.theme is viewer.DARK_THEME
+    image = view.image()
+    assert is_background(view, image, 2, 2) and sum(rgb(image, 2, 2)) < 250
+    assert sum(rgb(image, 2, image.height() - 3)) < sum(rgb(image, 2, 2))  # darker at the bottom
+    x, y = pixel_of(view, (2, 1.5, 3))
+    ratio = image.width() / 400
+    assert rgb(image, x * ratio, y * ratio)[0] > 120  # the model is lit the same
+    view.setPalette(palette(dark=False))
+    QApplication.sendEvent(view, QEvent(QEvent.Type.PaletteChange))
+    assert view.theme is viewer.LIGHT_THEME
+
+
+def test_ground_shadow_lies_under_the_model(make_view):
+    view = make_view(mesh=two_boxes())
+    view.set_edges(False)
+    image = view.image()
+    ratio = image.width() / 400
+    # Just outside the footprint on the ground, south-west of the wall: darker than the plain background.
+    x, y = pixel_of(view, (-0.6, -0.6, 0))
+    shadow = rgb(image, x * ratio, y * ratio)
+    assert sum(shadow) < sum(background(view, image, x * ratio, y * ratio)) - 30
+    view.camera.pitch = 20  # from below: no shadow in the way
+    view._view_changed()
+    image = view.image()
+    assert is_background(view, image, 5, image.height() - 5)
+
+
+def test_click_selects_and_tints_the_element_and_escape_clears(make_view):
+    view = make_view(mesh=two_boxes())
+    view.set_edges(False)
+    plain = pixels_of(view.image()).astype(int)
+    clicked = []
+    view.element_clicked.connect(clicked.append)
+    x, y = pixel_of(view, (2, 1.5, 3))
+    send_mouse(view._renderer, QEvent.Type.MouseButtonPress, (x, y))
+    send_mouse(view._renderer, QEvent.Type.MouseButtonRelease, (x, y))
+    assert clicked == [WALL] and view.selected_label == WALL and view.selected_element == 0
+    image = view.image()
+    tinted = pixels_of(image).astype(int)
+    ratio = image.width() / 400
+    px, py = int(x * ratio), int(y * ratio)
+    assert tinted[py, px, 1] > plain[py, px, 1] + 30  # more orange: green goes up on the red wall
+    gx, gy = pixel_of(view, (7.5, 1.5, 2))
+    assert abs(tinted[int(gy * ratio), int(gx * ratio)] - plain[int(gy * ratio), int(gx * ratio)]).max() <= 6
+    view.setFocus()
+    from PySide6.QtTest import QTest
+
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    assert clicked == [WALL, ""] and view.selected_label == "" and view.selected_element == -1
+    assert numpy.abs(pixels_of(view.image()).astype(int) - plain).max() <= 6
+    view.select_element(WINDOW)
+    assert view.selected_element == 1
+    view.select_element("no such element")
+    assert view.selected_element == -1
+    view.select_element(WALL)
+    view.set_mesh(two_boxes())  # a new model: nothing selected
+    assert view.selected_element == -1
+
+
+# --------------------------------------------------------------------------- projection and animation
+
+
+def test_orthographic_projection_keeps_parallel_lines_parallel(make_view):
+    view = make_view(mesh=two_boxes())
+    changes = []
+    view.option_changed.connect(lambda key, value: changes.append((key, value)))
+    assert view.projection == viewer.PERSPECTIVE
+    near_edge = view.camera.project([[0, 0, 0], [4, 0, 0]])[0]
+    far_edge = view.camera.project([[0, 3, 3], [4, 3, 3]])[0]
+    assert not numpy.allclose(near_edge[1] - near_edge[0], far_edge[1] - far_edge[0], atol=0.5)  # perspective
+    view.set_projection(viewer.ORTHOGRAPHIC)
+    assert view.projection == viewer.ORTHOGRAPHIC and view.camera.orthographic
+    assert view._tool_buttons["projection"].isChecked() and changes == [("projection", "orthographic")]
+    near_edge = view.camera.project([[0, 0, 0], [4, 0, 0]])[0]
+    far_edge = view.camera.project([[0, 3, 3], [4, 3, 3]])[0]
+    assert numpy.allclose(near_edge[1] - near_edge[0], far_edge[1] - far_edge[0], atol=1e-6)
+    pixels, depth = view.camera.project(view.mesh.positions)
+    assert (pixels >= -0.5).all() and (pixels[:, 0] <= 400.5).all() and (pixels[:, 1] <= 300.5).all()  # refitted
+    near_plane, far_plane = view.camera.clip_planes()
+    assert (depth > near_plane).all() and (depth < far_plane).all()
+    image = view.image()
+    ratio = image.width() / 400
+    x, y = pixel_of(view, (2, 1.5, 3))
+    assert rgb(image, x * ratio, y * ratio)[0] > 120
+    assert view.element_at(x, y) == WALL  # picking and the ray agree in the parallel projection too
+    point = (7.5, 1.5, 2)
+    x, y = pixel_of(view, point)
+    wheel(view._renderer, (x, y), 2)
+    assert numpy.allclose(pixel_of(view, point), (x, y), atol=0.5)  # zoom to the cursor
+    drag(view._renderer, (x, y), (x + 50, y - 30), Qt.MouseButton.MiddleButton)
+    assert numpy.allclose(pixel_of(view, point), (x + 50, y - 30), atol=0.5)  # pan
+    view.setFocus()
+    from PySide6.QtTest import QTest
+
+    QTest.keyClick(view, Qt.Key.Key_P)
+    assert view.projection == viewer.PERSPECTIVE and not view._tool_buttons["projection"].isChecked()
+    assert changes == [("projection", "orthographic"), ("projection", "perspective")]
+
+
+def test_view_changes_animate_to_the_end_state(make_view, monkeypatch, app):
+    view = make_view(mesh=two_boxes())
+    goal = viewer.Camera()
+    goal.set_viewport(view.camera.width, view.camera.height)
+    goal.set_model(*two_boxes().bounds(), viewer._fit_points(two_boxes()))
+    goal.set_view(*viewer.VIEWS["top"])
+    monkeypatch.setattr(viewer, "ANIMATION_MS", 250)
+    started = time.monotonic()
+    view.set_view("top")
+    assert view.animating and view.camera.pitch > -90  # on its way
+    while view.animating and time.monotonic() - started < 5:
+        app.processEvents()
+    assert not view.animating and 0.15 < time.monotonic() - started < 3
+    assert (view.camera.yaw, view.camera.pitch) == viewer.VIEWS["top"]
+    assert numpy.allclose(view.camera.target, goal.target) and view.camera.distance == pytest.approx(goal.distance)
+    assert view._fitted
+    # A press stops an animation where it is; a double-click starts the fit animation.
+    view.camera.zoom(0.5)
+    view.fit_view()
+    assert view.animating
+    send_mouse(view._renderer, QEvent.Type.MouseButtonPress, (10, 10))
+    assert not view.animating
+    send_mouse(view._renderer, QEvent.Type.MouseButtonRelease, (10, 10))
+    send_mouse(view._renderer, QEvent.Type.MouseButtonDblClick, (10, 10))
+    assert view.animating
+    while view.animating and time.monotonic() - started < 10:
+        app.processEvents()
+    assert view.camera.distance == pytest.approx(goal.distance)
+
+
+def test_pose_interpolation_takes_the_short_turn():
+    start = (350.0, -10.0, numpy.zeros(3), 10.0)
+    end = (10.0, -30.0, numpy.array([2.0, 0, 0]), 40.0)
+    yaw, pitch, target, distance = viewer.interpolate_pose(start, end, 0.5)
+    assert yaw % 360 == pytest.approx(0) and pitch == -20 and target.tolist() == [1, 0, 0] and distance == 20
+    assert viewer.interpolate_pose(start, end, 1.0)[0] % 360 == pytest.approx(10)
+
+
+def test_toolbar_is_compact_and_has_tooltips_with_shortcuts(make_view):
+    view = make_view(400, 250, two_boxes())
+    hover(view)
+    assert view._buttons.isVisible()
+    assert view._buttons.width() <= 230 and view._buttons.height() <= 30
+    tips = {name: button.toolTip() for name, button in view._tool_buttons.items()}
+    assert tips["iso"].endswith("(1)") and tips["fit"].startswith("Ganzes Modell") and "(E)" in tips["edges"]
+    assert "(P)" in tips["projection"]
+    for name, button in view._tool_buttons.items():
+        assert button.width() <= 28 and not button.icon().isNull(), name
