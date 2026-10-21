@@ -582,4 +582,6 @@ TEXTS: dict[str, str] = {
     "View from the east (4)": "Vista desde el este (4)",
     "All": "Todo",
     "Show the whole model (F, double-click)": "Mostrar todo el modelo (F, doble clic)",
+    # interactive.py (night-app)
+    "Cannot write to the output folder {folder} ({error})": "No se puede escribir en la carpeta de salida {folder} ({error})",
 }

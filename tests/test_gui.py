@@ -102,6 +102,18 @@ def test_prepare_run_skips_done_files_unless_all_done(tmp_path):
     assert queue.prepare_run() == [0, 1]
 
 
+def test_prepare_run_resets_the_results_of_an_earlier_run(tmp_path):
+    queue = FileQueue()
+    (tmp_path / "a.ifc").write_text("x")
+    queue.add([tmp_path / "a.ifc"])
+    item = queue[0]
+    item.status, item.elements, item.skipped, item.inside = Status.FAILED, 5, 3, 7
+    item.output, item.detail, item.phase, item.internal_error = tmp_path / "a.glb", "writing", "write", True
+    queue.prepare_run()
+    assert (item.elements, item.skipped, item.inside) == (0, 0, 0)
+    assert (item.output, item.detail, item.phase, item.internal_error) == (None, "", "", False)
+
+
 def test_format_size():
     # A narrow no-break space between number and unit, so "2,2 MB" never wraps.
     assert format_size(512) == "512 B"
@@ -683,6 +695,27 @@ def test_failures_are_shown_in_the_status(window, wall_ifc, monkeypatch):
     wait_finished(window)
     assert window.status_label.property("state") == "failed"
     assert "1 mit Fehler" in window.status_label.text()
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs file permissions")
+def test_unwritable_output_folder_fails_the_file_with_a_clear_message(window, wall_ifc, tmp_path, child_calls):
+    # The serializers would not say what is wrong (the GLB writer reports "took none of the elements").
+    read_only = tmp_path / "ro"
+    read_only.mkdir()
+    read_only.chmod(0o555)
+    try:
+        window._set_output_dir(read_only)
+        window.set_format("glb")
+        window.add_paths([wall_ifc])
+        window.start_conversion()
+        wait_finished(window)
+        assert window.queue[0].status is Status.FAILED
+        assert not window.queue[0].internal_error
+        assert window.status_text(0).startswith("Fehler: In den Ausgabeordner ")
+        assert "Permission denied" in window.status_text(0)
+        assert child_calls == []  # nothing was converted for nothing
+    finally:
+        read_only.chmod(0o755)
 
 
 def test_output_folder_opens_after_batch_if_wanted(window, wall_ifc, tmp_path, child_calls, monkeypatch):

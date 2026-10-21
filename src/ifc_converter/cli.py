@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
                 low_priority=not args.normal_priority, blocks=args.blocks, envelope=args.envelope,
             )
         except KeyboardInterrupt:
-            print(f"■ {source}: abgebrochen", file=sys.stderr)
+            print(f"■ {source}: {i18n.tr('cancelled')}", file=sys.stderr)
             return 130
         except Exception as exc:
             print(f"✗ {source}: {error_message(exc)}", file=sys.stderr)
