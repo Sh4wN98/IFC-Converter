@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: "DejaVu Sans", "Segoe UI", Arial, sans-serif; font-size: 10pt; color: #222; }
+  h1 { font-size: 22pt; margin: 0 0 4pt 0; color: #1f3a5f; }
+  h2 { font-size: 14pt; margin: 18pt 0 6pt 0; color: #1f3a5f; border-bottom: 1px solid #c9d3df; padding-bottom: 2pt; }
+  h3 { font-size: 11.5pt; margin: 12pt 0 4pt 0; color: #333; }
+  p { margin: 0 0 6pt 0; line-height: 1.35; }
+  li { margin-bottom: 3pt; line-height: 1.3; }
+  .sub { color: #666; font-size: 10pt; margin-bottom: 14pt; }
+  .box { background: #eef3f8; border: 1px solid #c9d3df; padding: 6pt 8pt; margin: 8pt 0; }
+  .key { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 9.5pt; background: #f2f2f2; padding: 0 2pt; }
+  table { border-collapse: collapse; margin: 6pt 0 10pt 0; }
+  td, th { border: 1px solid #c9d3df; padding: 4pt 8pt; vertical-align: top; font-size: 10pt; }
+  th { background: #eef3f8; text-align: left; }
+  .caption { color: #666; font-size: 9pt; margin-bottom: 10pt; }
+  .figure { line-height: 100%; margin: 6pt 0 2pt 0; }
+</style>
+</head>
+<body>
+
+<h1>IFC Converter {version} – Kurzanleitung</h1>
+<p class="sub">IFC-Gebäudemodelle nach Rhino (3DM), GLB, OBJ und DAE konvertieren · Probephase im Büro · English version on page {english_page}</p>
+
+<h2>1. Was das Programm macht</h2>
+<p>Der IFC Converter wandelt IFC-Dateien (IFC2x3, IFC4, IFC4.3; auch IFC2x2 und der IFC4x4-Entwurf, gepackte .ifczip) in 3D-Formate um: <b>Rhino .3dm</b> (Polyflächen oder Netze, Layer nach Geschoss und Bauteilklasse, Bauteildaten als Benutzertext), <b>GLB</b>, <b>OBJ</b> und <b>DAE</b>. Die Ausgabe ist immer in Metern, Lage und Maße entsprechen exakt der IFC. Die IFC-Datei selbst wird nie verändert, vorhandene Ausgabedateien werden nie überschrieben.</p>
+
+<h2>2. Installation</h2>
+<ul>
+  <li><b>Installer:</b> <span class="key">IFC-Converter-{version}-Setup.exe</span> doppelklicken. Keine Administratorrechte nötig, installiert wird nur für den angemeldeten Benutzer. Ein Update ist derselbe Weg mit der neuen Version; Einstellungen bleiben erhalten.</li>
+  <li><b>Ohne Installation:</b> <span class="key">IFC-Converter-{version}-portable.zip</span> entpacken und <span class="key">IFC Converter.exe</span> starten.</li>
+  <li><b>Windows SmartScreen:</b> Das Programm ist nicht signiert. Beim ersten Start „Weitere Informationen“ → „Trotzdem ausführen“ wählen.</li>
+  <li><b>Linux:</b> <span class="key">IFC-Converter-{version}-linux-x86_64.tar.gz</span> entpacken, <span class="key">./install.sh</span> ausführen.</li>
+</ul>
+
+<h2>3. Erste Schritte</h2>
+<p class="figure"><img src="window-de.png"></p>
+<p class="caption">Das Programmfenster: Dateiliste und Vorschau links, Zielformat und Speicherort rechts, Protokoll unten.</p>
+<ol>
+  <li>IFC-Dateien oder ganze Ordner in das Fenster ziehen (oder „Dateien hinzufügen…“). Dateien unter 150 MB zeigen sofort eine 3D-Vorschau.</li>
+  <li>Rechts das <b>Zielformat</b> wählen. Für Rhino: <b>Polyflächen</b> (echte Öffnungen, bearbeitbar, 1,2–4,5× größere Datei) oder <b>Netze</b> (kleinste Datei, schnellste Umwandlung – bei sehr großen Modellen die bessere Wahl).</li>
+  <li><b>Speicherort</b> prüfen (Standard: Desktop) oder „Neben der IFC-Datei speichern“.</li>
+  <li><b>Konvertieren</b> klicken. Der Fortschritt steht je Datei in der Liste, „Ausgabeordner öffnen“ führt zum Ergebnis.</li>
+</ol>
+
+<h3>Nur Gebäudehülle</h3>
+<p>Das Häkchen <b>„Nur Gebäudehülle“</b> wandelt nur um, was von außen zu sehen ist: Außenwände, Dächer, Fenster, Türen, Balkone, Gelände. Innenwände, Decken, Möbel, Sanitär und Leitungen bleiben weg. Die Datei wird dadurch deutlich kleiner – gedacht für Umgebungsmodelle und schwächere Rechner. Glas gilt dabei als undurchsichtig. Bei kleinen Modellen dauert die Umwandlung damit etwas länger (ein grober Durchgang bestimmt zuerst die Hülle).</p>
+
+<h3>Weitere Einstellungen (Extras → Einstellungen)</h3>
+<ul>
+  <li><b>Leistung:</b> Threads und Priorität. Standard: etwa die halbe Maschine mit niedriger Priorität, damit andere Programme flüssig bleiben.</li>
+  <li><b>Geometriekern:</b> „Genau“ (Standard) lassen.</li>
+  <li><b>Ausgabe:</b> „Gleiche Bauteile als Blöcke“ macht Rhino-Dateien 20–45 % kleiner; Blockinstanzen müssen zum Bearbeiten in Rhino erst aufgelöst werden (_Explode).</li>
+</ul>
+
+<h2 style="page-break-before: always">4. 3D-Vorschau</h2>
+<p class="figure"><img src="viewer.png"></p>
+<p class="caption">Vorschau mit Kantenlinien, Ansichtsleiste und Achsenkreuz.</p>
+<table width="100%" cellspacing="0" cellpadding="4">
+  <tr><th>Aktion</th><th>Bedienung</th></tr>
+  <tr><td>Drehen</td><td>linke Maustaste ziehen (dreht um den angeklickten Punkt)</td></tr>
+  <tr><td>Verschieben</td><td>mittlere oder rechte Maustaste ziehen, oder Umschalt + linke Maustaste</td></tr>
+  <tr><td>Zoomen</td><td>Mausrad (zum Mauszeiger hin), Doppelklick zeigt das ganze Modell</td></tr>
+  <tr><td>Ansichten</td><td>Tasten 1–4 oder die Knöpfe: Iso, Oben, Vorne, Seite; F = alles, Pos1 = Startansicht</td></tr>
+  <tr><td>Bauteil-Info</td><td>Klick auf ein Bauteil zeigt Klasse, GlobalId und Name; Esc hebt die Auswahl auf</td></tr>
+  <tr><td>Darstellung</td><td>Knöpfe für Kantenlinien an/aus und Perspektive/Parallelprojektion</td></tr>
+</table>
+<p>Große Dateien werden erst auf Knopfdruck („Vorschau berechnen“) vorberechnet. Ohne Grafikbeschleunigung (Remote-Desktop, virtuelle Maschine) zeichnet das Programm automatisch in Software.</p>
+
+<h2>5. Sprache</h2>
+<p>Menü <b>Extras → Sprache</b> (englisch: Tools → Language). Nach der Wahl bietet das Programm einen Neustart an. Verfügbar: Deutsch, Englisch, Französisch, Spanisch, Italienisch, Portugiesisch, Niederländisch, Polnisch, Türkisch. Beim ersten Start ist die Oberfläche englisch.</p>
+
+<h2>6. Wenn etwas nicht klappt – Rückmeldung mit Logdatei</h2>
+<div class="box">
+<p><b>So gibst du eine Rückmeldung:</b></p>
+<ol>
+  <li>Im Programm <b>Hilfe → „Anonymisierte Logdatei speichern…“</b> wählen und die Datei speichern.</li>
+  <li>Bei sichtbaren Problemen (fehlende Teile, falsche Lage) einen <b>Screenshot</b> aus Rhino bzw. dem Zielprogramm machen.</li>
+  <li>Beides zusammen mit einem Satz dazu („Datei X, Netze, nur Hülle – Fenster fehlen im Erdgeschoss“) an Jonas schicken.</li>
+</ol>
+<p>Die anonymisierte Logdatei enthält <b>keine</b> Benutzer-, Rechner-, Server-, Ordner-, Datei- oder Bauteilnamen – nur Zeiten, Größen, Zahlen und die Meldungen des Programms. Sie bleibt auf deinem PC, bis du sie selbst weitergibst. Wer dauerhaft anonym protokollieren will: Extras → Einstellungen → Logdatei → „Logdatei anonymisieren“.</p>
+</div>
+<ul>
+  <li><b>„Übersprungene Bauteile…“</b> (Rechtsklick auf eine fertige Datei): listet Bauteile, die nicht umgewandelt werden konnten, mit Klasse und GlobalId zum Kopieren.</li>
+  <li><b>Absturz oder Hänger:</b> Das Programm startet die Umwandlung selbst neu, grenzt das betroffene Bauteil ein und überspringt es; bereits berechnete Teile werden übernommen. Im Protokoll steht, was passiert ist.</li>
+  <li><b>Sehr große Modelle (über 1 GB):</b> Rhino-Netze statt Polyflächen wählen und genug freien Speicherplatz auf C: lassen; Ausgaben auf Netzlaufwerke werden erst lokal geschrieben und dann kopiert.</li>
+  <li><b>ifcXML</b> kann nicht gelesen werden – im Autorenprogramm als .ifc oder .ifczip exportieren.</li>
+</ul>
+
+<h2>7. Kommandozeile (optional)</h2>
+<p>Neben dem Programm liegt <span class="key">ifc-convert.exe</span>: <span class="key">ifc-convert haus.ifc -f 3dm -g mesh</span>, <span class="key">ifc-convert *.ifc -d ausgabe\</span>, Optionen <span class="key">--envelope</span> (nur Hülle), <span class="key">--blocks</span>, <span class="key">--lang de</span>. <span class="key">ifc-convert --help</span> zeigt alles.</p>
+
+<!-- ===================================================== ENGLISH -->
+<div style="page-break-before: always"></div>
+<h1>IFC Converter {version} – Quick Guide</h1>
+<p class="sub">Convert IFC building models to Rhino (3DM), GLB, OBJ and DAE · office trial</p>
+
+<h2>1. What it does</h2>
+<p>The IFC Converter turns IFC files (IFC2x3, IFC4, IFC4.3; also IFC2x2 and the IFC4x4 draft, packed .ifczip) into 3D formats: <b>Rhino .3dm</b> (polysurfaces or meshes, layers by storey and element class, element data as user text), <b>GLB</b>, <b>OBJ</b> and <b>DAE</b>. Output is always in metres; positions and dimensions match the IFC exactly. The IFC file is never modified and existing output files are never overwritten.</p>
+
+<h2>2. Installation</h2>
+<ul>
+  <li><b>Installer:</b> double-click <span class="key">IFC-Converter-{version}-Setup.exe</span>. No administrator rights needed; it installs for the signed-in user only. Updating is the same step with the new version; settings are kept.</li>
+  <li><b>Without installing:</b> unpack <span class="key">IFC-Converter-{version}-portable.zip</span> and start <span class="key">IFC Converter.exe</span>.</li>
+  <li><b>Windows SmartScreen:</b> the program is not code-signed. On first start choose “More info” → “Run anyway”.</li>
+  <li><b>Linux:</b> unpack <span class="key">IFC-Converter-{version}-linux-x86_64.tar.gz</span> and run <span class="key">./install.sh</span>.</li>
+</ul>
+
+<h2>3. Getting started</h2>
+<p class="figure"><img src="window-en.png"></p>
+<p class="caption">The window: file list and preview on the left, output format and folder on the right, log at the bottom.</p>
+<ol>
+  <li>Drag IFC files or whole folders into the window (or “Add files…”). Files under 150 MB show a 3D preview right away.</li>
+  <li>Pick the <b>output format</b> on the right. For Rhino: <b>Polysurfaces</b> (real openings, editable, 1.2–4.5× larger file) or <b>Meshes</b> (smallest file, fastest conversion – the better choice for very large models).</li>
+  <li>Check the <b>output folder</b> (default: Desktop) or tick “Save next to the IFC file”.</li>
+  <li>Click <b>Convert</b>. Progress is shown per file; “Open output folder” takes you to the result.</li>
+</ol>
+
+<h3>Only the building hull</h3>
+<p>The checkbox <b>“Only the building hull”</b> converts only what is seen from outside: exterior walls, roofs, windows, doors, balconies, terrain. Interior walls, floors, furniture, sanitary fittings and building services are left out, so the file gets much smaller – meant for context models and weaker PCs. Glass counts as opaque. On small models the conversion takes somewhat longer (a coarse pass determines the hull first).</p>
+
+<h3>More settings (Tools → Settings)</h3>
+<ul>
+  <li><b>Performance:</b> threads and priority. Default: about half the machine at low priority, so other programs stay responsive.</li>
+  <li><b>Geometry kernel:</b> leave “Accurate” (default).</li>
+  <li><b>Output:</b> “Identical elements as blocks” makes Rhino files 20–45 % smaller; block instances must be exploded in Rhino before editing (_Explode).</li>
+</ul>
+
+<h2 style="page-break-before: always">4. 3D preview</h2>
+<p class="figure"><img src="viewer.png"></p>
+<p class="caption">Preview with edge lines, view bar and axis triad.</p>
+<table width="100%" cellspacing="0" cellpadding="4">
+  <tr><th>Action</th><th>Control</th></tr>
+  <tr><td>Orbit</td><td>drag with the left mouse button (around the clicked point)</td></tr>
+  <tr><td>Pan</td><td>drag with the middle or right button, or Shift + left button</td></tr>
+  <tr><td>Zoom</td><td>mouse wheel (towards the cursor); double-click shows the whole model</td></tr>
+  <tr><td>Views</td><td>keys 1–4 or the buttons: Iso, Top, Front, Side; F = fit all, Home = start view</td></tr>
+  <tr><td>Element info</td><td>click an element to see class, GlobalId and name; Esc clears the selection</td></tr>
+  <tr><td>Display</td><td>buttons for edge lines on/off and perspective/parallel projection</td></tr>
+</table>
+<p>Large files are computed on request (“Compute preview”). Without graphics acceleration (remote desktop, virtual machine) the program draws in software automatically.</p>
+
+<h2>5. Language</h2>
+<p>Menu <b>Tools → Language</b>. After choosing, the program offers to restart. Available: English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Turkish. The first start is in English.</p>
+
+<h2>6. When something goes wrong – feedback with the log file</h2>
+<div class="box">
+<p><b>How to give feedback:</b></p>
+<ol>
+  <li>In the program choose <b>Help → “Save anonymised log file…”</b> and save the file.</li>
+  <li>For visible problems (missing parts, wrong position) take a <b>screenshot</b> in Rhino or the target program.</li>
+  <li>Send both with one sentence (“file X, meshes, hull only – windows missing on the ground floor”) to Jonas.</li>
+</ol>
+<p>The anonymised log contains <b>no</b> user, computer, server, folder, file or element names – only times, sizes, numbers and the program’s messages. It stays on your PC until you pass it on yourself. To log anonymously all the time: Tools → Settings → Log file → “Anonymise log file”.</p>
+</div>
+<ul>
+  <li><b>“Skipped elements…”</b> (right-click a finished file): lists elements that could not be converted, with class and GlobalId to copy.</li>
+  <li><b>Crash or hang:</b> the program restarts the conversion itself, isolates the element concerned and skips it; parts already computed are taken over. The log says what happened.</li>
+  <li><b>Very large models (over 1 GB):</b> choose Rhino meshes instead of polysurfaces and leave enough free space on C:; output to network drives is written locally first and then copied.</li>
+  <li><b>ifcXML</b> cannot be read – export as .ifc or .ifczip from the authoring program.</li>
+</ul>
+
+<h2>7. Command line (optional)</h2>
+<p>Next to the program there is <span class="key">ifc-convert.exe</span>: <span class="key">ifc-convert house.ifc -f 3dm -g mesh</span>, <span class="key">ifc-convert *.ifc -d output\</span>, options <span class="key">--envelope</span> (hull only), <span class="key">--blocks</span>, <span class="key">--lang de</span>. <span class="key">ifc-convert --help</span> lists everything.</p>
+
+</body>
+</html>
