@@ -304,3 +304,15 @@ def test_readme_describes_the_linux_release():
                  "SHA256SUMS.txt", "QT_QPA_PLATFORM", "~/.config/ifc-converter", "~/.local/state/ifc-converter",
                  "smoke_test_linux.py", "IFC-Converter-linux"):
         assert text in readme, text
+
+
+def test_the_user_guide_renders_to_a_pdf(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("guide", Path(__file__).resolve().parent.parent / "packaging" / "guide.py")
+    guide = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guide)
+    out = guide.render(tmp_path / "guide.pdf")
+    data = out.read_bytes()
+    assert data.startswith(b"%PDF") and len(data) > 50_000
+    assert b"/Type /Page" in data  # at least one page
