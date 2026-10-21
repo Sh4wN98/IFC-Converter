@@ -36,7 +36,7 @@ def skipped_hint() -> str:
 
 def log_menu() -> str:
     """How the window's menu opens the log file."""
-    return tr("Help → Open log file")
+    return tr("Help → Save log file…")
 
 
 # The texts that used to be module constants (SKIPPED_HINT, LOG_MENU) are translated when read, so

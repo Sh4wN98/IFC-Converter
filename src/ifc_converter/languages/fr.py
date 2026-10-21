@@ -239,7 +239,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Ces éléments ont une géométrie qui n'a pas pu être convertie – p. ex. des types de géométrie non pris "
         "en charge, ou leurs ouvertures les découpent entièrement.",
-    "Help → Open log file": "Aide → Ouvrir le fichier journal",
     "1 element without geometry": "1 élément sans géométrie",
     "{count} elements without geometry": "{count} éléments sans géométrie",
     " … and {count} more (all of them in the log file)": " … et {count} de plus (tous dans le fichier journal)",
@@ -306,14 +305,7 @@ TEXTS: dict[str, str] = {
         "de dossiers (<dossier>) et de fichiers (Fichier-1.ifc, Fichier-1.3dm …) et omet les noms d'éléments. "
         "La classe IFC et le GlobalId, les durées, tailles, versions et messages d'erreur sont conservés.",
     "There is no log file yet in {folder}.": "Il n'y a pas encore de fichier journal dans {folder}.",
-    "Save anonymised log file": "Enregistrer le fichier journal anonymisé",
     "Text files (*.txt);;All files (*)": "Fichiers texte (*.txt);;Tous les fichiers (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Le fichier journal anonymisé n'a pas pu être enregistré\u202f:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "Le fichier journal anonymisé a été enregistré\u202f:\n{path}\n\n{hint}\n\n"
-        "Veuillez le parcourir brièvement avant de l'envoyer. Ouvrir le dossier maintenant\u202f?",
     # dialogs.py: settings
     "Settings": "Paramètres",
     "Performance": "Performances",
@@ -373,16 +365,6 @@ TEXTS: dict[str, str] = {
         "modifier dans Rhino, il faut d'abord décomposer l'instance de bloc (_Explode).",
     "Log file:": "Fichier journal\u202f:",
     "Settings:": "Paramètres\u202f:",
-    "Open log file": "Ouvrir le fichier journal",
-    "Opens the current log file in the default program for text files.":
-        "Ouvre le fichier journal actuel dans le programme par défaut pour les fichiers texte.",
-    "Save anonymised…": "Enregistrer anonymisé…",
-    "Anonymise log file": "Anonymiser le fichier journal",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "Le fichier journal reste sur ce PC\u202f; rien n'est envoyé automatiquement. Une fois activé, il ne "
-        "contient désormais plus aucun nom d'utilisateur, d'ordinateur, de serveur, de dossier, de fichier ni "
-        "d'élément.",
     "With this, a conversion uses {resources}.": "Avec cela, une conversion utilise {resources}.",
     # dialogs.py: about
     "About {app}": "À propos de {app}",
@@ -495,7 +477,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Prêt",
     "Progress over all files in the list": "Progression sur tous les fichiers de la liste",
     "Log – here you can see what happened to each file.": "Journal – ce qui est arrivé à chaque fichier.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Journal de cette session. Tout est aussi dans le fichier journal (Aide → Ouvrir le fichier journal).",
     "Drag to enlarge or shrink the log": "Glisser\u202f: agrandir ou réduire le journal",
     "Log": "Journal",
     "Show or hide the log (F4)": "Afficher ou masquer le journal (F4)",
@@ -507,7 +488,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Ajouter un dossier…",
     "Quit": "Quitter",
     "Settings…": "Paramètres…",
-    "Save anonymised log file…": "Enregistrer le journal anonymisé…",
     "Preview": "Aperçu",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "Choisir des fichiers IFC (Ctrl+O). Dossiers\u202f: Fichier → Ajouter un dossier…",
     "&File": "&Fichier",
@@ -629,4 +609,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "Impossible d'écrire dans le dossier de sortie {folder} ({error})",
     "Show edges (E)": "Afficher les arêtes (E)",
     "Parallel projection instead of perspective (P)": "Projection parallèle au lieu de la perspective (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Aide → Enregistrer le fichier journal…",
+    "Save log file": "Enregistrer le fichier journal",
+    "The log file could not be saved:\n{error}": "Le fichier journal n'a pas pu être enregistré :\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "Le fichier journal a été enregistré :\n{path}\n\n{hint}\n\nVeuillez le parcourir brièvement avant de l'envoyer. Ouvrir le dossier maintenant ?",
+    "Save log…": "Enregistrer le journal…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "Le fichier journal reste sur ce PC ; rien n'est envoyé automatiquement. Il ne contient aucun nom d'utilisateur, d'ordinateur, de serveur, de dossier, de fichier ni d'élément.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Journal de cette session. Tout est aussi dans le fichier journal (Aide → Enregistrer le fichier journal…).",
+    "Save log file…": "Enregistrer le fichier journal…",
 }

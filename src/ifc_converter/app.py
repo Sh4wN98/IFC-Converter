@@ -122,7 +122,8 @@ def log_files() -> list[Path]:
 
 
 def write_anonymized_log(target: Path) -> Path:
-    """Write all of the log (all files, oldest first) to ``target`` with personal data replaced.
+    """Write all of the log (all files, oldest first) to ``target``, anonymised once more (the log is
+    written anonymised, see setup_logging; entries of versions before 0.9.2 may not be).
 
     Raises FileNotFoundError if there is no log yet, OSError if ``target`` cannot be written.
     """
@@ -138,18 +139,6 @@ def write_anonymized_log(target: Path) -> Path:
     return target
 
 
-def log_anonymized_setting() -> bool:
-    """The setting "Logdatei anonymisieren" (anonymize_log in settings.ini), read without Qt."""
-    import configparser
-
-    parser = configparser.ConfigParser(interpolation=None, strict=False)
-    try:
-        parser.read(settings_path(), encoding="utf-8")
-        return parser.get("General", "anonymize_log", fallback="false").strip().lower() == "true"
-    except (configparser.Error, OSError, UnicodeDecodeError):
-        return False
-
-
 class AnonymizingFormatter(logging.Formatter):
     """Writes log records with user, computer, folder, file and element names replaced (see anonymize)."""
 
@@ -163,16 +152,11 @@ class AnonymizingFormatter(logging.Formatter):
         return self.anonymizer.text(super().format(record))
 
 
-def set_log_anonymized(anonymized: bool) -> None:
-    """From now on, write the log file anonymised (or not again)."""
-    if _handler is not None and isinstance(_handler.formatter, AnonymizingFormatter) != anonymized:
-        _handler.setFormatter(AnonymizingFormatter(LOG_FORMAT) if anonymized else logging.Formatter(LOG_FORMAT))
-
-
-def setup_logging(kind: str, anonymized: bool | None = None) -> Path | None:
+def setup_logging(kind: str) -> Path | None:
     """Log to the rotating log file from now on; ``kind`` ("GUI", "CLI") goes into the start line.
 
-    ``anonymized`` (default: the setting in settings.ini) writes the log without personal data.
+    The log is always written anonymised (AnonymizingFormatter): no user, computer, server, folder,
+    file or element names, so it can be passed on as it is.
     Returns the log file, or None if it cannot be written (the app then runs without a log). Calling it
     again replaces the handler of the previous call.
     """
@@ -185,9 +169,7 @@ def setup_logging(kind: str, anonymized: bool | None = None) -> Path | None:
         handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
     except OSError:
         return None
-    if anonymized is None:
-        anonymized = log_anonymized_setting()
-    handler.setFormatter(AnonymizingFormatter(LOG_FORMAT) if anonymized else logging.Formatter(LOG_FORMAT))
+    handler.setFormatter(AnonymizingFormatter(LOG_FORMAT))
     root.addHandler(handler)
     root.setLevel(logging.INFO)
     _handler = handler

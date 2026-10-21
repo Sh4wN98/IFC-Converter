@@ -238,7 +238,6 @@ TEXTS: dict[str, str] = {
     "openings cut them away completely.":
         "Diese Bauteile haben Geometrie, die nicht umgewandelt werden konnte – z. B. nicht unterstützte "
         "Geometrietypen, oder sie werden von ihren Öffnungen vollständig weggeschnitten.",
-    "Help → Open log file": "Hilfe → Logdatei öffnen",
     "1 element without geometry": "1 Bauteil ohne Geometrie",
     "{count} elements without geometry": "{count} Bauteile ohne Geometrie",
     " … and {count} more (all of them in the log file)": " … und {count} weitere (alle in der Logdatei)",
@@ -303,14 +302,7 @@ TEXTS: dict[str, str] = {
         "(<Ordner>) und Dateinamen (Datei-1.ifc, Datei-1.3dm …) und lässt Bauteilnamen weg. Erhalten bleiben "
         "IFC-Klasse und GlobalId, Zeiten, Größen, Versionen und Fehlermeldungen.",
     "There is no log file yet in {folder}.": "Es gibt noch keine Logdatei in {folder}.",
-    "Save anonymised log file": "Anonymisierte Logdatei speichern",
     "Text files (*.txt);;All files (*)": "Textdateien (*.txt);;Alle Dateien (*)",
-    "The anonymised log file could not be saved:\n{error}":
-        "Die anonymisierte Logdatei konnte nicht gespeichert werden:\n{error}",
-    "The anonymised log file has been saved:\n{path}\n\n{hint}\n\n"
-    "Please look through it briefly before sending. Open the folder now?":
-        "Die anonymisierte Logdatei wurde gespeichert:\n{path}\n\n{hint}\n\n"
-        "Bitte vor dem Versenden kurz durchsehen. Ordner jetzt öffnen?",
     # dialogs.py: settings
     "Settings": "Einstellungen",
     "Performance": "Leistung",
@@ -369,15 +361,6 @@ TEXTS: dict[str, str] = {
         "Blockinstanz erst aufgelöst werden (_Explode).",
     "Log file:": "Logdatei:",
     "Settings:": "Einstellungen:",
-    "Open log file": "Logdatei öffnen",
-    "Opens the current log file in the default program for text files.":
-        "Öffnet die aktuelle Logdatei im Standardprogramm für Textdateien.",
-    "Save anonymised…": "Anonymisiert speichern…",
-    "Anonymise log file": "Logdatei anonymisieren",
-    "The log file stays on this PC; nothing is sent automatically. Switched on, from now on it contains "
-    "no user, computer, server, folder, file or element names.":
-        "Die Logdatei bleibt auf diesem PC; nichts wird automatisch versendet. Eingeschaltet, enthält sie "
-        "ab jetzt keine Benutzer-, Rechner-, Server-, Ordner-, Datei- und Bauteilnamen mehr.",
     "With this, a conversion uses {resources}.": "Eine Konvertierung nutzt damit {resources}.",
     # dialogs.py: about
     "About {app}": "Über {app}",
@@ -489,7 +472,6 @@ TEXTS: dict[str, str] = {
     "Ready": "Bereit",
     "Progress over all files in the list": "Fortschritt über alle Dateien der Liste",
     "Log – here you can see what happened to each file.": "Protokoll – hier steht, was mit jeder Datei passiert ist.",
-    "Log of this session. Everything is also in the log file (Help → Open log file).": "Protokoll dieser Sitzung. Alles steht auch in der Logdatei (Hilfe → Logdatei öffnen).",
     "Drag to enlarge or shrink the log": "Ziehen: Protokoll vergrößern oder verkleinern",
     "Log": "Protokoll",
     "Show or hide the log (F4)": "Protokoll ein- oder ausblenden (F4)",
@@ -501,7 +483,6 @@ TEXTS: dict[str, str] = {
     "Add folder…": "Ordner hinzufügen…",
     "Quit": "Beenden",
     "Settings…": "Einstellungen…",
-    "Save anonymised log file…": "Anonymisierte Logdatei speichern…",
     "Preview": "Vorschau",
     "Choose IFC files (Ctrl+O). Folders: File → Add folder…": "IFC-Dateien auswählen (Strg+O). Ordner: Datei → Ordner hinzufügen…",
     "&File": "&Datei",
@@ -623,4 +604,13 @@ TEXTS: dict[str, str] = {
     "Cannot write to the output folder {folder} ({error})": "In den Ausgabeordner {folder} kann nicht geschrieben werden ({error})",
     "Show edges (E)": "Kanten anzeigen (E)",
     "Parallel projection instead of perspective (P)": "Parallelprojektion statt Perspektive (P)",
+    # log file (always anonymised, one option: save)
+    "Help → Save log file…": "Hilfe → Logdatei speichern…",
+    "Save log file": "Logdatei speichern",
+    "The log file could not be saved:\n{error}": "Die Logdatei konnte nicht gespeichert werden:\n{error}",
+    "The log file has been saved:\n{path}\n\n{hint}\n\nPlease look through it briefly before sending. Open the folder now?": "Die Logdatei wurde gespeichert:\n{path}\n\n{hint}\n\nBitte vor dem Versenden kurz durchsehen. Ordner jetzt öffnen?",
+    "Save log…": "Logdatei speichern…",
+    "The log file stays on this PC; nothing is sent automatically. It contains no user, computer, server, folder, file or element names.": "Die Logdatei bleibt auf diesem PC; nichts wird automatisch versendet. Sie enthält keine Benutzer-, Rechner-, Server-, Ordner-, Datei- und Bauteilnamen.",
+    "Log of this session. Everything is also in the log file (Help → Save log file…).": "Protokoll dieser Sitzung. Alles steht auch in der Logdatei (Hilfe → Logdatei speichern…).",
+    "Save log file…": "Logdatei speichern…",
 }

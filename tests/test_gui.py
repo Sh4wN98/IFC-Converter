@@ -660,9 +660,7 @@ def test_help_menu_has_log_output_and_about(window):
     menus = {action.text(): action.menu() for action in window.menuBar().actions()}
     assert list(menus) == ["&Datei", "&Bearbeiten", "&Ansicht", "E&xtras", "&Hilfe"]
     help_items = [action.text() for action in menus["&Hilfe"].actions() if not action.isSeparator()]
-    assert help_items == [
-        "Ausgabeordner öffnen", "Logdatei öffnen", "Anonymisierte Logdatei speichern…", "Über IFC Converter",
-    ]
+    assert help_items == ["Ausgabeordner öffnen", "Logdatei speichern…", "Über IFC Converter"]
 
 
 def test_finished_notification_in_background(window, wall_ifc, child_calls, monkeypatch):
@@ -1039,8 +1037,8 @@ def test_rows_without_skipped_elements_have_no_details(window, wall_ifc, tmp_pat
 
 @pytest.mark.parametrize("func, message, hint", [
     (child_helpers.raise_bare_error, "Interner Fehler (KeyError)",
-     "Bitte die Logdatei (Hilfe → Logdatei öffnen) mitschicken, wenn Sie den Fehler melden."),
-    (child_helpers.raise_error, "wall.ifc ist kaputt", "Details in der Logdatei (Hilfe → Logdatei öffnen)."),
+     "Bitte die Logdatei (Hilfe → Logdatei speichern…) mitschicken, wenn Sie den Fehler melden."),
+    (child_helpers.raise_error, "wall.ifc ist kaputt", "Details in der Logdatei (Hilfe → Logdatei speichern…)."),
 ])
 def test_failures_say_where_the_details_are(window, wall_ifc, monkeypatch, func, message, hint):
     use_child_func(monkeypatch, func)
@@ -1101,27 +1099,30 @@ def test_anonymized_log_is_saved_where_the_user_wants(window, tmp_path, monkeypa
     monkeypatch.setattr(dialogs, "open_path", opened.append)
     window.save_log_action.trigger()
 
-    assert asked == [str(tmp_path / "Desktop" / "ifc-converter-log-anonym.txt")]
+    assert asked == [str(tmp_path / "Desktop" / "ifc-converter-log.txt")]
     assert target.read_text(encoding="utf-8") == "Umwandlung: C:\\Users\\<Benutzer>\\Desktop\\Datei-1.ifc\n"
     assert opened == [tmp_path]
     assert app_info.log_files() == [logs / "ifc-converter.log"]
 
 
-def test_settings_dialog_switches_log_anonymisation(app, settings):
-    dialog = SettingsDialog(Preferences(anonymize_log=True))
-    assert dialog.anonymize_check.isChecked()
-    assert "<Ordner>" in dialog.anonymize_check.toolTip()
-    dialog.anonymize_check.setChecked(False)
-    assert dialog.preferences().anonymize_log is False
-    Preferences(anonymize_log=True).save(settings)
-    assert Preferences.load(settings).anonymize_log is True
+def test_settings_dialog_has_only_save_log(app, settings):
+    # The log is always anonymised: no switch for it, and no "open" (the log is meant for passing on).
+    from PySide6.QtWidgets import QCheckBox, QPushButton
+
+    dialog = SettingsDialog(Preferences())
+    assert dialog.save_log_button.text() == "Logdatei speichern…"
+    assert "<Ordner>" in dialog.save_log_button.toolTip()
+    assert not hasattr(dialog, "anonymize_check") and not hasattr(Preferences(), "anonymize_log")
+    page = dialog.tabs.widget(dialog.tabs.count() - 1)
+    assert [button.text() for button in page.findChildren(QPushButton)] == ["Logdatei speichern…"]
+    assert [box.text() for box in page.findChildren(QCheckBox)] == []
 
 
-def test_error_dialog_offers_the_anonymized_log(app):
+def test_error_dialog_offers_the_log(app):
     from PySide6.QtWidgets import QPushButton
 
-    dialog = ErrorDialog("x", "details")
-    assert "Anonymisiert speichern…" in [button.text() for button in dialog.findChildren(QPushButton)]
+    texts = [button.text() for button in ErrorDialog("x", "details").findChildren(QPushButton)]
+    assert "Logdatei speichern…" in texts and "Logdatei öffnen" not in texts
 
 
 def test_rhino_blocks_setting(app, settings):

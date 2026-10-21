@@ -1,6 +1,11 @@
 IFC Converter – Hinweise zu enthaltener Fremdsoftware / Third-party software notices
 ====================================================================================
 
+Der IFC Converter selbst steht unter der GNU General Public License, Version 3 oder neuer
+(licenses/GPL-3.0.txt; Quellcode: https://github.com/Sh4wN98/IFC-Converter).
+IFC Converter itself is licensed under the GNU General Public License, version 3 or later
+(licenses/GPL-3.0.txt; source code: https://github.com/Sh4wN98/IFC-Converter).
+
 Dieses Programm enthält die folgenden Open-Source-Komponenten in unveränderter Form.
 Sie liegen als einzelne Bibliotheken im Ordner _internal und können dort ersetzt werden.
 This program bundles the following open-source components, unmodified. They are separate

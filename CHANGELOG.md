@@ -2,6 +2,11 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.9.2 – 2026-10-22
+
+- **Logdatei immer anonym:** Das Protokoll wird von Anfang an ohne Benutzer-, Rechner-, Server-, Ordner-, Datei- und Bauteilnamen geschrieben; den Schalter „Logdatei anonymisieren“ und „Logdatei öffnen“ gibt es nicht mehr. Die einzige Option ist **„Logdatei speichern…“** (Hilfe-Menü, Fehlerdialog, Einstellungen → Logdatei, Rechtsklick auf eine fehlgeschlagene Datei): sie speichert eine Kopie des ganzen Protokolls, standardmäßig als `ifc-converter-log.txt` auf dem Desktop. Einträge älterer Versionen werden beim Speichern ebenfalls anonymisiert.
+- **Lizenz:** Der IFC Converter steht unter der GNU General Public License 3.0 oder neuer (`LICENSE`); die Lizenzhinweise im Programm nennen das.
+
 ## 0.9.1 – 2026-10-21
 
 - **Anleitung auf Englisch, neu gestaltet:** Die Kurzanleitung im Release heißt jetzt `IFC-Converter-<Version>-Guide.pdf`, ist vollständig englisch (vier Seiten: Was das Programm macht, Installation, erste Schritte, 3D-Vorschau, große Modelle, Sprache, Rückmeldung, Kommandozeile) und hat ein ruhigeres Layout mit Titelblock, Inhaltsübersicht und Tabellen; die großen Leerräume zwischen Abbildungen und Text sind weg. Die Startseite des Repositories (README) ist dieselbe Anleitung auf Englisch mit allen Details für Anwender und Entwickler; die ausführliche deutsche Dokumentation liegt unter `docs/README-de.md`.
