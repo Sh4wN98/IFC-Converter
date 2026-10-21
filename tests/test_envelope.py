@@ -78,7 +78,7 @@ def test_the_hull_of_a_house(house_ifc):
     assert selection.dropped_classes == {"IfcFurniture": 1, "IfcWall": 1}
     i18n.set_language("en")  # the note is made when it is read, in the language of that moment
     assert selection.note.startswith("Building hull only: 7 of 9 elements are on the outside")
-    assert selection.note.endswith("(grid 0,05 m, coarse 0,2 m). Left out: 1 IfcFurniture, 1 IfcWall.")
+    assert selection.note.endswith("(grid 0.05 m, coarse 0.2 m). Left out: 1 IfcFurniture, 1 IfcWall.")
 
 
 def test_a_product_with_the_smallest_visible_part_stays(house_ifc):
