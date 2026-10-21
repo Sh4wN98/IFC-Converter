@@ -323,6 +323,13 @@ def test_round_column(models, mode):
     assert exact * (1 - 2 * CHORD_TOLERANCE / radius) <= shape.volume <= exact * (1 + 1e-9)
 
 
+def test_dae_is_z_up_in_metres(models):
+    _, _, infos = models["mm_wall"]
+    info = infos["dae"]
+    assert info["unit_meter"] == 1.0 and info["unit_name"].upper() == "METER"
+    assert info["up_axis"] == "Z_UP"
+
+
 def test_rhino_file_is_metres_with_millimetre_tolerance(models):
     _, _, infos = models["mm_wall"]
     for mode in ("3dm-brep", "3dm-mesh"):
@@ -343,17 +350,20 @@ def test_block_modes_place_type_geometry_as_instances(models):
 
 
 # IfcOpenShell applies a mirroring type placement to the vertices without reversing the triangles,
-# in local and in world coordinates alike: the mesh formats get mirrored elements inside out (their
-# normals point inwards). Polysurfaces are re-oriented by the converter.
-# IfcOpenShell's own GLB/OBJ writers keep mirrored type geometry inside out; the 3dm export turns it around.
-INSIDE_OUT = pytest.mark.xfail(strict=True, reason="GLB/OBJ: mirrored type geometry is inside out (IfcOpenShell)")
+# in local and in world coordinates alike, so its own GLB/OBJ/DAE writers would get mirrored
+# elements inside out (normals pointing inwards, negative volume). The converter turns such shells
+# outwards in every format: the Rhino export in rhino._outward, the serializers through
+# serializers.outward_element (a rebuilt triangulation of the same product).
 
 
-@pytest.mark.parametrize("mode", [m if m.startswith("3dm") else pytest.param(m, marks=INSIDE_OUT) for m in MODES])
+@pytest.mark.parametrize("mode", MODES)
 def test_mirrored_type_geometry_points_outwards(models, mode):
     expected, outputs, _ = models["mapped"]
     for guid, truth in expected.items():
-        assert outputs[mode][guid].volume == pytest.approx(truth["volume"], rel=1e-6), truth["name"]
+        shape = outputs[mode][guid]
+        if shape.triangles is not None:  # meshes: a consistently oriented closed shell
+            assert accuracy.is_closed(shape), truth["name"]
+        assert shape.volume == pytest.approx(truth["volume"], rel=1e-6), truth["name"]
 
 
 # The converter points every closed shell of a polysurface outwards, also the void of a hollow solid,
