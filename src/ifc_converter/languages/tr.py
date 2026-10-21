@@ -577,7 +577,6 @@ TEXTS: dict[str, str] = {
     "View from the south (3)": "Güneyden görünüm (3)",
     "Side": "Yan",
     "View from the east (4)": "Doğudan görünüm (4)",
-    "All": "Tümü",
     "Show the whole model (F, double-click)": "Tüm modeli göster (F, çift tık)",
     # --- lead, 2026-10-21 ---
     "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
@@ -590,4 +589,6 @@ TEXTS: dict[str, str] = {
         'IFC dosyası kesilmiş görünüyor (sonunda END-ISO-10303-21 yok): çıktı eksik olabilir.',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Çıktı klasörüne {folder} yazılamıyor ({error})",
+    "Show edges (E)": "Kenarları göster (E)",
+    "Parallel projection instead of perspective (P)": "Perspektif yerine paralel izdüşüm (P)",
 }

@@ -578,7 +578,6 @@ TEXTS: dict[str, str] = {
     "View from the south (3)": "Vista de sul (3)",
     "Side": "Lado",
     "View from the east (4)": "Vista de este (4)",
-    "All": "Tudo",
     "Show the whole model (F, double-click)": "Mostrar o modelo inteiro (F, duplo clique)",
     # --- lead, 2026-10-21 ---
     "The file holds {count} projects with different units; all of them are read with the units of the first one ({name}). Please check the dimensions.":
@@ -591,4 +590,6 @@ TEXTS: dict[str, str] = {
         'O ficheiro IFC parece estar truncado (sem END-ISO-10303-21 no fim): a saída pode estar incompleta.',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Não é possível escrever na pasta de saída {folder} ({error})",
+    "Show edges (E)": "Mostrar arestas (E)",
+    "Parallel projection instead of perspective (P)": "Projeção paralela em vez de perspetiva (P)",
 }
