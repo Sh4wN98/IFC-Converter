@@ -196,6 +196,12 @@ TEXTS: dict[str, str] = {
     "{message}: {size} written …": "{message}: {size} yazıldı …",
     'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message}':
         'Dönüştürme hesaplamaya devam etse de {minutes} dakikadır ilerleme yok (CPU {cpu} sn), %{percent}: {message}',
+    'The conversion has made no progress for {duration} although it is computing (the geometry kernel hangs)':
+        'Dönüştürme hesaplamaya devam etse de {duration} boyunca ilerleme kaydetmedi (geometri çekirdeği takıldı)',
+    'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message} – the geometry kernel hangs, the conversion is restarted':
+        'Dönüştürme hesaplamaya devam etse de {minutes} dakikadır ilerleme yok (CPU {cpu} sn), %{percent}: {message} – geometri çekirdeği takıldı, dönüştürme yeniden başlatılıyor',
+    '{count} elements of the chunk are computed again together, without the ones the geometry kernel hung on …':
+        'Paketin {count} elemanı, geometri çekirdeğinin takıldığı elemanlar hariç, yeniden birlikte hesaplanıyor …',
     "No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}":
         "{seconds} sn'dir hesaplama etkinliği yok (CPU {cpu} sn){fatal}, %{percent}: {message}",
     " after {fatal}": " {fatal} sonrasında",

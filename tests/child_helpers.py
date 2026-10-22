@@ -466,3 +466,20 @@ def report_hung(input_path, output_path, fmt, threads, progress=None, **options)
     options["position"]("hung", [2], "IfcWall 2 „Lost“")
     Path(output_path).write_text("fake")
     return ConversionResult(output=Path(output_path), elements=1, crashed=["IfcWall 2 „Lost“"])
+
+
+def spin_silently_in_geometry(input_path, output_path, fmt, threads, progress=None, status=None, position=None,
+                              isolate_ids=None, **options):
+    """Compute without a word: in the first attempt the kernel "hangs" where the conversion cannot
+    see it (CPU busy, nothing delivered after wall 8); the parent must end the child as hung and
+    retry with wall 7 isolated, which the second attempt finishes."""
+    progress(0)
+    status("geometry", "Geometrie wird berechnet (2 Threads) …")
+    position("chunk", [7, 8], "")
+    if not isolate_ids:
+        position("delivered", [8], "")
+        while True:
+            sum(range(10000))
+    Path(output_path).write_text(str(isolate_ids))
+    progress(100)
+    return ConversionResult(output=Path(output_path), elements=1)

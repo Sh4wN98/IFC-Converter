@@ -199,6 +199,12 @@ TEXTS: dict[str, str] = {
     "{message}: {size} written …": "{message}\u202f: {size} écrits …",
     'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message}':
         'Aucun progrès depuis {minutes} min bien que la conversion calcule (CPU {cpu} s), {percent}\u202f%\u202f: {message}',
+    'The conversion has made no progress for {duration} although it is computing (the geometry kernel hangs)':
+        "La conversion n'a pas progressé depuis {duration} bien qu'elle calcule (le noyau géométrique est bloqué)",
+    'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message} – the geometry kernel hangs, the conversion is restarted':
+        'Aucun progrès depuis {minutes} min bien que la conversion calcule (CPU {cpu} s), {percent}\u202f%\u202f: {message} – le noyau géométrique est bloqué, la conversion est relancée',
+    '{count} elements of the chunk are computed again together, without the ones the geometry kernel hung on …':
+        "{count} éléments du lot sont recalculés ensemble, sans ceux sur lesquels le noyau géométrique s'est bloqué …",
     "No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}":
         "Aucune activité de calcul depuis {seconds} s (CPU {cpu} s){fatal}, {percent}\u202f%\u202f: {message}",
     " after {fatal}": " après {fatal}",

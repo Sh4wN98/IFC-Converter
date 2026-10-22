@@ -60,9 +60,20 @@ FATAL_MARKERS = {"Windows fatal exception: stack overflow": lambda: tr("stack ov
 STALL_CPU = 1.0
 CPU_SAMPLE = 30
 # A child that reports no change (progress, phase, position) for this long while it keeps using CPU
-# gets a warning in the log, nothing more: the kernel may be spinning on one element (which the
-# child itself gives up after converter.HANG_SECONDS), or a huge element is simply slow.
+# gets a warning in the log: a huge element may simply be slow.
 NO_PROGRESS_WARNING = 30 * 60
+# While the kernel computes (phases "envelope", "geometry", "deep") such a silence is a hang the
+# child did not notice itself (it gives up a run that delivers nothing after converter.HANG_SECONDS
+# and reports that; a kernel thread spinning where it cannot see it, e.g. in an iterator's start,
+# keeps the CPU busy forever). After the pass's limit plus this margin the child is ended and the
+# conversion restarted with the products not delivered yet isolated, as after a crash (see
+# silence_limit, _recover). Elsewhere (reading, the hull's fill, writing) there is no such limit.
+# MARGIN_ENV overrides the margin (seconds; tests, where it must reach the child as well).
+NO_PROGRESS_MARGIN = 5 * 60
+MARGIN_ENV = "IFC_CONVERTER_HANG_MARGIN"
+# The child writes the Python stack of all its threads to its stderr (which the parent copies into
+# the log when it ends it) this long before the parent's limit: where it is stuck, for the next version.
+DUMP_LEAD = 60
 # A pause this long between two samples means the computer was suspended, not the conversion stuck.
 SUSPEND_GAP = 5 * 60
 # Temp files of conversions untouched for this long are leftovers of a killed app.
@@ -153,19 +164,45 @@ class ConversionCrashed(Exception):
 
 
 class ConversionStalled(Exception):
-    """The child's processes stopped using CPU: they wait for something that never comes.
+    """The child's processes stopped using CPU: they wait for something that never comes. Or, with
+    ``silent``, they kept computing without reporting anything for longer than the kernel's hang limit.
 
     ``fatal`` is the fatal error the child reported before (e.g. "stack overflow"), if any.
     """
 
-    def __init__(self, seconds: float, fatal: str = ""):
+    def __init__(self, seconds: float, fatal: str = "", silent: bool = False):
         if fatal:
             super().__init__(tr("Crash in the geometry kernel ({fatal}), after which the conversion was stuck",
                                 fatal=fatal))
+        elif silent:
+            super().__init__(tr("The conversion has made no progress for {duration} although it is computing (the "
+                                "geometry kernel hangs)", duration=_duration(seconds)))
         else:
             super().__init__(tr("The conversion has not computed anything for {duration} (it was stuck)",
                                 duration=_duration(seconds)))
         self.fatal = fatal
+        self.silent = silent
+
+
+def silence_limit(phase: str, fmt: str) -> float | None:
+    """How long the child may compute in ``phase`` without reporting anything before it counts as
+    hung (see NO_PROGRESS_MARGIN): the pass's hang limit (see converter.HANG_SECONDS) plus the margin
+    while the kernel computes, None in the other phases."""
+    if phase == "envelope":
+        return converter.hang_limit("coarse") + _margin()
+    if phase in ("geometry", "deep"):
+        return converter.hang_limit("preview" if fmt == "preview" else "fine") + _margin()
+    return None
+
+
+def _margin() -> float:
+    value = os.environ.get(MARGIN_ENV)
+    if value:
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return float(NO_PROGRESS_MARGIN)
 
 
 def _duration(seconds: float) -> str:
@@ -469,20 +506,27 @@ def _child_main(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _silence_stdout()
     lock = threading.Lock()  # the geometry runs report from threads of their own
+    state = {"sent": time.monotonic(), "phase": ""}  # what the silence watch looks at
 
-    def send(message: tuple) -> None:
+    def send(message: tuple, activity: bool = True) -> None:
         with lock:
             conn.send(message)
+            if activity:  # like the parent sees it: a note is no progress
+                state["sent"] = time.monotonic()
 
     def progress(percent: int) -> None:
         send(("progress", percent))
 
     def status(phase: str, text: str) -> None:
-        send(("status", phase, text))
+        if phase != "note":
+            state["phase"] = phase
+        send(("status", phase, text), activity=phase != "note")
 
     def position(kind: str, ids: list, label: str) -> None:
         send(("position", kind, ids, label))
 
+    threading.Thread(target=_watch_silence, args=(state, args[2] if len(args) > 2 else ""), name="silence-watch",
+                     daemon=True).start()
     try:
         result = func(*args, progress=progress, status=status, position=position, **kwargs)
     except Exception as exc:  # exception objects may not unpickle in the parent, so send plain text
@@ -494,6 +538,32 @@ def _child_main(
             conn.close()
         if converter.abandoned():
             _exit_at_once()
+
+
+def _watch_silence(state: dict, fmt: str) -> None:
+    """Runs in a thread of the child: once nothing was sent to the parent for the phase's silence
+    limit less DUMP_LEAD, write where every thread is to stderr, once per such silence (the parent
+    is about to end the child, see _Phases._check_stall, and copies the stderr into the log)."""
+    dumped = False
+    while True:
+        limit = silence_limit(state["phase"], fmt)
+        lead = min(DUMP_LEAD, limit / 2) if limit is not None else DUMP_LEAD
+        time.sleep(max(0.1, min(1.0, lead / 5)))  # fine enough for short limits (tests)
+        silence = time.monotonic() - state["sent"]
+        if limit is None or silence < limit - lead:
+            dumped = False
+            continue
+        if dumped:
+            continue
+        dumped = True
+        try:
+            sys.stderr.write(f"\nNo progress reported for {silence:.0f} s in phase \"{state['phase']}\" "
+                             f"(hang limit {limit:.0f} s), threads of the conversion process:\n")
+            sys.stderr.flush()
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            sys.stderr.flush()
+        except (OSError, ValueError, AttributeError, RuntimeError):
+            pass
 
 
 def _exit_at_once() -> None:
@@ -703,7 +773,7 @@ def _run_child(
     job = _Job.create(low_priority)
     stderr_path = _stderr_file()
     staging = _staging_dir()
-    watch = _Phases(args[1] or Path(args[0]).with_suffix(f".{args[2]}"), staging, status, started)
+    watch = _Phases(args[1] or Path(args[0]).with_suffix(f".{args[2]}"), staging, status, started, fmt=args[2])
     watch.stderr_path = stderr_path
     reader, writer = _CONTEXT.Pipe(duplex=False)
     process = _CONTEXT.Process(
@@ -1057,10 +1127,11 @@ class _Phases:
     on that itself; the size of the growing file shows that it is not stuck.
     """
 
-    def __init__(self, output: Path, staging: str | None, status, started: float | None):
+    def __init__(self, output: Path, staging: str | None, status, started: float | None, fmt: str = ""):
         self.output = Path(output)
         self.staging = Path(staging) if staging else None
         self.status = status
+        self.fmt = fmt
         self.started = started or time.monotonic()
         self.phase = self.text = ""
         self.percent = 0
@@ -1122,8 +1193,9 @@ class _Phases:
             self._seen_percent, self._changed = self.percent, now
         if self.pid and now - self._sampled >= CPU_SAMPLE:
             if now - self._sampled > SUSPEND_GAP:
-                # The computer was asleep (this loop runs every second): no reason to stop the child.
-                self._active, self._active_cpu = now, None
+                # The computer was asleep (this loop runs every second): no reason to stop the child,
+                # and the sleep is no silence of it either.
+                self._active, self._active_cpu, self._changed = now, None, now
             self._sampled = now
             self._check_stall(now)
         if now - self._logged >= HEARTBEAT:
@@ -1146,10 +1218,25 @@ class _Phases:
         timeout = FATAL_STALL_TIMEOUT if self.fatal else STALL_TIMEOUT
         if self._active_cpu is None or cpu - self._active_cpu >= STALL_CPU:
             self._active, self._active_cpu = now, cpu
-            if now - self._changed >= NO_PROGRESS_WARNING:
-                # Computing, but nothing to show for it: the kernel may hang on one element (the
-                # child gives it up itself, see converter.HANG_SECONDS). Warned once per silence.
-                silence = now - self._changed
+            silence = now - self._changed
+            # Only while the kernel is at products: the child reports every chunk and single element
+            # before computing it, and "done" after the last; the scans and set-up around them
+            # (nesting depths, Rhino blocks, the pool's drain) are plain Python and may take long.
+            limit = silence_limit(self.phase, self.fmt) if self.position and self.position[0] in ("chunk", "element") \
+                else None
+            if limit is not None and silence >= limit:
+                # Computing, but nothing to show for it for longer than the kernel's hang limit, after
+                # which the child would have reported a hang it noticed: it hangs where it cannot
+                # notice, and is ended and restarted with the products not finished yet isolated.
+                log.error(tr("No progress for {minutes} min although the conversion is computing (CPU {cpu} s), "
+                             "{percent} %: {message} – the geometry kernel hangs, the conversion is restarted",
+                             minutes=f"{silence / 60:.0f}", cpu=f"{cpu:.1f}", percent=self.percent,
+                             message=self.text or "…"))
+                stalled = ConversionStalled(silence, silent=True)
+                stalled.position = self.suspects()
+                raise stalled
+            if silence >= NO_PROGRESS_WARNING:
+                # A huge element may simply be slow (no limit in this phase). Warned once per silence.
                 self._changed = now
                 log.warning(tr("No progress for {minutes} min although the conversion is computing (CPU {cpu} s), "
                                "{percent} %: {message}", minutes=f"{silence / 60:.0f}", cpu=f"{cpu:.1f}",
