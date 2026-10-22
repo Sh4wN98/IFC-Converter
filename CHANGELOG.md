@@ -2,6 +2,10 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.9.5 – 2026-10-22
+
+- **Feste Download-Links für die neueste Version:** Jedes Release enthält den Installer, die Anleitung, die portable ZIP und das Linux-Archiv zusätzlich unter festen Namen ohne Versionsnummer. Damit zeigen `https://github.com/Sh4wN98/IFC-Converter/releases/latest/download/IFC-Converter-Setup.exe` und `…/IFC-Converter-Guide.pdf` (ebenso `IFC-Converter-portable.zip`, `IFC-Converter-linux-x86_64.tar.gz`, `SHA256SUMS.txt`) immer auf das neueste Release – zum einmaligen Eintragen auf einem Server oder einer Intranet-Seite. Heruntergeladen wird weiterhin nur von Hand; das Programm verbindet sich nie mit dem Internet.
+
 ## 0.9.4 – 2026-10-22
 
 - **Gebäudehülle: nach einem Hänger rechnet OpenCASCADE die Vorberechnung:** Beim 1,5-GB-Modell hängt der schnelle (hybride) Kern sowohl in der Vorschau als auch in der Hüllen-Vorberechnung; 0.9.3 hat beides nach 8 bzw. 10 Minuten beendet, die Vorschau lief danach mit OpenCASCADE durch, die Hülle aber nicht: der neue Versuch rechnete die verdächtigen Bauteile einzeln, wieder zuerst mit dem hybriden Kern, und hing dort erneut. Jetzt wird die Hüllen-Vorberechnung nach einem Hänger oder Absturz in einem Rechenpaket mit OpenCASCADE wiederholt („… mit OpenCASCADE für die Vorberechnung …“); die Umwandlung selbst behält ihre Kern-Strategie.

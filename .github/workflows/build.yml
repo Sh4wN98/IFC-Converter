@@ -183,8 +183,12 @@ jobs:
           mkdir release
           cp dist/windows/IFC-Converter-*-Setup.exe dist/windows/IFC-Converter-*-portable.zip \
              dist/linux/IFC-Converter-*-linux-*.tar.gz dist/linux/IFC-Converter-*-Guide.pdf release/
+          # Copies with fixed names, so that …/releases/latest/download/IFC-Converter-Setup.exe always
+          # gets the newest version (the versioned names stay for the download page and the checksums).
+          (cd release && cp IFC-Converter-*-Setup.exe IFC-Converter-Setup.exe && cp IFC-Converter-*-Guide.pdf IFC-Converter-Guide.pdf \
+             && cp IFC-Converter-*-portable.zip IFC-Converter-portable.zip && cp IFC-Converter-*-linux-*.tar.gz IFC-Converter-linux-x86_64.tar.gz)
           (cd release && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
-          test "$(ls release | wc -l)" -eq 5 || { echo "::error::expected Setup.exe, portable ZIP, tar.gz, guide PDF and SHA256SUMS.txt in release/"; ls release; exit 1; }
+          test "$(ls release | wc -l)" -eq 9 || { echo "::error::expected Setup.exe, portable ZIP, tar.gz, guide PDF (each versioned and with a fixed name) and SHA256SUMS.txt in release/"; ls release; exit 1; }
       - name: Release notes from CHANGELOG.md
         # The newest "## " section (which must be this version's) plus the download line.
         run: |

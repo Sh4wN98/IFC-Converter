@@ -191,6 +191,9 @@ def test_workflow_builds_tests_and_releases_the_linux_app():
     assert 'packaging/release_notes.py CHANGELOG.md --version "${GITHUB_REF_NAME#v}"' in runs
     assert "--notes-file notes.md" in runs and "--notes " not in runs
     assert "gh release create" in runs and "release/*" in runs
+    # Fixed names beside the versioned ones: …/releases/latest/download/IFC-Converter-Setup.exe stays valid.
+    assert "cp IFC-Converter-*-Setup.exe IFC-Converter-Setup.exe" in runs and "IFC-Converter-Guide.pdf" in runs
+    assert 'test "$(ls release | wc -l)" -eq 9' in runs
 
 
 def test_spec_and_build_agree_on_the_linux_names():
