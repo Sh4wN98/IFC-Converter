@@ -42,7 +42,9 @@ def download_line(version: str) -> str:
         f"**Download:** `IFC-Converter-{version}-Setup.exe` (Windows-Installer, ohne Administratorrechte), "
         f"`IFC-Converter-{version}-portable.zip` (Windows, nur entpacken), "
         f"`IFC-Converter-{version}-linux-x86_64.tar.gz` (Linux, darin `install.sh`), "
-        f"`SHA256SUMS.txt` (Prüfsummen aller Dateien)."
+        f"`SHA256SUMS.txt` (Prüfsummen aller Dateien). Immer die neueste Version: "
+        f"[IFC-Converter-Setup.exe](https://github.com/Sh4wN98/IFC-Converter/releases/latest/download/IFC-Converter-Setup.exe), "
+        f"[IFC-Converter-Guide.pdf](https://github.com/Sh4wN98/IFC-Converter/releases/latest/download/IFC-Converter-Guide.pdf)."
     )
 
 
