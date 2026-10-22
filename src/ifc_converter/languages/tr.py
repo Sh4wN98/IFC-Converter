@@ -143,6 +143,8 @@ TEXTS: dict[str, str] = {
         "{what} {label} elemanında. {again}, bu eleman atlanıyor …",
     "{what} at one element. {again}, it is computed first and on its own …":
         "{what} bir elemanda. {again}, bu eleman önce ve tek başına hesaplanıyor …",
+    "{what} in the hull's rough pre-computation. {again} with OpenCASCADE for the pre-computation …":
+        'Kabuk ön hesaplamasında {what}. Ön hesaplama için OpenCASCADE ile {again} …',
     "{what} at one of {count} elements. {again}, these are computed first and on their own to find the affected "
     "one …":
         "{what} {count} elemandan birinde. {again}, sorunlu olanı bulmak için bunlar önce ve tek tek "

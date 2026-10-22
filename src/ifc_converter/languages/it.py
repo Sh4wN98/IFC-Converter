@@ -143,6 +143,8 @@ TEXTS: dict[str, str] = {
         "{what} su {label}. {again}, questo elemento viene saltato …",
     "{what} at one element. {again}, it is computed first and on its own …":
         "{what} su un elemento. {again}, viene calcolato per primo e singolarmente …",
+    "{what} in the hull's rough pre-computation. {again} with OpenCASCADE for the pre-computation …":
+        "{what} nel precalcolo dell'involucro. {again} con OpenCASCADE per il precalcolo …",
     "{what} at one of {count} elements. {again}, these are computed first and on their own to find the affected "
     "one …":
         "{what} su uno di {count} elementi. {again}, questi vengono calcolati per primi e singolarmente per trovare "

@@ -1094,6 +1094,27 @@ def test_a_child_hanging_where_it_cannot_notice_is_ended_and_the_suspects_isolat
         in messages[0]
     assert result.elements == 1 and target.read_text() == "[7]"
     assert "der Geometriekern hängt, die Umwandlung wird neu gestartet" in caplog.text
-    # Before the parent ended it, the child wrote where its threads were, for the log.
-    assert "No progress reported for" in caplog.text and "threads of the conversion process" in caplog.text
+    # Before the parent ended it, the child wrote where its threads were, for the log (faulthandler's
+    # watchdog: the kernel holds the interpreter lock while it computes, no Python thread could).
+    assert "Timeout (" in caplog.text and "most recent call first" in caplog.text
     assert "spin_silently_in_geometry" in caplog.text
+
+
+def test_a_hang_in_the_hull_pre_computation_is_retried_with_opencascade_for_it(wall_ifc, tmp_path, monkeypatch, caplog):
+    from ifc_converter import converter
+
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    monkeypatch.setenv(converter.HANG_ENV, "0.5")
+    monkeypatch.setenv(process.MARGIN_ENV, "1")
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 600)
+    target = tmp_path / "wall.3dm"
+    messages = []
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        result = convert_in_child(wall_ifc, target, "3dm", threads=2, envelope=True, kernel="accurate",
+                                  on_retry=messages.append, func=child_helpers.stall_in_hull_unless_opencascade)
+    assert messages == ["Hänger im Geometriekern in der Hüllen-Vorberechnung. Neuer Versuch (2. von höchstens 7) mit "
+                        "OpenCASCADE für die Vorberechnung …"]
+    assert _attempts(target) == ["None", "opencascade"]
+    assert result.elements == 1 and target.read_text() == "done"
+    assert "stall_in_hull_unless_opencascade" in caplog.text  # the thread dump

@@ -157,6 +157,19 @@ def test_anonymised_copy_of_all_log_files(user_dirs, monkeypatch):
     ]
 
 
+def test_the_copy_includes_the_crash_log_of_the_window(user_dirs, monkeypatch):
+    monkeypatch.setenv("USERNAME", USER)
+    logs = user_dirs / "logs"
+    logs.mkdir()
+    (logs / "ifc-converter.log").write_text("neu\n", encoding="utf-8")
+    (logs / "crash.log").write_text(f"Windows fatal exception: access violation\n  File \"{SOURCE}\"\n", encoding="utf-8")
+    target = app.write_anonymized_log(user_dirs / "anonym.txt")
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert lines[:3] == ["neu", "", "===== crash.log ====="]
+    assert lines[3] == "Windows fatal exception: access violation"
+    assert "<Benutzer>" in lines[4] and USER not in lines[4]
+
+
 def test_no_log_no_copy(user_dirs):
     with pytest.raises(FileNotFoundError):
         app.write_anonymized_log(user_dirs / "anonym.txt")
