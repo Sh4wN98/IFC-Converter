@@ -397,3 +397,26 @@ def test_the_hull_text_comes_back_after_the_deep_elements(house_ifc, monkeypatch
         ("envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …"),
         ("note", "eine Notiz"),
     ]
+
+
+def test_the_coarse_pass_uses_the_hybrid_kernel_unless_asked_for_opencascade(house_ifc, monkeypatch):
+    from ifc_converter import converter
+
+    strategies = []
+
+    def fake_iter_shapes(model, settings, threads, exclude, progress, share, products, status=None, **kwargs):
+        strategies.append(converter.kernel_strategy())
+        return iter(())
+
+    monkeypatch.setattr(converter, "iter_shapes", fake_iter_shapes)
+    monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
+    model = ifcopenshell.open(str(house_ifc))
+    products = shape_products(model, EXCLUDED_CLASSES)
+    list(envelope._coarse_shapes(model, 2, products, None, None))
+    list(envelope._coarse_shapes(model, 2, products, None, None, "opencascade"))
+    token = converter._kernel.set("opencascade")
+    try:
+        list(envelope._coarse_shapes(model, 2, products, None, None))
+    finally:
+        converter._kernel.reset(token)
+    assert strategies == ["hybrid", "opencascade", "opencascade"]

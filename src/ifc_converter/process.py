@@ -72,8 +72,13 @@ NO_PROGRESS_WARNING = 30 * 60
 NO_PROGRESS_MARGIN = 5 * 60
 MARGIN_ENV = "IFC_CONVERTER_HANG_MARGIN"
 # The child writes the Python stack of all its threads to its stderr (which the parent copies into
-# the log when it ends it) this long before the parent's limit: where it is stuck, for the next version.
+# the log when it ends it) this long before the parent's limit: where it is stuck, for the next
+# version. faulthandler's own watchdog thread does that, because IfcOpenShell holds the interpreter
+# lock while it computes: no Python thread of the child runs then (which is also why the child's own
+# hang limits, converter.HANG_SECONDS, cannot act on the real kernel). The timer is re-armed with
+# every message to the parent, at most every DUMP_REARM seconds.
 DUMP_LEAD = 60
+DUMP_REARM = 5
 # A pause this long between two samples means the computer was suspended, not the conversion stuck.
 SUSPEND_GAP = 5 * 60
 # Temp files of conversions untouched for this long are leftovers of a killed app.
@@ -285,6 +290,15 @@ def _recover(
     if opencascade_first and kind in ("chunk", "element") and _uses_hybrid(options):
         options["kernel"] = "opencascade"
         return retry_message()
+    if getattr(failure, "phase", "") == "envelope" and kind == "chunk" and _uses_hybrid(options) \
+            and options.get("hull_kernel") != "opencascade":
+        # The hull's rough pre-computation runs everything through the hybrid kernel, which hangs or
+        # crashes on some models (both seen on a 1.5 GB one): the pre-computation is done with
+        # OpenCASCADE instead, before narrowing anything down (that would hang again, element by
+        # element, with the hybrid kernel first). The conversion itself keeps its strategy.
+        options["hull_kernel"] = "opencascade"
+        return tr("{what} in the hull's rough pre-computation. {again} with OpenCASCADE for the pre-computation …",
+                  what=what, again=again)
     # The messages are one sentence on the failure and one on the attempt (see convert_in_child).
     if kind == "curves" and ids and not set(ids) <= skipped.keys():
         labels = label.split("\n") if label else []
@@ -506,13 +520,14 @@ def _child_main(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _silence_stdout()
     lock = threading.Lock()  # the geometry runs report from threads of their own
-    state = {"sent": time.monotonic(), "phase": ""}  # what the silence watch looks at
+    fmt = args[2] if len(args) > 2 else ""
+    state = {"phase": "", "armed": 0.0, "armed_phase": None}  # of the thread dump, see _arm_dump
 
     def send(message: tuple, activity: bool = True) -> None:
         with lock:
             conn.send(message)
             if activity:  # like the parent sees it: a note is no progress
-                state["sent"] = time.monotonic()
+                _arm_dump(state, fmt)
 
     def progress(percent: int) -> None:
         send(("progress", percent))
@@ -525,8 +540,6 @@ def _child_main(
     def position(kind: str, ids: list, label: str) -> None:
         send(("position", kind, ids, label))
 
-    threading.Thread(target=_watch_silence, args=(state, args[2] if len(args) > 2 else ""), name="silence-watch",
-                     daemon=True).start()
     try:
         result = func(*args, progress=progress, status=status, position=position, **kwargs)
     except Exception as exc:  # exception objects may not unpickle in the parent, so send plain text
@@ -536,34 +549,30 @@ def _child_main(
     finally:
         with lock:
             conn.close()
+        faulthandler.cancel_dump_traceback_later()
         if converter.abandoned():
             _exit_at_once()
 
 
-def _watch_silence(state: dict, fmt: str) -> None:
-    """Runs in a thread of the child: once nothing was sent to the parent for the phase's silence
-    limit less DUMP_LEAD, write where every thread is to stderr, once per such silence (the parent
-    is about to end the child, see _Phases._check_stall, and copies the stderr into the log)."""
-    dumped = False
-    while True:
-        limit = silence_limit(state["phase"], fmt)
-        lead = min(DUMP_LEAD, limit / 2) if limit is not None else DUMP_LEAD
-        time.sleep(max(0.1, min(1.0, lead / 5)))  # fine enough for short limits (tests)
-        silence = time.monotonic() - state["sent"]
-        if limit is None or silence < limit - lead:
-            dumped = False
-            continue
-        if dumped:
-            continue
-        dumped = True
-        try:
-            sys.stderr.write(f"\nNo progress reported for {silence:.0f} s in phase \"{state['phase']}\" "
-                             f"(hang limit {limit:.0f} s), threads of the conversion process:\n")
-            sys.stderr.flush()
-            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-            sys.stderr.flush()
-        except (OSError, ValueError, AttributeError, RuntimeError):
-            pass
+def _arm_dump(state: dict, fmt: str) -> None:
+    """(Re)start the child's thread dump timer (see DUMP_LEAD): the stacks of all its threads go to
+    stderr once it has reported nothing for the phase's silence limit less DUMP_LEAD. No timer in
+    phases without a limit. Called with every message to the parent, so the timer is re-armed at most
+    every DUMP_REARM seconds (cancelling joins faulthandler's thread) and right away in a new phase."""
+    now = time.monotonic()
+    limit = silence_limit(state["phase"], fmt)
+    if limit is None:
+        if state["armed_phase"] is not None:
+            faulthandler.cancel_dump_traceback_later()
+            state["armed_phase"] = None
+        return
+    if state["armed_phase"] == state["phase"] and now - state["armed"] < DUMP_REARM:
+        return
+    try:
+        faulthandler.dump_traceback_later(max(0.1, limit - min(DUMP_LEAD, limit / 2)), repeat=False, file=sys.stderr)
+    except (OSError, ValueError, AttributeError, RuntimeError):  # no usable stderr (e.g. pythonw without the file)
+        return
+    state["armed"], state["armed_phase"] = now, state["phase"]
 
 
 def _exit_at_once() -> None:
@@ -848,7 +857,7 @@ def _run_child(
                        "end (e.g. without worker processes)", limit=_gb(job.limit)))
     if outcome is None:
         crash = ConversionCrashed(exitcode)
-        crash.position = watch.suspects()
+        crash.position, crash.phase = watch.suspects(), watch.phase
         raise crash
     if outcome[0] == "error":
         raise ConversionFailed(*outcome[1:])
@@ -1233,7 +1242,7 @@ class _Phases:
                              minutes=f"{silence / 60:.0f}", cpu=f"{cpu:.1f}", percent=self.percent,
                              message=self.text or "…"))
                 stalled = ConversionStalled(silence, silent=True)
-                stalled.position = self.suspects()
+                stalled.position, stalled.phase = self.suspects(), self.phase
                 raise stalled
             if silence >= NO_PROGRESS_WARNING:
                 # A huge element may simply be slow (no limit in this phase). Warned once per silence.
@@ -1251,7 +1260,7 @@ class _Phases:
                          fatal=tr(" after {fatal}", fatal=self.fatal) if self.fatal else "", percent=self.percent,
                          message=self.text or "…"))
             stalled = ConversionStalled(now - self._active, self.fatal)
-            stalled.position = self.suspects()
+            stalled.position, stalled.phase = self.suspects(), self.phase
             raise stalled
 
     def _find_fatal(self) -> None:

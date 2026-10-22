@@ -236,6 +236,7 @@ def convert(
     blocks: bool = False,
     checkpoint_dir: str | Path | None = None,
     envelope: bool = False,
+    hull_kernel: str | None = None,
 ) -> ConversionResult:
     """Convert an IFC file to GLB, OBJ (plus .mtl), Rhino 3DM or DAE and return what was written.
 
@@ -244,7 +245,8 @@ def convert(
 
     ``geometry`` ("brep" or "mesh") and ``blocks`` (type geometry placed several times as Rhino
     blocks) only affect the Rhino export. With ``envelope`` only the building hull is converted:
-    products inside the building are left out (see envelope.select). ``kernel`` picks the geometry
+    products inside the building are left out (see envelope.select; ``hull_kernel`` "opencascade" does
+    its rough pre-computation with OpenCASCADE instead of the hybrid kernel). ``kernel`` picks the geometry
     kernel (see KERNELS); by default IFC_CONVERTER_KERNEL or DEFAULT_KERNEL. ``status`` gets the
     phases (see StatusCallback). Output for a network folder is written in ``staging_dir`` (or a
     temp folder) first and then copied. ``position``, ``isolate_ids`` and ``skip_ids`` let a caller
@@ -336,6 +338,7 @@ def convert(
         selection = hull.select(
             model, threads, shape_products(model, EXCLUDED_CLASSES), report,
             (lambda percent: progress(percent * ENVELOPE_SHARE // 100)) if progress else None,
+            **({"kernel": hull_kernel} if hull_kernel else {}),  # only when asked: stand-ins take five arguments
         )
         selected_token = _selected.set(selection.keep)
         report("note", selection.note)

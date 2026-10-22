@@ -144,6 +144,8 @@ TEXTS: dict[str, str] = {
         "{what} przy {label}. {again}, ten element zostanie pominięty …",
     "{what} at one element. {again}, it is computed first and on its own …":
         "{what} przy jednym elemencie. {again}, zostanie obliczony najpierw i osobno …",
+    "{what} in the hull's rough pre-computation. {again} with OpenCASCADE for the pre-computation …":
+        '{what} we wstępnym obliczeniu powłoki. {again} z OpenCASCADE dla wstępnego obliczenia …',
     "{what} at one of {count} elements. {again}, these are computed first and on their own to find the affected "
     "one …":
         "{what} przy jednym z {count} elementów. {again}, zostaną obliczone najpierw i osobno, aby znaleźć ten "

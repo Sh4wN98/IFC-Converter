@@ -134,6 +134,9 @@ def write_anonymized_log(target: Path) -> Path:
         raise FileNotFoundError(f"Es gibt noch keine Logdatei in {log_dir()}")
     anonymizer = Anonymizer()
     text = "".join(anonymizer.text(path.read_text(encoding="utf-8", errors="replace")) for path in files)
+    crash = log_dir() / "crash.log"  # native crashes of the window (see enable_crash_log), if any
+    if crash.is_file():
+        text += "\n===== crash.log =====\n" + anonymizer.text(crash.read_text(encoding="utf-8", errors="replace"))
     target = Path(target)
     target.write_text(text, encoding="utf-8")
     return target

@@ -483,3 +483,19 @@ def spin_silently_in_geometry(input_path, output_path, fmt, threads, progress=No
     Path(output_path).write_text(str(isolate_ids))
     progress(100)
     return ConversionResult(output=Path(output_path), elements=1)
+
+
+def stall_in_hull_unless_opencascade(input_path, output_path, fmt, threads, progress=None, status=None, position=None,
+                                     hull_kernel=None, **options):
+    """Compute without a word in the hull's rough pre-computation, like the hybrid kernel on a 1.5 GB
+    model; with OpenCASCADE for the pre-computation (the retry) the conversion finishes."""
+    _record_attempt(output_path, hull_kernel)
+    progress(0)
+    status("envelope", "Gebäudehülle wird bestimmt (Geometrie grob vorberechnet) …")
+    position("chunk", [1, 2], "")
+    if hull_kernel != "opencascade":
+        while True:
+            sum(range(10000))
+    Path(output_path).write_text("done")
+    progress(100)
+    return ConversionResult(output=Path(output_path), elements=1)

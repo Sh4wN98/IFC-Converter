@@ -178,15 +178,17 @@ def select(
     products: list[ifcopenshell.entity_instance],
     report: Callable[[str, str], None] | None = None,
     progress: Callable[[int], None] | None = None,
+    kernel: str | None = None,
 ) -> Selection:
-    """Which of ``products`` are part of the hull; ``progress`` gets 0–100 for the coarse pass."""
+    """Which of ``products`` are part of the hull; ``progress`` gets 0–100 for the coarse pass, which
+    uses the hybrid kernel unless ``kernel`` (or the conversion's strategy) says "opencascade"."""
     started = time.monotonic()
     ids = {product.id() for product in products}
     selection = Selection(keep=set(), total=len(products))
     if not products:
         return selection
     sampler = _Sampler(VOXEL, *budgets(), origin=_origin(model))
-    for shape in _coarse_shapes(model, threads, products, report, progress):
+    for shape in _coarse_shapes(model, threads, products, report, progress, **({"kernel": kernel} if kernel else {})):
         sampler.add(shape)
     coarse_seconds = time.monotonic() - started
     if report:
@@ -268,20 +270,21 @@ def _select_by_marks(selection: Selection, products: list, marks: dict[int, bool
     selection.inside = selection.marked + selection.fittings
 
 
-def _coarse_shapes(model, threads: int, products: list, report, progress):
+def _coarse_shapes(model, threads: int, products: list, report, progress, kernel: str | None = None):
     """The products' shapes from the coarse pass: hybrid kernel (unless OpenCASCADE was chosen
-    outright), coarse tolerance, world coordinates; nothing of it counts as the conversion's
-    (no checkpoint, no candidates, no second attempts, no "without geometry")."""
+    outright, or ``kernel`` asks for it after the hybrid kernel hung or crashed here), coarse
+    tolerance, world coordinates; nothing of it counts as the conversion's (no checkpoint, no
+    candidates, no second attempts, no "without geometry")."""
     settings = geom.settings()
     settings.set("mesher-linear-deflection", LINEAR_DEFLECTION)
     settings.set("mesher-angular-deflection", ANGULAR_DEFLECTION)
     settings.set("use-world-coords", True)
     settings.set("no-normals", True)
-    kernel = converter.kernel_strategy()
+    strategy = kernel or converter.kernel_strategy()
     # _hung None: a product the kernel hangs on is not skipped here but kept (unknown, see select).
     variables = (converter._kernel, converter._checkpoint, converter._candidates, converter._missing, converter._hung)
     tokens = [
-        converter._kernel.set("hybrid" if kernel != "opencascade" else kernel),
+        converter._kernel.set("hybrid" if strategy != "opencascade" else "opencascade"),
         converter._checkpoint.set(None), converter._candidates.set(None), converter._missing.set(None),
         converter._hung.set(None),
     ]
