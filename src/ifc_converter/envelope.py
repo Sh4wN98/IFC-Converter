@@ -190,7 +190,7 @@ def select(
         sampler.add(shape)
     coarse_seconds = time.monotonic() - started
     if report:
-        report("envelope", tr("Determining the building hull (searching for the outside air) …"))
+        report("fill", tr("Determining the building hull (searching for the outside air) …"))
     exposure = sampler.exposure()
     selection.voxel, selection.coarse = sampler.voxel, sampler.coarse
     selection.exposure = exposure

@@ -197,6 +197,12 @@ TEXTS: dict[str, str] = {
     "{message}: {size} written …": "{message}: {size} geschrieben …",
     'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message}':
         'Seit {minutes} min kein Fortschritt, obwohl die Umwandlung rechnet (CPU {cpu} s), {percent} %: {message}',
+    'The conversion has made no progress for {duration} although it is computing (the geometry kernel hangs)':
+        'Die Umwandlung hat seit {duration} keinen Fortschritt gemacht, obwohl sie rechnet (der Geometriekern hängt)',
+    'No progress for {minutes} min although the conversion is computing (CPU {cpu} s), {percent} %: {message} – the geometry kernel hangs, the conversion is restarted':
+        'Seit {minutes} min kein Fortschritt, obwohl die Umwandlung rechnet (CPU {cpu} s), {percent} %: {message} – der Geometriekern hängt, die Umwandlung wird neu gestartet',
+    '{count} elements of the chunk are computed again together, without the ones the geometry kernel hung on …':
+        '{count} Bauteile des Pakets werden noch einmal gemeinsam berechnet, ohne die, an denen der Geometriekern hängen blieb …',
     "No computing activity for {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}":
         "Keine Rechenaktivität seit {seconds} s (CPU {cpu} s){fatal}, {percent} %: {message}",
     " after {fatal}": " nach {fatal}",

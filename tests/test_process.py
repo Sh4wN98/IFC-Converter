@@ -513,16 +513,22 @@ def test_a_hang_after_a_fatal_error_is_stopped_within_a_minute(wall_ifc, tmp_pat
 def test_the_watchdog_ignores_time_the_computer_was_asleep(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "STALL_TIMEOUT", 600)
     monkeypatch.setattr(process, "tree_cpu_seconds", lambda pid: 5.0)
-    watch = process._Phases(tmp_path / "x.3dm", None, None, None)
+    from ifc_converter import converter
+
+    monkeypatch.setenv(converter.HANG_ENV, "1")
+    monkeypatch.setenv(process.MARGIN_ENV, "1")
+    watch = process._Phases(tmp_path / "x.3dm", None, None, None, fmt="3dm")
     watch.pid = 1
     watch.enter("geometry", "Geometrie …")
+    watch.locate("chunk", [1, 2], "")
     now = time.monotonic()
     watch._sampled = now - process.CPU_SAMPLE
     watch.tick()  # first sample: 5 s CPU
     watch._sampled -= 3600  # an hour of standby without CPU use
     watch._active -= 3600
-    watch.tick()  # not stopped
-    assert watch._active >= now
+    watch._changed -= 3600
+    watch.tick()  # not stopped, neither as idle nor as silent (the hour was no silence of the kernel)
+    assert watch._active >= now and watch._changed >= now
 
 
 def test_keep_awake_is_a_context_manager():
@@ -1011,3 +1017,83 @@ def test_a_long_silence_while_computing_is_logged(tmp_path, monkeypatch, caplog)
         cpu[0] = 20.0
         watch._check_stall(time.monotonic())
         assert "kein Fortschritt" in caplog.text
+
+
+def test_silence_limits_follow_the_hang_limit_of_the_pass(monkeypatch):
+    from ifc_converter import converter
+
+    monkeypatch.setenv(converter.HANG_ENV, "7")
+    monkeypatch.setenv(process.MARGIN_ENV, "3")
+    assert process.silence_limit("envelope", "3dm") == 10
+    assert process.silence_limit("geometry", "3dm") == process.silence_limit("deep", "glb") == 10
+    assert process.silence_limit("geometry", "preview") == 10
+    monkeypatch.delenv(converter.HANG_ENV)
+    assert process.silence_limit("envelope", "3dm") == converter.HANG_SECONDS["coarse"] + 3
+    assert process.silence_limit("geometry", "3dm") == converter.HANG_SECONDS["fine"] + 3
+    assert process.silence_limit("geometry", "preview") == converter.HANG_SECONDS["preview"] + 3
+    for phase in ("read", "fill", "write", "copy", ""):
+        assert process.silence_limit(phase, "3dm") is None
+
+
+def test_a_silence_longer_than_the_hang_limit_while_the_kernel_computes_counts_as_hung(tmp_path, monkeypatch, caplog):
+    # The child gives up a hung run itself after the hang limit and says so; silence beyond the limit
+    # plus the margin means it hangs where it cannot notice: it is ended, with the products not
+    # delivered yet as the suspects. Phases without the kernel (reading, the hull's fill) have no limit.
+    from ifc_converter import converter
+
+    monkeypatch.setenv(converter.HANG_ENV, "1")
+    monkeypatch.setenv(process.MARGIN_ENV, "0.5")
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 600)
+    cpu = [0.0]
+    monkeypatch.setattr(process, "tree_cpu_seconds", lambda pid: cpu[0])
+    watch = process._Phases(tmp_path / "x.glb", None, None, None, fmt="glb")
+    watch.pid = 1
+    watch.enter("fill", "Gebäudehülle wird bestimmt (Außenluft wird gesucht) …")
+    cpu[0] = 5.0
+    watch._check_stall(time.monotonic())  # first sample
+    time.sleep(1.6)
+    cpu[0] = 10.0
+    watch._check_stall(time.monotonic())  # no limit while filling
+    watch.enter("geometry", "Geometrie wird berechnet (2 Threads) …")
+    cpu[0] = 15.0
+    watch._check_stall(time.monotonic())
+    time.sleep(1.6)
+    cpu[0] = 20.0
+    watch._check_stall(time.monotonic())  # no chunk or element reported yet: set-up in plain Python
+    watch.locate("chunk", [1, 2, 3], "")
+    watch.locate("delivered", [2], "")
+    cpu[0] = 25.0
+    watch._check_stall(time.monotonic())
+    time.sleep(1.6)
+    cpu[0] = 30.0
+    with caplog.at_level(logging.ERROR, logger="ifc_converter.process"):
+        with pytest.raises(process.ConversionStalled, match="keinen Fortschritt gemacht, obwohl sie rechnet") as failure:
+            watch._check_stall(time.monotonic())
+    assert failure.value.silent and not failure.value.fatal
+    assert failure.value.position == ("chunk", [1, 3], "")
+    assert "der Geometriekern hängt, die Umwandlung wird neu gestartet" in caplog.text
+
+
+def test_a_child_hanging_where_it_cannot_notice_is_ended_and_the_suspects_isolated(wall_ifc, tmp_path, monkeypatch,
+                                                                                   caplog):
+    from ifc_converter import converter
+
+    monkeypatch.setenv(converter.HANG_ENV, "0.5")
+    monkeypatch.setenv(process.MARGIN_ENV, "1")  # the child reads it too (its thread dump)
+    monkeypatch.setattr(process, "CPU_SAMPLE", 0.2)
+    monkeypatch.setattr(process, "STALL_TIMEOUT", 600)
+    target = tmp_path / "wall.glb"
+    messages = []
+    started = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        result = convert_in_child(wall_ifc, target, "glb", threads=2, on_retry=messages.append,
+                                  func=child_helpers.spin_silently_in_geometry)
+    assert time.monotonic() - started < 60
+    assert len(messages) == 1
+    assert "Hänger im Geometriekern bei einem Bauteil. Neuer Versuch (2. von höchstens 7), es wird zuerst und einzeln" \
+        in messages[0]
+    assert result.elements == 1 and target.read_text() == "[7]"
+    assert "der Geometriekern hängt, die Umwandlung wird neu gestartet" in caplog.text
+    # Before the parent ended it, the child wrote where its threads were, for the log.
+    assert "No progress reported for" in caplog.text and "threads of the conversion process" in caplog.text
+    assert "spin_silently_in_geometry" in caplog.text

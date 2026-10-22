@@ -309,9 +309,9 @@ def check_memory(path: Path) -> str | None:
 
 
 # Phases whose description is shown next to the percentage (terminal line and the window's row): the
-# hull's coarse geometry pass ("envelope", the first 25 %), deeply nested elements computed one by one,
-# writing and copying the output. See process.convert_in_child for the phases.
-DETAIL_PHASES = ("envelope", "deep", "write", "copy")
+# hull's coarse geometry pass ("envelope", the first 25 %) and its fill ("fill"), deeply nested elements
+# computed one by one, writing and copying the output. See process.convert_in_child for the phases.
+DETAIL_PHASES = ("envelope", "fill", "deep", "write", "copy")
 
 
 class ProgressLine:
