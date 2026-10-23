@@ -608,6 +608,23 @@ TEXTS: dict[str, str] = {
         'Zu wenig freier Platz im Temp-Ordner für eine Arbeitskopie der Datei ({needed} nötig, {free} frei).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Die IFC-Datei scheint abgeschnitten zu sein (kein END-ISO-10303-21 am Ende): die Ausgabe kann unvollständig sein.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'IFC-Datei(en) oder Ordner hier ins Fenster ziehen, dann Enter.',
+    'Finished files go to: {folder}': 'Fertige Dateien landen in: {folder}',
+    '{first} or {last}': '{first} oder {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Format wechseln: {formats} eingeben.  Beenden: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Abbrechen einer laufenden Umwandlung: Strg+C',
+    'Computing power: {resources}': 'Rechenleistung: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': 'Nur Gebäudehülle: innen liegende Bauteile (Innenwände, Möbel, Einrichtung, Leitungen) werden weggelassen.',
+    '[{fmt}] Drop a file here > ': '[{fmt}] Datei reinziehen > ',
+    'The format is {fmt} now.': 'Format ist jetzt {fmt}.',
+    '✗ No IFC file found: {path}': '✗ Keine IFC-Datei gefunden: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Ausgabeordner kann nicht angelegt werden: {error}',
+    '… converting {name}': '… {name} wird umgewandelt',
+    '■ Cancelled: {name}': '■ Abgebrochen: {name}',
+    ' ({count} more not converted)': ' ({count} weitere nicht umgewandelt)',
+    ', {count} without geometry': ', {count} ohne Geometrie',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Fertig: {output}  ({count} Bauteile{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "In den Ausgabeordner {folder} kann nicht geschrieben werden ({error})",
     "Show edges (E)": "Kanten anzeigen (E)",

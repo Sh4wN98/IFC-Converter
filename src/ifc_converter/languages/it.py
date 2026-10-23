@@ -606,6 +606,23 @@ TEXTS: dict[str, str] = {
         'Spazio libero insufficiente nella cartella temporanea per una copia di lavoro del file ({needed} necessari, {free} liberi).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Il file IFC sembra troncato (nessun END-ISO-10303-21 alla fine): l’output potrebbe essere incompleto.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'Trascinare file IFC o cartelle in questa finestra, poi Invio.',
+    'Finished files go to: {folder}': 'I file pronti vanno in: {folder}',
+    '{first} or {last}': '{first} o {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Cambiare formato: digitare {formats}.  Uscire: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Annullare una conversione in corso: Ctrl+C',
+    'Computing power: {resources}': 'Potenza di calcolo: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': "Solo involucro dell'edificio: gli elementi interni (pareti interne, arredi, impianti, tubazioni e condotte) vengono tralasciati.",
+    '[{fmt}] Drop a file here > ': '[{fmt}] Trascinare un file qui > ',
+    'The format is {fmt} now.': 'Il formato ora è {fmt}.',
+    '✗ No IFC file found: {path}': '✗ Nessun file IFC trovato: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Impossibile creare la cartella di output: {error}',
+    '… converting {name}': '… conversione di {name}',
+    '■ Cancelled: {name}': '■ Annullato: {name}',
+    ' ({count} more not converted)': ' ({count} altri non convertiti)',
+    ', {count} without geometry': ', {count} senza geometria',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Finito: {output}  ({count} elementi{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Impossibile scrivere nella cartella di output {folder} ({error})",
     "Show edges (E)": "Mostra spigoli (E)",

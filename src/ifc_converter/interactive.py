@@ -15,7 +15,7 @@ from urllib.request import url2pathname
 from ifc_converter import __version__
 from ifc_converter.app import APP_NAME, log_path
 from ifc_converter.converter import FORMATS, INPUT_SUFFIXES, ConversionResult, memory_warning
-from ifc_converter.i18n import tr
+from ifc_converter.i18n import decimal_text, tr  # noqa: F401 - decimal_text is used from here, too
 from ifc_converter.process import auto_threads, convert_in_child
 
 # A dropped path is either quoted ("..." or '...') or a run of non-space characters,
@@ -267,12 +267,6 @@ def rhino_workers(threads: int) -> int:
         return 0
 
 
-def decimal_text(value: float, digits: int = 1) -> str:
-    """A number with ``digits`` decimals and the language's decimal mark, e.g. "12.3" or "12,3"."""
-    integer, _, fraction = f"{value:.{digits}f}".partition(".")
-    return tr("{integer}.{fraction}", integer=integer, fraction=fraction) if fraction else integer
-
-
 def duration_text(seconds: float) -> str:
     """A duration in the user's language, e.g. "12,3 s", "52 min 2 s" or "1 h 5 min"."""
     if seconds < 60:
@@ -471,20 +465,20 @@ def run(
     print("=" * 60)
     print(f"  {APP_NAME} {__version__}")
     print("=" * 60)
-    print("  IFC-Datei(en) oder Ordner hier ins Fenster ziehen, dann Enter.")
-    print(f"  Fertige Dateien landen in: {output_dir}")
-    formats = ", ".join(f"'{name}'" for name in FORMATS[:-1]) + f" oder '{FORMATS[-1]}'"
-    print(f"  Format wechseln: {formats} eingeben.  Beenden: 'q'")
-    print("  Abbrechen einer laufenden Umwandlung: Strg+C")
-    print(f"  Rechenleistung: {resource_text(auto_threads(), low_priority)}")
+    print("  " + tr("Drop IFC file(s) or folders into this window, then press Enter."))
+    print("  " + tr("Finished files go to: {folder}", folder=output_dir))
+    formats = tr("{first} or {last}", first=", ".join(f"'{name}'" for name in FORMATS[:-1]), last=f"'{FORMATS[-1]}'")
+    print("  " + tr("Change the format: enter {formats}.  Quit: 'q'", formats=formats))
+    print("  " + tr("Cancel a running conversion: Ctrl+C"))
+    print("  " + tr("Computing power: {resources}", resources=resource_text(auto_threads(), low_priority)))
     if envelope:
-        print("  Nur Gebäudehülle: innen liegende Bauteile (Innenwände, Möbel, Einrichtung, Leitungen) werden "
-              "weggelassen.")
+        print("  " + tr("Building hull only: elements inside the building (interior walls, furniture, fittings, pipes "
+                        "and ducts) are left out."))
     print()
 
     while True:
         try:
-            line = input(f"[{fmt.upper()}] Datei reinziehen > ")
+            line = input(tr("[{fmt}] Drop a file here > ", fmt=fmt.upper()))
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
@@ -496,25 +490,25 @@ def run(
             return 0
         if command in FORMATS:
             fmt = command
-            print(f"  Format ist jetzt {fmt.upper()}.\n")
+            print("  " + tr("The format is {fmt} now.", fmt=fmt.upper()) + "\n")
             continue
 
         files, rejected = collect_ifc_files(parse_dropped(line))
         for path in rejected:
-            print(f"  ✗ Keine IFC-Datei gefunden: {path}")
+            print("  " + tr("✗ No IFC file found: {path}", path=path))
 
         if files:
             try:
                 output_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                print(f"  ✗ Ausgabeordner kann nicht angelegt werden: {exc}")
+                print("  " + tr("✗ The output folder cannot be created: {error}", error=exc))
                 continue
         for number, source in enumerate(files):
             target = unique_path(output_dir / f"{source.stem}.{fmt}")
             warning = check_memory(source)
             if warning:
                 print(f"  ⚠ {warning}")
-            print(f"  … {source.name} wird umgewandelt")
+            print("  " + tr("… converting {name}", name=source.name))
             try:
                 result = convert_in_terminal(
                     source, target, fmt, geometry=geometry, label="    ",
@@ -523,15 +517,17 @@ def run(
                 )
             except KeyboardInterrupt:
                 rest = len(files) - number - 1
-                print(f"  ■ Abgebrochen: {source.name}" + (f" ({rest} weitere nicht umgewandelt)" if rest else ""))
+                print("  " + tr("■ Cancelled: {name}", name=source.name)
+                      + (tr(" ({count} more not converted)", count=rest) if rest else ""))
                 break
             except Exception as exc:
-                print(f"  ✗ Fehler bei {source.name}: {error_message(exc)}")
+                print("  " + tr("✗ Error in {file}: {error}", file=source.name, error=error_message(exc)))
                 print(f"    {failure_hint(is_internal_error(exc), str(log_path()))}")
                 continue
-            skipped = f", {result.skipped} ohne Geometrie" if result.skipped > 0 else ""
+            skipped = tr(", {count} without geometry", count=result.skipped) if result.skipped > 0 else ""
             inside = f", {inside_text(result.inside)}" if result.inside > 0 else ""
-            print(f"  ✓ Fertig: {result.output}  ({number_text(result.elements)} Bauteile{skipped}{inside})")
+            print("  " + tr("✓ Finished: {output}  ({count} elements{skipped}{inside})", output=result.output,
+                            count=number_text(result.elements), skipped=skipped, inside=inside))
             if result.crashed:
                 print(f"  ⚠ {crashed_warning(result.crashed)}")
             if result.skipped > 0:

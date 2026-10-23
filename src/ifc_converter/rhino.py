@@ -657,7 +657,14 @@ class _Builder:
                 self._pool = _pool(self._workers)
             batch.future = self._pool.submit(_build_batch, batch.jobs)
             batch.pool = self._pool
-        except Exception as exc:  # a broken pool, or workers that cannot be started at all
+        except concurrent.futures.BrokenExecutor as exc:
+            # A worker died since the last batch: the pool is replaced and this batch built one
+            # element at a time in a worker (see result), not in this process, where the element
+            # that killed the worker would take the conversion with it.
+            self._restart(exc)
+            batch.set_results(self._isolated(batch.jobs))
+            return
+        except Exception as exc:  # workers cannot be started at all
             self._broken(exc)
             batch.set_results(_build_batch(batch.jobs))
             return
@@ -1372,7 +1379,19 @@ def _user_strings(
     psets.update({name: values for name, values in quantities.items() if _standard_quantities(name)})
     for pset, properties in psets.items():
         for prop, value in properties.items():
-            if prop == "id" or not isinstance(value, (str, int, float, bool)):
+            if prop == "id":
+                continue
+            if isinstance(value, list):  # enumerated and list values
+                value = ", ".join(str(getattr(item, "wrappedValue", item)) for item in value)
+            elif isinstance(value, dict):  # bounded, table and complex values: one text per part
+                for part, item in value.items():
+                    item = getattr(item, "wrappedValue", item)  # IfcReal(2.5) and the like
+                    if part in ("id", "type", "Name", "Description") or not isinstance(item, (str, int, float, bool)):
+                        continue
+                    text = _float_text(item) if isinstance(item, float) else str(item)
+                    strings[f"{pset}.{prop}.{part}"] = text[:MAX_STRING_LENGTH]
+                continue
+            if not isinstance(value, (str, int, float, bool)):
                 continue
             if isinstance(value, str) and _placeholder(value, prop):
                 continue
@@ -1413,8 +1432,9 @@ def _document_strings(model: ifcopenshell.file, source: Path | None) -> dict[str
     """The document user text: source file, schema, project and georeferencing.
 
     The geometry stays in the project coordinates; IfcMapConversion is given here so it can be
-    applied in Rhino. Eastings, northings and height in metres, the rotation of the project's x
-    axis from grid east in degrees (counter-clockwise).
+    applied in Rhino: eastings, northings and height in metres, the rotation of the project's x
+    axis from grid east in degrees (counter-clockwise), and the scale as it applies to the metre
+    geometry (east = Eastings + Scale · (cos r · x − sin r · y), all in metres).
     """
     strings = {}
     if source is not None:
@@ -1446,7 +1466,13 @@ def _document_strings(model: ifcopenshell.file, source: Path | None) -> dict[str
             strings["IfcMapConversion.XAxisOrdinate"] = _float_text(float(ordinate))
             strings["IfcMapConversion.Rotation"] = _float_text(math.degrees(math.atan2(ordinate, abscissa)))
         if getattr(conversion, "Scale", None) is not None:
-            strings["IfcMapConversion.Scale"] = _float_text(float(conversion.Scale))
+            # IFC: map = Eastings + Scale · project coordinates in the project's units. The geometry
+            # is in metres and so are the values here, so the factor is rescaled to apply to them.
+            try:
+                project_scale = unit_util.calculate_unit_scale(model)
+            except Exception:
+                project_scale = 1.0
+            strings["IfcMapConversion.Scale"] = _float_text(float(conversion.Scale) * scale / project_scale)
         if crs is not None and crs.Name:
             strings["IfcProjectedCRS.Name"] = crs.Name
     return {key: value[:MAX_STRING_LENGTH] for key, value in strings.items()}

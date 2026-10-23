@@ -225,8 +225,8 @@ source ~/.local/share/venvs/ifc-file-converter/bin/activate
 
 ifc-converter-gui                         # Programmfenster starten
 
-ifc-convert haus.ifc                      # → haus.glb
-ifc-convert haus.ifc -f obj               # → haus.obj + haus.mtl
+ifc-convert haus.ifc                      # → haus.glb (Knoten nach der GlobalId der Bauteile benannt)
+ifc-convert haus.ifc -f obj               # → haus.obj + haus.mtl (Gruppen nach der GlobalId benannt)
 ifc-convert haus.ifc -f dae               # → haus.dae (Collada, Netze mit Farben, Z nach oben, Meter)
 ifc-convert haus.ifczip                   # gepackte IFC wird direkt gelesen
 ifc-convert haus.ifc -f 3dm               # → haus.3dm (Rhino, Polyflächen)
@@ -244,6 +244,7 @@ Optionen:
 - `--envelope` (auch `--hull`): nur die Gebäudehülle – innen liegende Bauteile (Innenwände, Möbel, Einrichtung, Leitungen) werden weggelassen, die Ausgabe wird deutlich kleiner (siehe „Nur Gebäudehülle“); die Ergebniszeile nennt die Zahl der weggelassenen Bauteile („… inside left out“)
 - `-o, --output PFAD`: Ausgabedatei (nur bei einer Eingabedatei)
 - `-d, --out-dir ORDNER`: Ausgabeordner für mehrere Dateien
+- `--overwrite`: eine vorhandene Ausgabedatei ersetzen (Standard: ein freier Name wie `Name (2).3dm`, wie im Programmfenster)
 - `-j, --threads N`: Anzahl Threads für die Geometrie (Standard: automatisch wie im Programmfenster – zusammen mit den Hilfsprozessen der Rhino-Ausgabe etwa die Hälfte der Kerne, siehe „Rücksicht auf andere Programme“; `ifc-convert --help` zeigt die Zahl für diesen PC)
 - `--normal-priority`: mit normaler statt niedriger Priorität umwandeln
 - `--kernel {accurate,hybrid,opencascade}`: Geometriekern (Standard: `accurate`, siehe „Geometriekern“)

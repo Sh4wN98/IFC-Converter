@@ -21,7 +21,7 @@ import ifcopenshell.util.element
 import ifcopenshell.util.unit
 
 from ifc_converter import schema_bridge
-from ifc_converter.i18n import tr
+from ifc_converter.i18n import decimal_text, tr
 
 # Output formats: "3dm" has its own writer (rhino.py), the others are IfcOpenShell's serializers
 # (serializers.py, which says why e.g. glTF, USD and IGES are not among them).
@@ -460,7 +460,7 @@ def _deliver(staged: Path, output_path: Path, fmt: str, report: Callable[[str, s
     """Copy the staged output to the network folder in large blocks, reporting the progress.
 
     Each file is copied to "<name>.part" and renamed when complete, so the folder never holds a
-    half-written file under the real name; a failed copy is tried again COPY_ATTEMPTS times. If it
+    half-written file under the real name; a failed copy is tried again (with the waits of COPY_RETRY_WAITS). If it
     still fails, the staged output is moved to rescue_dir() rather than deleted with the staging
     folder, and the error says where it is.
     """
@@ -638,9 +638,10 @@ def merge_projects(model: ifcopenshell.file) -> str | None:
     survivor = next((project for project in projects if _unit_scales(project) != (None, None)), projects[0])
     note = None
     if len(scales) > 1:
+        # The GlobalId, not the name: the note goes to the log, which must stay free of project names.
         note = tr("The file holds {count} projects with different units; all of them are read with the units of "
                   "the first one ({name}). Please check the dimensions.", count=len(projects),
-                  name=survivor.Name or survivor.GlobalId)
+                  name=survivor.GlobalId)
     for project in projects:
         if project is survivor:
             continue
@@ -1070,6 +1071,10 @@ class _Pipeline:
             self.top_up(index)
         if not run.abandoned:
             self._alive.remove(run)
+            # The iterator (and with it the kernel's copy of every shape of the run) is freed now:
+            # the consumers took copies of the buffers. Kept until the end of iter_shapes, the runs
+            # together would hold the whole model's geometry, which the chunks are there to avoid.
+            run.source = None
 
     def hung(self, run: _Run) -> bool:
         """Abandon ``run`` if it has delivered nothing for ``hang_seconds`` while the kernel is still
@@ -1298,9 +1303,9 @@ def _produced(shape, produced: set[int]):
 def has_geometry(shape) -> bool:
     """Whether ``shape`` (triangulated, or native B-rep for the STEP/IGES serializers) is not empty."""
     geometry = shape.geometry
-    verts = getattr(geometry, "verts", None)
+    verts = getattr(geometry, "verts_buffer", None)  # the bytes, not .verts: that builds a tuple of every coordinate
     if verts is not None:
-        return bool(verts)
+        return len(verts) > 0
     return geometry.size() > 0  # native: the number of OpenCASCADE shapes
 
 
@@ -1701,7 +1706,7 @@ def memory_warning(input_path: str | Path) -> str | None:
 
 
 def _gb(size: int) -> str:
-    return f"{size / 1024 ** 3:.1f}".replace(".", ",")
+    return decimal_text(size / 1024 ** 3)
 
 
 def available_memory() -> int | None:

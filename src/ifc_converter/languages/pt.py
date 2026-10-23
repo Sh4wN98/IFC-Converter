@@ -609,6 +609,23 @@ TEXTS: dict[str, str] = {
         'Espaço livre insuficiente na pasta temporária para uma cópia de trabalho do ficheiro ({needed} necessários, {free} livres).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'O ficheiro IFC parece estar truncado (sem END-ISO-10303-21 no fim): a saída pode estar incompleta.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'Arraste ficheiros IFC ou pastas para esta janela e prima Enter.',
+    'Finished files go to: {folder}': 'Os ficheiros prontos ficam em: {folder}',
+    '{first} or {last}': '{first} ou {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Mudar o formato: escreva {formats}.  Sair: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Cancelar uma conversão em curso: Ctrl+C',
+    'Computing power: {resources}': 'Capacidade de cálculo: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': 'Só a envolvente do edifício: os elementos interiores (paredes interiores, mobiliário, equipamento, tubagens e condutas) são omitidos.',
+    '[{fmt}] Drop a file here > ': '[{fmt}] Arraste um ficheiro para aqui > ',
+    'The format is {fmt} now.': 'O formato agora é {fmt}.',
+    '✗ No IFC file found: {path}': '✗ Nenhum ficheiro IFC encontrado: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Não é possível criar a pasta de saída: {error}',
+    '… converting {name}': '… a converter {name}',
+    '■ Cancelled: {name}': '■ Cancelado: {name}',
+    ' ({count} more not converted)': ' ({count} mais não convertidos)',
+    ', {count} without geometry': ', {count} sem geometria',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Concluído: {output}  ({count} elementos{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Não é possível escrever na pasta de saída {folder} ({error})",
     "Show edges (E)": "Mostrar arestas (E)",

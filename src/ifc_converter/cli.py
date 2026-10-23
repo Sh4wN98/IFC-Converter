@@ -19,6 +19,7 @@ from ifc_converter.interactive import (
     failure_hint,
     is_internal_error,
     skipped_warning,
+    unique_path,
 )
 from ifc_converter.process import auto_threads
 
@@ -55,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     target = parser.add_mutually_exclusive_group()
     target.add_argument("-o", "--output", type=Path, help="output file (only with a single input)")
     target.add_argument("-d", "--out-dir", type=Path, help="directory for the converted files")
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="replace an output file that exists (default: a free name is used, \"name (2).3dm\", like the window does)",
+    )
     parser.add_argument(
         "-j", "--threads", type=int,
         help=f"geometry threads (default: automatic, {auto_threads()} on this PC; with the 3dm worker processes "
@@ -131,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.out_dir:
             target = args.out_dir / source.with_suffix(f".{args.format}").name
         else:
-            target = None
+            target = source.with_suffix(f".{args.format}")
+        if not args.overwrite:
+            target = unique_path(target)
 
         warning = check_memory(source)
         if warning:

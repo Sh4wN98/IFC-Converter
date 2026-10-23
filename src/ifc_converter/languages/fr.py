@@ -613,6 +613,23 @@ TEXTS: dict[str, str] = {
         'Pas assez d’espace libre dans le dossier temporaire pour une copie de travail du fichier ({needed} nécessaires, {free} libres).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Le fichier IFC semble tronqué (pas de END-ISO-10303-21 à la fin) : la sortie peut être incomplète.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'Glissez un ou plusieurs fichiers IFC ou dossiers dans cette fenêtre, puis Entrée.',
+    'Finished files go to: {folder}': 'Les fichiers terminés vont dans : {folder}',
+    '{first} or {last}': '{first} ou {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Changer de format : saisir {formats}.  Quitter : 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Annuler une conversion en cours : Ctrl+C',
+    'Computing power: {resources}': 'Puissance de calcul : {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': "Enveloppe du bâtiment seulement : les éléments à l'intérieur du bâtiment (cloisons, mobilier, équipements, conduites) sont omis.",
+    '[{fmt}] Drop a file here > ': '[{fmt}] Glissez un fichier ici > ',
+    'The format is {fmt} now.': 'Le format est maintenant {fmt}.',
+    '✗ No IFC file found: {path}': '✗ Aucun fichier IFC trouvé : {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Le dossier de sortie ne peut pas être créé : {error}',
+    '… converting {name}': '… conversion de {name}',
+    '■ Cancelled: {name}': '■ Annulé : {name}',
+    ' ({count} more not converted)': ' ({count} autres non convertis)',
+    ', {count} without geometry': ', {count} sans géométrie',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Terminé : {output}  ({count} éléments{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Impossible d'écrire dans le dossier de sortie {folder} ({error})",
     "Show edges (E)": "Afficher les arêtes (E)",

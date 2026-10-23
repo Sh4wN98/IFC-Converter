@@ -208,3 +208,32 @@ def test_placeholders_follow_the_language():
     # An Anonymizer keeps the placeholders of the language it was created in.
     assert anonymizer.line(r"C:\Users\mmuster\x.ifc") == r"C:\Users\<user>\File-3.ifc"
     assert Anonymizer(users=[USER], computers=[]).line(r"C:\Users\mmuster\x.ifc") == r"C:\Users\<Benutzer>\Datei-1.ifc"
+
+
+def test_paths_as_repr_renders_them_lose_their_names_too():
+    """OSError messages and argument lists show Windows paths with doubled backslashes."""
+    anonymizer = Anonymizer()
+    line = anonymizer.line(r"Fehler nach 12.3 s bei \\fileserver01\Projekte$\Meier\Neubau\Haus 1.ifc: PermissionError: "
+                           r"[WinError 5] Zugriff verweigert: '\\\\fileserver01\\Projekte$\\Meier\\Neubau\\Haus 1.3dm.part'")
+    assert line == (r"Fehler nach 12.3 s bei \\<Server>\<Freigabe>\<Ordner>\<Ordner>\Datei-1.ifc: PermissionError: "
+                    r"[WinError 5] Zugriff verweigert: '\\\\<Server>\\<Freigabe>\\<Ordner>\\<Ordner>\\Datei-1.3dm.part'")
+    assert anonymizer.line(r"PermissionError: [Errno 13] Permission denied: 'P:\\Kunden\\Meier & Söhne\\Haus 2.3dm.part'") \
+        == r"PermissionError: [Errno 13] Permission denied: 'P:\\<Ordner>\\<Ordner>\\Datei-2.3dm.part'"
+    assert anonymizer.line(r"Neustart: C:\Programme\x.exe ['C:\\Users\\mmuster\\Desktop\\Projekt Meier\\Haus A.ifc']") \
+        == r"Neustart: C:\<Ordner>\x.exe ['C:\\Users\\<Benutzer>\\Desktop\\<Ordner>\\Datei-3.ifc']"
+    assert anonymizer.line(r'  File "C:\\Users\\mmuster\\AppData\\Local\\IFC Converter\\_internal\\ifc_converter\\rhino.py", line 5') \
+        == r'  File "C:\\Users\\<Benutzer>\\AppData\\Local\\IFC Converter\\_internal\\ifc_converter\\rhino.py", line 5'
+
+
+def test_element_names_go_whatever_the_globalid_and_the_name_look_like():
+    anonymizer = Anonymizer()
+    assert anonymizer.line("  IfcWall 3f2504e0-4f89-11d3-9a0c-0305e82c3301 „Wand Kinderzimmer Max“") \
+        == "  IfcWall 3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    assert anonymizer.line("  IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Belag “Bad” Familie Muster“") \
+        == "  IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc"
+    assert anonymizer.line("Bauteil 1 von 10 wird einzeln berechnet: IfcWindow 3WrZ5WTjHFvwvTDAB7N_YD „Fenster Nord“ …") \
+        == "Bauteil 1 von 10 wird einzeln berechnet: IfcWindow 3WrZ5WTjHFvwvTDAB7N_YD …"
+
+
+def test_dae_is_a_known_output_file():
+    assert Anonymizer().line("Haus_B.dae wird umgewandelt") == "Datei-1.dae wird umgewandelt"

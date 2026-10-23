@@ -61,6 +61,12 @@ def set_language(code: str | None) -> str:
     return _language
 
 
+def decimal_text(value: float, digits: int = 1) -> str:
+    """A number with ``digits`` decimals and the language's decimal mark, e.g. "12.3" or "12,3"."""
+    integer, _, fraction = f"{value:.{digits}f}".partition(".")
+    return tr("{integer}.{fraction}", integer=integer, fraction=fraction) if fraction else integer
+
+
 def tr(text: str, **values) -> str:
     """``text`` (English) in the current language, with ``values`` filled in."""
     translated = _texts.get(text, text)

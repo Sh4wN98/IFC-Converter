@@ -1051,7 +1051,11 @@ def _gl_view_class() -> type:
             return buffer
 
         def _upload_edges(self, scene: _Scene) -> None:
-            """The feature edges as a second index buffer (once they are computed), outside the VAO."""
+            """The feature edges as a second index buffer (once they are computed).
+
+            Called with the VAO bound, whose element buffer binding is what gets bound here: the
+            mesh's index buffer is put back at the end, so the VAO never points at no buffer (then
+            the next glDrawElements would read its offset as an address and crash the window)."""
             gl = self._gl
             if gl["edges"] is not None:
                 gl["edges"].destroy()
@@ -1059,10 +1063,11 @@ def _gl_view_class() -> type:
             if scene.edges is not None and len(scene.edges):
                 segments = numpy.ascontiguousarray(scene.edges, numpy.uint32).reshape(-1)
                 gl["edges"] = self._buffer(QOpenGLBuffer.Type.IndexBuffer, segments)
-                gl["edges"].release()
                 error = gl["f"].glGetError()
                 if error:
                     raise RuntimeError(f"OpenGL-Fehler 0x{error:04X} beim Hochladen der Kanten")
+            if gl["index"] is not None:
+                gl["index"].bind()
             self._uploaded_edges = scene.edges
 
         def _paint(self) -> None:

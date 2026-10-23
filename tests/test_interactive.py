@@ -141,6 +141,18 @@ def test_cli_shows_progress_on_a_terminal(wall_ifc, tmp_path, monkeypatch):
     assert re.search(r"\r +\r✓ .*wall\.ifc → .*wall\.glb \(1 elements\)\n$", text)
 
 
+def test_cli_uses_a_free_name_unless_told_to_overwrite(wall_ifc, tmp_path, capsys):
+    from ifc_converter.cli import main
+
+    existing = tmp_path / "wall.glb"
+    existing.write_bytes(b"keep")
+    assert main([str(wall_ifc), "-f", "glb", "-o", str(existing)]) == 0
+    assert existing.read_bytes() == b"keep" and (tmp_path / "wall (2).glb").read_bytes()[:4] == b"glTF"
+    assert "wall (2).glb" in capsys.readouterr().out
+    assert main([str(wall_ifc), "-f", "glb", "-o", str(existing), "--overwrite"]) == 0
+    assert existing.read_bytes()[:4] == b"glTF"
+
+
 def test_cli_prints_no_progress_when_redirected(wall_ifc, tmp_path, capsys):
     from ifc_converter.cli import main
 

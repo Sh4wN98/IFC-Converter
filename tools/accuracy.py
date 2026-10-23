@@ -62,7 +62,20 @@ MAX_SURFACE_QUERIES = 300
 # Grid cell (metres) for the nearest-vertex search.
 NEAREST_CELL = 1e-3
 
-_GUID_IN_NAME = re.compile(r"product-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+# An element's name in the output: its GlobalId (GLB nodes, OBJ groups) or, in COLLADA, the GlobalId
+# expanded to a UUID ("product-<uuid>-body").
+_GUID_IN_NAME = re.compile(
+    r"product-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    r"|(?<![0-9A-Za-z_$])([0-9A-Za-z_$]{22})(?![0-9A-Za-z_$])"
+)
+
+
+def _guid_in(text: str) -> str | None:
+    """The GlobalId named in ``text``, or None."""
+    match = _GUID_IN_NAME.search(text)
+    if not match:
+        return None
+    return _compress(match.group(1)) if match.group(1) else match.group(2)
 
 
 # ------------------------------------------------------------------------------------- geometry
@@ -408,8 +421,7 @@ def read_glb(path: Path, wanted: set[str]) -> tuple[dict[str, list[Shape]], dict
         if "mesh" not in node:
             continue
         info["max_translation"] = max(info["max_translation"], float(numpy.abs(matrix[:3, 3]).max()))
-        match = _GUID_IN_NAME.search(node.get("name", ""))
-        guid = _compress(match.group(1)) if match else None
+        guid = _guid_in(node.get("name", ""))
         if guid not in wanted:
             continue
         for primitive in gltf["meshes"][node["mesh"]]["primitives"]:
@@ -479,8 +491,7 @@ def read_obj(path: Path, wanted: set[str]) -> tuple[dict[str, list[Shape]], dict
                     faces.extend((corners[0], corners[k], corners[k + 1]) for k in range(1, len(corners) - 1))
             elif tag == b"g ":
                 flush()
-                match = _GUID_IN_NAME.search(line.decode("utf-8", "replace"))
-                candidate = _compress(match.group(1)) if match else None
+                candidate = _guid_in(line.decode("utf-8", "replace"))
                 guid = candidate if candidate in wanted else None
                 points, first, faces = [], count, []
     flush()
@@ -565,8 +576,7 @@ def iter_dae(path: Path, info: dict):
             translation = numpy.eye(4)
             translation[:3, 3] = [float(v) for v in t.text.split()]
             matrix = matrix @ translation
-        match = _GUID_IN_NAME.search(node.get("id", "") + " " + node.get("name", ""))
-        guid = _compress(match.group(1)) if match else None
+        guid = _guid_in(node.get("id", "") + " " + node.get("name", ""))
         for instance in node.findall("c:instance_geometry", ns):
             for points, indices in geometries.get(instance.get("url").lstrip("#"), []):
                 placed = points @ matrix[:3, :3].T + matrix[:3, 3]
