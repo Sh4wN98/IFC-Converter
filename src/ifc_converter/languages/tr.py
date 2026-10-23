@@ -471,6 +471,10 @@ TEXTS: dict[str, str] = {
     "Take the selected files off the list (Del). The files themselves are left untouched.": "Seçilen dosyaları listeden çıkarır (Del). Dosyaların kendisine dokunulmaz.",
     "Clear list": "Listeyi temizle",
     "Take all files off the list.": "Tüm dosyaları listeden çıkarır.",
+    'Try the skipped elements again ({count} remembered for this file)':
+        'Atlanan öğeleri yeniden dene (bu dosya için {count} tanesi hatırlanıyor)',
+    '{count} remembered skipped elements of {name} forgotten; they are tried again at the next conversion':
+        '{name} dosyasının hatırlanan {count} atlanmış öğesi unutuldu; bir sonraki dönüştürmede yeniden denenecekler',
     "Skipped elements…": "Atlanan elemanlar…",
     "Lists the elements of the selected file that were not converted, with class, GlobalId and name (also by right-clicking the row).": "Seçilen dosyanın dönüştürülmeyen elemanlarını sınıf, GlobalId ve adıyla listeler (satıra sağ tıklayarak da).",
     "Drag to divide the room between list and preview": "Sürükleyin: liste ile önizleme arasındaki alanı paylaştırın",

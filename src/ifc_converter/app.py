@@ -12,6 +12,7 @@ import os
 import platform
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
@@ -136,7 +137,9 @@ def write_anonymized_log(target: Path) -> Path:
     text = "".join(anonymizer.text(path.read_text(encoding="utf-8", errors="replace")) for path in files)
     crash = log_dir() / "crash.log"  # native crashes of the window (see enable_crash_log), if any
     if crash.is_file():
-        text += "\n===== crash.log =====\n" + anonymizer.text(crash.read_text(encoding="utf-8", errors="replace"))
+        crashes = crash.read_text(encoding="utf-8", errors="replace")
+        if holds_a_crash(crashes):
+            text += "\n===== crash.log =====\n" + anonymizer.text(crashes)
     target = Path(target)
     target.write_text(text, encoding="utf-8")
     return target
@@ -192,20 +195,41 @@ def stop_logging() -> None:
         _handler = None
 
 
+# crash.log is appended to (a crash must never be lost to a restart) and cut back to its last part
+# once it grows beyond this.
+CRASH_LOG_LIMIT, CRASH_LOG_KEEP = 256 * 1024, 64 * 1024
+
+
 def enable_crash_log() -> None:
     """Write the Python stack of a native crash (e.g. in Qt) to crash.log in the log folder.
 
     Without a console (pythonw, the installed app) such a crash would otherwise leave no trace.
+    faulthandler writes no time, so every start puts a dated header into the file: a crash below it
+    happened in that session (a header with nothing below it is no crash).
     """
     global _crash_file
     if _crash_file is not None:
         return
     try:
         log_dir().mkdir(parents=True, exist_ok=True)
-        _crash_file = open(log_dir() / "crash.log", "a", encoding="utf-8")  # noqa: SIM115 - must stay open
+        path = log_dir() / "crash.log"
+        if path.is_file() and path.stat().st_size > CRASH_LOG_LIMIT:
+            path.write_bytes(path.read_bytes()[-CRASH_LOG_KEEP:])
+        _crash_file = open(path, "a", encoding="utf-8")  # noqa: SIM115 - must stay open
+        _crash_file.write(crash_log_header())
+        _crash_file.flush()
         faulthandler.enable(file=_crash_file)
     except (OSError, RuntimeError, ValueError):
         _crash_file = None
+
+
+def crash_log_header(now: float | None = None) -> str:
+    return f"===== {APP_NAME} {__version__} started {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))} =====\n"
+
+
+def holds_a_crash(crash_log_text: str) -> bool:
+    """Whether crash.log holds more than the headers of the starts."""
+    return any(line.strip() and not line.startswith("=====") for line in crash_log_text.splitlines())
 
 
 def system_summary() -> str:

@@ -99,7 +99,14 @@ from ifc_converter.interactive import (
     unique_path,
 )
 from ifc_converter.preview_pane import PreviewPane
-from ifc_converter.process import RETRY_MESSAGE, Cancelled, convert_in_child, remove_stale_temp_files
+from ifc_converter.process import (
+    RETRY_MESSAGE,
+    Cancelled,
+    convert_in_child,
+    forget_quarantine,
+    remembered_elements,
+    remove_stale_temp_files,
+)
 
 # The app's name before it was renamed; its settings are taken over once (see open_settings()).
 LEGACY_NAME = "IFC File Converter"
@@ -1593,9 +1600,20 @@ class MainWindow(QMainWindow):
         folder = menu.addAction(tr("Open output folder"))
         folder.setEnabled(item.status is Status.DONE and item.output is not None)
         folder.triggered.connect(lambda: self._open_row_folder(row, 0))
+        remembered = remembered_elements(item.path)
+        forget = menu.addAction(tr("Try the skipped elements again ({count} remembered for this file)", count=remembered))
+        forget.setEnabled(remembered > 0 and not self.is_running)
+        forget.triggered.connect(lambda: self.forget_remembered(row))
         if item.status is Status.FAILED:
             menu.addAction(tr("Save log file…")).triggered.connect(lambda: save_log(self))
         menu.popup(self.table.viewport().mapToGlobal(position))
+
+    def forget_remembered(self, row: int) -> None:
+        """Forget the elements remembered as skipped for the file of ``row`` (see process.forget_quarantine)."""
+        item = self.queue[row]
+        count = forget_quarantine(item.path)
+        self.log(tr("{count} remembered skipped elements of {name} forgotten; they are tried again at the next "
+                    "conversion", count=count, name=item.path.name))
 
     def _open_row_folder(self, row: int, _column: int) -> None:
         item = self.queue[row]

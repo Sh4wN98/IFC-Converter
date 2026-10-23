@@ -470,6 +470,10 @@ TEXTS: dict[str, str] = {
     "Take the selected files off the list (Del). The files themselves are left untouched.": "Geselecteerde bestanden uit de lijst halen (Del). De bestanden zelf blijven onaangeroerd.",
     "Clear list": "Lijst wissen",
     "Take all files off the list.": "Alle bestanden uit de lijst halen.",
+    'Try the skipped elements again ({count} remembered for this file)':
+        'Overgeslagen elementen opnieuw proberen ({count} onthouden voor dit bestand)',
+    '{count} remembered skipped elements of {name} forgotten; they are tried again at the next conversion':
+        '{count} onthouden overgeslagen elementen van {name} vergeten; bij de volgende conversie worden ze opnieuw geprobeerd',
     "Skipped elements…": "Overgeslagen elementen…",
     "Lists the elements of the selected file that were not converted, with class, GlobalId and name (also by right-clicking the row).": "Toont de elementen van het geselecteerde bestand die niet zijn geconverteerd, met klasse, GlobalId en naam (ook via rechtsklik op de rij).",
     "Drag to divide the room between list and preview": "Slepen: ruimte verdelen tussen lijst en voorbeeld",

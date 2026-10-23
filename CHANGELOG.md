@@ -2,6 +2,11 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.9.8 – 2026-10-23
+
+- **Übersprungene Bauteile erneut versuchen:** Rechtsklick auf eine Datei → „Übersprungene Bauteile erneut versuchen (… für diese Datei gemerkt)“ vergisst die für diese Datei gemerkten Bauteile (alle Kern-Strategien); bei der nächsten Umwandlung werden sie wieder versucht. Der gemerkte Kern der Hüllen-Vorberechnung bleibt. Anlass: ein Fenster des 1,5-GB-Modells, das 0.9.3 noch beim Einzelrechnen mit dem hybriden Kern in Quarantäne setzte, fehlt seither in jeder Umwandlung, obwohl es mit OpenCASCADE vermutlich geht.
+- **crash.log mit Datum:** `faulthandler` schreibt keine Zeit, und die Datei wird nur angehängt; der Absturz vom 22.10. stand deshalb in jeder danach gespeicherten Logdatei, ohne dass man ihm ansah, wann er war. Jeder Programmstart schreibt jetzt eine Kopfzeile mit Version und Uhrzeit in die crash.log (ein Absturz steht darunter), die Datei wird bei über 256 KB auf die letzten 64 KB gekürzt, und „Logdatei speichern…“ hängt sie nur an, wenn sie mehr als Kopfzeilen enthält.
+
 ## 0.9.7 – 2026-10-23
 
 - **Gebäudehülle: pauschale IsExternal-Kennzeichnungen zählen nicht mehr.** Beim 1,5-GB-Modell behielt die Hülle alle 94.945 Bauteile: Die Luftsuche fand rund 29.700 exponiert, aber alle 65.197 übrigen sind in der Datei als IsExternal = True gekennzeichnet und wurden sicherheitshalber übernommen; 54 Minuten Rechenzeit ohne Nutzen. Sind mindestens 90 % der Bauteile, die die Außenluft nicht erreicht, so gekennzeichnet (und mindestens 50), sagt die Kennzeichnung nichts: Dann entscheidet allein die Luftsuche, und die Meldung zur Hülle nennt die Zahl („… als außen gekennzeichnete (IsExternal) ebenfalls weggelassen …“). Bei den anderen Modellen des Protokolls (60 %, 11 %, 4 %) bleibt alles wie bisher.

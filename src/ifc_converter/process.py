@@ -1128,6 +1128,10 @@ def save_quarantine(key: str | None, elements: dict[int, str], hull_kernel: str 
 
     for name in sorted(data, key=used)[:-QUARANTINE_FILES]:
         del data[name]
+    _write_quarantine(data)
+
+
+def _write_quarantine(data: dict) -> None:
     path = quarantine_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1136,6 +1140,41 @@ def save_quarantine(key: str | None, elements: dict[int, str], hull_kernel: str 
         os.replace(part, path)
     except OSError as exc:
         log.warning(tr("Skipped elements could not be saved ({path}): {error}", path=path, error=exc))
+
+
+def _file_prefix(input_path: str | Path) -> str | None:
+    """The start of the quarantine keys of ``input_path`` (whatever the kernel), or None if unreadable."""
+    try:
+        stat = os.stat(input_path)
+    except OSError:
+        return None
+    return f"{Path(input_path).name}|{stat.st_size}|{stat.st_mtime_ns}|"
+
+
+def remembered_elements(input_path: str | Path) -> int:
+    """How many elements are remembered as skipped for ``input_path``, over all kernel strategies."""
+    prefix = _file_prefix(input_path)
+    if not prefix:
+        return 0
+    return sum(len(load_quarantine(key)) for key in _read_quarantine() if key.startswith(prefix))
+
+
+def forget_quarantine(input_path: str | Path) -> int:
+    """Forget the elements remembered as skipped for ``input_path`` (they are tried again at the next
+    conversion); what else is remembered for it (the kernel of the hull's pre-computation) stays.
+    Returns how many elements were forgotten."""
+    prefix = _file_prefix(input_path)
+    if not prefix:
+        return 0
+    data = {name: entry for name, entry in _read_quarantine().items() if isinstance(entry, dict)}
+    forgotten = 0
+    for key, entry in data.items():
+        if key.startswith(prefix) and entry.get("elements"):
+            forgotten += len(load_quarantine(key))
+            entry["elements"] = {}
+    if forgotten:
+        _write_quarantine(data)
+    return forgotten
 
 
 def _staging_dir() -> str | None:

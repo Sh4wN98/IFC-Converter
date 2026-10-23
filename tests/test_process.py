@@ -619,6 +619,21 @@ def test_the_quarantine_key_belongs_to_one_unchanged_file(wall_ifc, tmp_path):
     assert key.endswith(f"|accurate|ifcopenshell {ifcopenshell.version}")
 
 
+def test_forgetting_a_file_s_quarantine_keeps_the_hull_kernel_and_other_files(wall_ifc, tmp_path, own_quarantine):
+    other = tmp_path / "other.ifc"
+    other.write_bytes(wall_ifc.read_bytes() + b"\n")
+    accurate, hybrid = process._quarantine_key(wall_ifc, "accurate"), process._quarantine_key(wall_ifc, "hybrid")
+    process.save_quarantine(accurate, {1: "IfcWall a", 2: "IfcWall b"}, hull_kernel="opencascade")
+    process.save_quarantine(hybrid, {3: "IfcWall c"})
+    process.save_quarantine(process._quarantine_key(other, "accurate"), {4: "IfcWall d"})
+    assert process.remembered_elements(wall_ifc) == 3 and process.remembered_elements(other) == 1
+    assert process.forget_quarantine(wall_ifc) == 3
+    assert process.remembered_elements(wall_ifc) == 0 and process.forget_quarantine(wall_ifc) == 0
+    assert process.load_quarantine(accurate) == {} and process.load_hull_kernel(accurate) == "opencascade"
+    assert process.load_quarantine(process._quarantine_key(other, "accurate")) == {4: "IfcWall d"}
+    assert process.remembered_elements(tmp_path / "missing.ifc") == 0 and process.forget_quarantine(tmp_path / "missing.ifc") == 0
+
+
 def test_the_quarantine_survives_a_broken_file_and_stays_small(own_quarantine):
     import json
 

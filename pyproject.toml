@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ifc-file-converter"
-version = "0.9.7"
+version = "0.9.8"
 license = {text = "GPL-3.0-or-later"}
 description = "Convert IFC building models to 3D formats (glTF/GLB, OBJ, Rhino 3DM)"
 readme = "README.md"
