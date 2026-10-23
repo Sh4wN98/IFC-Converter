@@ -2,6 +2,11 @@
 
 Der Abschnitt der jeweils neuesten Version wird als Text des GitHub-Releases verwendet.
 
+## 0.9.7 – 2026-10-23
+
+- **Gebäudehülle: pauschale IsExternal-Kennzeichnungen zählen nicht mehr.** Beim 1,5-GB-Modell behielt die Hülle alle 94.945 Bauteile: Die Luftsuche fand rund 29.700 exponiert, aber alle 65.197 übrigen sind in der Datei als IsExternal = True gekennzeichnet und wurden sicherheitshalber übernommen; 54 Minuten Rechenzeit ohne Nutzen. Sind mindestens 90 % der Bauteile, die die Außenluft nicht erreicht, so gekennzeichnet (und mindestens 50), sagt die Kennzeichnung nichts: Dann entscheidet allein die Luftsuche, und die Meldung zur Hülle nennt die Zahl („… als außen gekennzeichnete (IsExternal) ebenfalls weggelassen …“). Bei den anderen Modellen des Protokolls (60 %, 11 %, 4 %) bleibt alles wie bisher.
+- **Gebäudehülle: der Kern der Vorberechnung wird je Datei gemerkt.** Hängt der schnelle (hybride) Kern in der groben Vorberechnung oder stürzt er dort ab, wird das wie die übersprungenen Bauteile in `quarantine.json` gemerkt (gleiche Datei, gleiche Größe und Änderungszeit, gleicher Kern). Die nächste Umwandlung derselben Datei rechnet die Vorberechnung von Anfang an mit OpenCASCADE („Bekannt aus früheren Umwandlungen dieser Datei …“ im Protokoll) und spart die 10 Minuten bis zum Abbruch und die Wiederholung des Hängers: beim 1,5-GB-Modell 26 Minuten.
+
 ## 0.9.6 – 2026-10-23
 
 - **Absturz des Fensters beim Drehen der Vorschau behoben:** Die `crash.log` des Absturzes vom 22.10. (13:47) zeigt eine Zugriffsverletzung im Grafiktreiber beim Zeichnen der Vorschau. Ursache: Werden die Kanten eines großen Modells (im Hintergrund berechnet) fertig, lädt die Ansicht sie beim nächsten Bild in die Grafikkarte. Wurde das Modell in diesem Moment gerade gedreht, blieben die Kanten ungezeichnet und der Index-Puffer des Modells war nicht wieder eingehängt; das nächste Bild las dann von Adresse 0 und riss das Programm mit. Der Puffer wird jetzt nach dem Laden der Kanten immer wieder eingehängt; ein Test prüft den OpenGL-Zustand direkt.

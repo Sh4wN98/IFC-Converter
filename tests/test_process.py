@@ -1100,7 +1100,8 @@ def test_a_child_hanging_where_it_cannot_notice_is_ended_and_the_suspects_isolat
     assert "spin_silently_in_geometry" in caplog.text
 
 
-def test_a_hang_in_the_hull_pre_computation_is_retried_with_opencascade_for_it(wall_ifc, tmp_path, monkeypatch, caplog):
+def test_a_hang_in_the_hull_pre_computation_is_retried_with_opencascade_for_it(wall_ifc, tmp_path, monkeypatch, caplog,
+                                                                                own_quarantine):
     from ifc_converter import converter
 
     monkeypatch.delenv("IFC_CONVERTER_KERNEL", raising=False)
@@ -1118,3 +1119,16 @@ def test_a_hang_in_the_hull_pre_computation_is_retried_with_opencascade_for_it(w
     assert _attempts(target) == ["None", "opencascade"]
     assert result.elements == 1 and target.read_text() == "done"
     assert "stall_in_hull_unless_opencascade" in caplog.text  # the thread dump
+    # Remembered for the file: the next conversion starts with OpenCASCADE for the pre-computation.
+    assert process.load_hull_kernel(process._quarantine_key(wall_ifc, "accurate")) == "opencascade"
+    again, messages = tmp_path / "again.3dm", []
+    with caplog.at_level(logging.INFO, logger="ifc_converter.process"):
+        result = convert_in_child(wall_ifc, again, "3dm", threads=2, envelope=True, kernel="accurate",
+                                  on_retry=messages.append, func=child_helpers.stall_in_hull_unless_opencascade)
+    assert messages == [] and _attempts(again) == ["opencascade"] and result.elements == 1
+    assert "Bekannt aus früheren Umwandlungen dieser Datei: Die grobe Vorberechnung der Hülle rechnet OpenCASCADE" \
+        in caplog.text
+    # Without the hull option the memory does not matter, and it survives further saves.
+    process.save_quarantine(process._quarantine_key(wall_ifc, "accurate"), {7: "IfcWall x"})
+    assert process.load_hull_kernel(process._quarantine_key(wall_ifc, "accurate")) == "opencascade"
+    assert process.load_hull_kernel(process._quarantine_key(wall_ifc, "hybrid")) is None

@@ -91,6 +91,8 @@ TEXTS: dict[str, str] = {
         "omitidos (grelha {voxel} m)",
     "; {count} without pre-computed geometry taken over to be safe":
         "; {count} sem geometria pré-calculada mantidos por segurança",
+    "; {count} marked as exterior (IsExternal) left out as well: nearly every element the outside air does not reach is marked so, which tells nothing":
+        '; {count} marcados como exteriores (IsExternal) também omitidos: quase todos os elementos que o ar exterior não alcança têm essa marca, que nada diz',
     "; {count} marked as exterior (IsExternal) taken over":
         "; {count} marcados como exteriores (IsExternal) mantidos",
     "; {count} massing volumes (envelopes around the model) not counted as opaque":
@@ -154,6 +156,8 @@ TEXTS: dict[str, str] = {
         "Conversão: {input} ({size}) -> {output}, formato {fmt}, {threads} threads{options}{priority}",
     "(next to the IFC file)": "(junto ao ficheiro IFC)",
     ", normal priority": ", prioridade normal",
+    "Known from earlier conversions of this file: the hull's rough pre-computation is done with OpenCASCADE (the hybrid kernel hung or crashed there)":
+        'Conhecido de conversões anteriores deste ficheiro: o pré-cálculo grosseiro da envolvente é feito com OpenCASCADE (o núcleo híbrido bloqueou ou falhou aí)',
     "Known from earlier conversions of this file, skipped (the geometry kernel crashed on it or hung) ({count}):\n"
     "  {elements}":
         "Conhecidos de conversões anteriores deste ficheiro, ignorados (o núcleo geométrico falhou ou bloqueou "
