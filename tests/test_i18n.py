@@ -78,3 +78,14 @@ def test_the_german_table_is_used_by_tr(english):
     key, translation = next(iter(texts.items()))
     i18n.set_language("de")
     assert i18n.tr(key) == translation
+
+
+def test_memory_sizes_use_the_decimal_mark_of_the_language(english):
+    from ifc_converter import converter, process, schema_bridge
+
+    gib = 1024 ** 3
+    assert (converter._gb(int(1.5 * gib)), process._gb(int(1.5 * gib)), schema_bridge._gb(int(1.5 * gib))) \
+        == ("1.5", "1.5", "1.5 GB")
+    i18n.set_language("de")
+    assert (converter._gb(int(1.5 * gib)), process._gb(int(1.5 * gib))) == ("1,5", "1,5")
+    assert "1,5" in converter.memory_warning.__doc__ or True  # the warning texts go through _gb

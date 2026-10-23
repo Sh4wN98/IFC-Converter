@@ -45,6 +45,24 @@ def test_collada_holds_the_wall_in_metres_z_up(wall_ifc, tmp_path):
     assert numpy.allclose(_extent(numpy.array(coordinates).reshape(-1, 3)), WALL, atol=1e-6)
 
 
+def test_elements_are_named_by_their_globalid_and_obj_vertices_are_not_welded(wall_ifc, tmp_path):
+    import json
+
+    import ifcopenshell
+
+    guid = ifcopenshell.open(str(wall_ifc)).by_type("IfcWall")[0].GlobalId
+    convert(wall_ifc, tmp_path / "wall.glb", "glb", threads=2)
+    data = (tmp_path / "wall.glb").read_bytes()
+    length = struct.unpack("<I", data[12:16])[0]
+    assert guid in [node.get("name") for node in json.loads(data[20:20 + length])["nodes"]]
+    convert(wall_ifc, tmp_path / "wall.obj", "obj", threads=2)
+    text = (tmp_path / "wall.obj").read_text()
+    assert re.search(rf"^[go] {re.escape(guid)}\b", text, re.MULTILINE)
+    # A box with 6 faces: 4 corners per face, nothing shared (with "s 1" and no normals, welded
+    # vertices would be shaded smooth by importers that honour smoothing groups).
+    assert len(re.findall(r"^v ", text, re.MULTILINE)) == 24
+
+
 def test_an_ifczip_converts_like_the_ifc_inside(wall_ifc, tmp_path):
     zipped = tmp_path / "wall.ifczip"
     with zipfile.ZipFile(zipped, "w", zipfile.ZIP_DEFLATED) as archive:

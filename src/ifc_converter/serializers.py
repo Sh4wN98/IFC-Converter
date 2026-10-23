@@ -6,8 +6,10 @@ duplex, revit_arc, Clinic Architectural and an IFC4X3 bridge, see tests/test_for
 - ``glb``: binary glTF, triangle meshes, Y-up; each element is a node named after its GlobalId with
   its placement as the node matrix (so the single-precision vertices stay exact far from the
   origin). Streams through two temp files next to the output, limited to 4 GB by the format.
-- ``obj`` (+ ``.mtl``): triangle meshes in world coordinates with 15 digits; streams.
-- ``dae``: COLLADA 1.4.1, triangle meshes, Z-up, in metres, one node per element (name = GlobalId),
+- ``obj`` (+ ``.mtl``): triangle meshes in world coordinates with 15 digits, one group per element
+  named after its GlobalId; streams.
+- ``dae``: COLLADA 1.4.1, triangle meshes, Z-up, in metres, one node per element (id and name
+  "product-<the GlobalId as a UUID>-<context>", as XML ids cannot hold a GlobalId's "$"),
   materials from the IFC styles. The whole document is kept in memory and written at the end.
 
 Elements the kernel delivers inside out (mirrored type geometry, Revit's inward surface models) are
@@ -142,6 +144,14 @@ def write(
     serializer = SERIALIZERS[fmt]
     settings = geom.settings()
     settings.set("mesher-linear-deflection", converter.LINEAR_DEFLECTION)
+    # GLB nodes and OBJ groups named by the element's GlobalId (the default expands it to a UUID with
+    # a suffix, which cannot be searched for in the IFC); not in COLLADA, whose XML ids may not hold
+    # the "$" of a GlobalId. OBJ with its vertices unwelded: welded ones with "s 1" and no normals
+    # are shaded smooth across every edge by Blender, MeshLab & Co.
+    if fmt in ("glb", "obj"):
+        settings.set("use-element-guids", True)
+    if fmt == "obj":
+        settings.set("weld-vertices", False)
     if serializer.native:
         settings.set("iterator-output", NATIVE_OUTPUT)
         # The triangulating serializers place each element themselves (GLB: node matrices); the STEP

@@ -68,15 +68,19 @@ PACKAGE_MARKERS = {name.casefold() for name in ("site-packages", "_internal", "L
 # Extensions the converter reads and writes: a file name ends at the first of them, also when it
 # contains other dots ("Haus 1.2 final.ifc") and when text follows ("Haus.ifc (12 MB)").
 FILE_SUFFIXES = (
-    "ifczip", "ifcxml", "ifc", "3dm", "glb", "gltf", "obj", "mtl", "part", "tmp", "txt", "log", "ini", "zip",
-    "csv", "json",
+    "ifczip", "ifcxml", "ifc", "3dm", "glb", "gltf", "obj", "mtl", "dae", "part", "tmp", "txt", "log", "ini",
+    "zip", "csv", "json",
 )
 # Temp entries of the converter (process.py): generated names, nothing personal.
 OWN_TEMP_PREFIXES = ("ifc-converter-", "ifc-smoke-")
 
 # Where a path starts: a UNC path, a drive or (POSIX) a slash with at least two segments. Not inside
-# words or relative paths ("ifc_converter\\process.py", "1/2").
-_PATH_START = re.compile(r'(?<![\w.\\/$~-])(?:\\\\(?=[^\\\s])|[A-Za-z]:[\\/]|/(?=[^\s/"\'<>|]+/))')
+# words or relative paths ("ifc_converter\\process.py", "1/2"). Windows paths also as repr() renders
+# them, with every backslash doubled ("'\\\\\\\\server\\\\share\\\\x.3dm.part'" in an OSError, a list of
+# arguments): _path then reads two backslashes as one separator.
+_PATH_START = re.compile(
+    r'(?<![\w.\\/$~-])(?:\\\\(?:\\\\)?(?=[^\\\s])|[A-Za-z]:(?:\\\\|[\\/])|/(?=[^\s/"\'<>|]+/))'
+)
 # Characters that never occur in a path.
 _HARD_STOPS = set('"<>|*?\r\n\t„“”\'')
 # Text that ends a folder name: a path never continues after it.
@@ -95,11 +99,13 @@ def _pseudonym_pattern(file_word: str) -> re.Pattern[str]:
     return re.compile(rf"^{re.escape(file_word)}-\d+(?: \(\d+\))?(?:\.|$)")
 # A file name without a folder, e.g. in a message "Haus_A.ifc wird umgewandelt".
 _BARE_FILE = re.compile(
-    r"(?<![\w\\/<>.$~-])[\w$~-][^\s\\/\"„“”'<>|:*?,;()]*?\.(?:ifczip|ifcxml|ifc|3dm|glb|gltf|obj|mtl)(?![\w.])",
+    r"(?<![\w\\/<>.$~-])[\w$~-][^\s\\/\"„“”'<>|:*?,;()]*?\.(?:ifczip|ifcxml|ifc|3dm|glb|gltf|obj|mtl|dae)(?![\w.])",
     re.IGNORECASE,
 )
-# An element label "IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Name“" (converter.product_label): the name goes.
-_LABEL_NAME = re.compile(r"(\bIfc[A-Za-z0-9]+ [0-9A-Za-z_$]{22}) „[^“\n]*“")
+# An element label "IfcCovering 2ZLyRk6BAL6bNsO1TmDoEc „Name“" (converter.product_label): the name goes,
+# up to the last closing quote of the line (names hold quotes of their own), whatever the GlobalId
+# looks like (some exporters write UUIDs or other text there).
+_LABEL_NAME = re.compile(r"(\bIfc[A-Za-z0-9]+ \S+) „.*“")
 
 
 def own_identity() -> tuple[set[str], set[str]]:
@@ -203,7 +209,8 @@ class Anonymizer:
 
     def _path(self, line: str, start: int, prefix: str) -> tuple[int, str]:
         """Read the path at ``start``; returns where it ends and its anonymised form."""
-        separator = "\\" if prefix.startswith("\\") or "\\" in prefix else "/"
+        doubled = prefix.endswith("\\\\\\\\") or (prefix.endswith("\\\\") and prefix[1:2] == ":")  # repr() form
+        separator = ("\\\\" if doubled else "\\") if "\\" in prefix else "/"
         segments: list[str] = []
         position = start + len(prefix)
         while True:
@@ -213,7 +220,7 @@ class Anonymizer:
             segment = line[position:end]
             if end < len(line) and line[end] in "\\/" and _is_folder(segment):
                 segments.append(segment)
-                position = end + 1
+                position = end + (2 if doubled and line[end:end + 2] == "\\\\" else 1)
                 continue
             last = _last_name(segment)
             if last:
@@ -234,7 +241,7 @@ class Anonymizer:
             if names:
                 head.append(self.share)
                 parent, names = names[0], names[1:]
-            lead = "\\\\"
+            lead = prefix
         else:
             head, parent, names, lead = [], None, segments, prefix
         last = names[-1] if names else ""

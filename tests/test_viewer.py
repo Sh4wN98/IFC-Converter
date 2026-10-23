@@ -863,6 +863,33 @@ def test_edges_of_a_large_mesh_come_from_a_thread(make_view, monkeypatch, app):
     assert (numpy.abs(pixels_of(image).astype(int) - pixels_of(view.image()).astype(int)).max(axis=2) > 20).any()
 
 
+def test_edges_arriving_while_the_model_moves_leave_the_index_buffer_bound(make_view, monkeypatch, app):
+    """The edges' upload binds their buffer in the VAO; put back the mesh's index buffer even when the
+    edges are then not drawn (moving model), or the next frame reads its offset as an address (crash)."""
+    monkeypatch.setattr(viewer, "EDGES_IN_BACKGROUND", 10)
+    monkeypatch.setattr(viewer, "EDGES_WHILE_MOVING", 0)  # edges only on still frames
+    view = make_view(mesh=many_boxes(100))
+    if view.renderer_name != viewer.OPENGL:
+        pytest.skip("only OpenGL keeps index buffers")
+    renderer = view._renderer
+    assert view.wait_for_edges()
+    renderer.set_moving(True)
+    moving = pixels_of(view.image()).astype(int)  # the first frame with the edges: uploaded, not drawn
+    assert renderer._uploaded_edges is view._scene.edges
+    gl = renderer._gl
+    renderer.makeCurrent()
+    try:
+        gl["vao"].bind()
+        bound = gl["f"].glGetIntegerv(0x8895)  # GL_ELEMENT_ARRAY_BUFFER_BINDING
+        gl["vao"].release()
+    finally:
+        renderer.doneCurrent()
+    assert bound == gl["index"].bufferId()
+    renderer.set_moving(False)
+    still = pixels_of(view.image()).astype(int)
+    assert (numpy.abs(moving - still).max(axis=2) > 20).any()  # the still frame draws the edges
+
+
 def test_dark_palette_gives_the_dark_theme(make_view):
     view = make_view(mesh=two_boxes(), dark=True)
     assert view.theme is viewer.DARK_THEME

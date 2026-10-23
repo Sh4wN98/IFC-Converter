@@ -1,3 +1,4 @@
+import logging
 import contextvars
 import math
 import os
@@ -724,6 +725,31 @@ def test_overlapping_chunks_keep_the_threads_within_the_budget(many_walls_ifc, m
     assert max(busy) <= 8 // converter.OVERLAP_SHARE
 
 
+def test_a_finished_run_frees_its_iterator_before_the_next_ones_are_done(many_walls_ifc, monkeypatch):
+    """The kernel keeps every shape its iterator produced: a run that is finished with lets go of it,
+    else the runs together would hold the whole model's geometry until the end."""
+    from ifc_converter import converter, rhino
+
+    monkeypatch.setattr(converter, "chunk_size", lambda threads: 100)
+    monkeypatch.setattr(converter, "available_memory", lambda: 10 ** 12)
+    runs = []
+    start = converter._Pipeline.start
+
+    def recording_start(self, *args, **kwargs):
+        run = start(self, *args, **kwargs)
+        runs.append(run)
+        return run
+
+    monkeypatch.setattr(converter._Pipeline, "start", recording_start)
+    model = ifcopenshell.open(str(many_walls_ifc))
+    shapes = converter.iter_shapes(model, rhino._settings(), 4, rhino.EXCLUDED_CLASSES)
+    taken = [next(shapes) for _ in range(150)]
+    assert len(taken) == 150 and runs[0].finished and runs[0].source is None
+    assert any(run.source is not None for run in runs[1:])  # the ones still delivering keep theirs
+    assert len(taken + list(shapes)) == 600
+    assert len(runs) == 6 and all(run.source is None for run in runs)
+
+
 @pytest.fixture(scope="module")
 def holey_walls_ifc(tmp_path_factory):
     """400 walls of their own, each with 6 openings: seconds of OpenCASCADE booleans on 2 threads."""
@@ -943,7 +969,7 @@ def test_alignment_layout_parts_are_left_out_of_glb_and_obj(alignment_ifc, fmt, 
     import ifcopenshell.guid
 
     model = ifcopenshell.open(str(alignment_ifc))
-    classes = {ifcopenshell.guid.expand(p.GlobalId): p.is_a() for p in model.by_type("IfcProduct")}
+    classes = {p.GlobalId: p.is_a() for p in model.by_type("IfcProduct")}
     result = convert(alignment_ifc, tmp_path / f"alignment.{fmt}", fmt)
     if fmt == "obj":
         names = [line.split()[1] for line in result.output.read_text().splitlines() if line.startswith("g ")]
@@ -955,7 +981,7 @@ def test_alignment_layout_parts_are_left_out_of_glb_and_obj(alignment_ifc, fmt, 
             glb.read(12)
             length, _ = struct.unpack("<II", glb.read(8))
             names = [node["name"] for node in json.loads(glb.read(length))["nodes"] if "name" in node]
-    written = {classes[name.removeprefix("product-").rsplit("-", 1)[0].replace("-", "")] for name in names}
+    written = {classes[name] for name in names}  # the elements are named by their GlobalId
     assert names and written == {"IfcAlignment"}
 
 
@@ -1261,3 +1287,26 @@ def test_what_is_left_after_two_more_hangs_gets_a_fresh_run(many_walls_ifc, tmp_
         assert not any("nicht berechnet, weil der Geometriekern an ihrem Paket" in note for note in notes)
     finally:
         release.set()
+
+
+def test_replay_drops_an_unreadable_checkpoint_and_what_came_after_it(tmp_path, caplog):
+    """The chunks after an unreadable one are not replayed either, so they go and the next chunk
+    takes the free place: a further restart then replays what this attempt computes."""
+    import pickle
+
+    from ifc_converter.checkpoint import Checkpoint
+
+    for number, ids in enumerate(([1, 2], [3], [4, 5])):
+        with open(tmp_path / f"chunk-{number:06d}.bin", "wb") as file:
+            if number == 1:
+                file.write(b"not a checkpoint")
+            else:
+                pickle.dump((ids, []), file)
+    checkpoint = Checkpoint(tmp_path)
+    assert checkpoint._next == 3
+    with caplog.at_level(logging.WARNING, logger="ifc_converter.checkpoint"):
+        assert [ids for ids, _ in checkpoint.replay()] == [[1, 2]]
+    assert "chunk-000001.bin" in caplog.text
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["chunk-000000.bin"]
+    checkpoint.chunk_done([6])
+    assert [ids for ids, _ in Checkpoint(tmp_path).replay(shapes=False)] == [[1, 2], [6]]

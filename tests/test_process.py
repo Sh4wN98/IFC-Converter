@@ -922,7 +922,7 @@ def test_shapes_read_back_from_a_checkpoint_equal_the_kernels(alignment_ifc, tmp
         assert (copy.id, copy.context, bytes(copy.transformation_buffer)) == (real.id, real.context, bytes(real.transformation_buffer))
         assert (b.id, b.verts_buffer, b.faces_buffer, b.item_ids_buffer, b.material_ids_buffer) == (
             a.id, bytes(a.verts_buffer), bytes(a.faces_buffer), bytes(a.item_ids_buffer), bytes(a.material_ids_buffer))
-        assert bool(b.verts) == bool(a.verts)
+        assert bool(b.verts_buffer) == bool(a.verts_buffer)
         if not a.faces:
             assert b.edges == tuple(a.edges) and b.edges
         # repr: a missing transparency is NaN, which never equals itself

@@ -78,15 +78,15 @@ If a file fails, the log says where the details are (Help → Save log file…).
 - **Polysurfaces** (default): walls, slabs, windows, doors, beams etc. become closed, planar polysurfaces in metres; coplanar faces are merged, window and door openings are real holes. Faceted round things (pipes, ducts, round columns, reinforcement, sanitary objects), very detailed objects (over 1000 triangles) and Revit placeholders (RPC trees/people) stay meshes, as does anything that does not give a valid polysurface.
 - **Meshes:** every element becomes one mesh object – the smallest file and the fastest conversion. Round surfaces are shaded smooth, edges stay sharp.
 - **Curved surfaces** stay faceted, because Revit & Co. store them as triangles in the IFC already. The converter does not create NURBS surfaces.
-- **Layers** follow the spatial structure: `Storey::IfcClass` (e.g. `Ground floor::IfcWall`), with the building in front when a file holds several; bridges, roads and rail (IFC4.3): `Facility::Part::IfcClass`. Elements outside the structure go to `No storey`. Alignments (`IfcAlignment`) and grids (`IfcGrid`) become polylines.
+- **Layers** follow the spatial structure: `Storey::IfcClass` (e.g. `Ground floor::IfcWall`), with the building in front when a file holds several; bridges, roads and rail (IFC4.3): `Facility::Part::IfcClass`. Elements outside the structure go to `Ohne Geschoss` (the layer names are German and not translated, like `Achsen` for the axes and `Blockdefinitionen` for the blocks). Alignments (`IfcAlignment`) and grids (`IfcGrid`) become polylines.
 - **Object name** = IFC name, colour from the IFC material or style. An element with several materials (window: frame and glass) becomes one object per material, grouped under the element's name, so glass stays transparent. Assemblies (`IfcElementAssembly`, curtain walls, stairs, roofs made of parts) form a group named after the assembly.
-- **User text** on every object: GlobalId, IFC class, name, type name, `IfcPredefinedType`, `IfcObjectType`, `IfcTag` (e.g. the Revit element ID), storey, the property sets and the standard quantities (`BaseQuantities` / `Qto_…`: areas, volumes, lengths in m, m², m³). Placeholder values (“N/A”, “-”, “UNSET” …) and vendor quantity dumps (`ArchiCADQuantities`) are left out. Document user text holds the IFC file name, schema, project name and the georeferencing from `IfcMapConversion` if present.
-- **Blocks** (option, off by default; `--blocks`): type geometry shared by several elements (windows, doors, furniture) is stored once as a block definition and each element as a block instance with its own user text, layer and colour. Files get 20–45 % smaller, conversions with polysurfaces faster. Block instances must be exploded in Rhino before editing (`_Explode`); the block definitions sit on the layer `Block definitions`, which must stay visible.
+- **User text** on every object: GlobalId, IFC class, name, type name, `IfcPredefinedType`, `IfcObjectType`, `IfcTag` (e.g. the Revit element ID), storey, the property sets and the standard quantities (`BaseQuantities` / `Qto_…`: areas, volumes, lengths in m, m², m³). Placeholder values (“N/A”, “-”, “UNSET” …) and vendor quantity dumps (`ArchiCADQuantities`) are left out. Document user text holds the IFC file name, schema, project name and the georeferencing from `IfcMapConversion` if present (eastings, northings, height and scale as they apply to the metre geometry, rotation in degrees).
+- **Blocks** (option, off by default; `--blocks`): type geometry shared by several elements (windows, doors, furniture) is stored once as a block definition and each element as a block instance with its own user text, layer and colour. Files get 20–45 % smaller, conversions with polysurfaces faster. Block instances must be exploded in Rhino before editing (`_Explode`); the block definitions sit on the layer `Blockdefinitionen`, which must stay visible.
 - Written in the Rhino 7 format, opens in Rhino 7 and 8.
 
 ### GLB, OBJ, DAE
 
-Meshes with colours, Z up, metres. GLB stores every element around its insertion point, so georeferenced models keep full precision; OBJ writes coordinates with 15 digits. GLB is limited to 4 GB of output – use 3DM or OBJ for huge models.
+Meshes with colours, Z up, metres. GLB nodes and OBJ groups are named after the element's GlobalId (DAE: `product-<GlobalId as UUID>-body`, since XML ids cannot hold a `$`). GLB stores every element around its insertion point, so georeferenced models keep full precision; OBJ writes coordinates with 15 digits, with unwelded vertices so edges stay sharp in Blender & Co. GLB is limited to 4 GB of output – use 3DM or OBJ for huge models.
 
 ### Only the building hull
 
@@ -195,6 +195,7 @@ ifc-convert *.ifc -d output/               # several files into one folder
 | `--envelope`, `--hull` | only the building hull; the result line names the elements left out (“… inside left out”) |
 | `-o, --output PATH` | output file (one input file only) |
 | `-d, --out-dir FOLDER` | output folder for several files |
+| `--overwrite` | replace an existing output file (default: a free name such as `name (2).3dm`, like the window) |
 | `-j, --threads N` | geometry threads (default: automatic, about half the cores together with the helper processes; `ifc-convert --help` shows the number for this PC) |
 | `--normal-priority` | convert at normal instead of low priority |
 | `--kernel {accurate,hybrid,opencascade}` | geometry kernel (default `accurate`) |

@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ifc_converter.i18n import tr
+from ifc_converter.i18n import decimal_text, tr
 
 # The header is within the first bytes of any STEP file; 16 KB covers long FILE_DESCRIPTIONs.
 HEADER_BYTES = 16 * 1024
@@ -170,4 +170,4 @@ def bridged_copy(path: str | Path, bridge: Bridge) -> Bridged:
 
 
 def _gb(size: int) -> str:
-    return f"{size / 1024 ** 3:.1f} GB"
+    return decimal_text(size / 1024 ** 3) + " GB"

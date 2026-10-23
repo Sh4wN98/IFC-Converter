@@ -158,7 +158,7 @@ def test_cli_geometry_flag(wall_ifc, tmp_path):
     target = tmp_path / "wall.3dm"
     assert main([str(wall_ifc), "-f", "3dm", "-o", str(target), "--geometry", "mesh"]) == 0
     assert isinstance(_read(target).Objects[0].Geometry, rhino3dm.Mesh)
-    assert main([str(wall_ifc), "-f", "3dm", "-o", str(target)]) == 0
+    assert main([str(wall_ifc), "-f", "3dm", "-o", str(target), "--overwrite"]) == 0
     assert isinstance(_read(target).Objects[0].Geometry, rhino3dm.Brep)
     with pytest.raises(SystemExit):
         main([str(wall_ifc), "--geometry", "nurbs"])
@@ -543,6 +543,26 @@ def test_lengths_in_user_text_are_in_metres(tmp_path):
     assert strings["Custom.Thick"] == "0.02"
 
 
+def test_enumerated_list_and_bounded_values_become_user_text_too(mixed_ifc):
+    """IfcOpenShell gives them as lists and dicts; they used to be dropped without a word."""
+    import ifcopenshell
+    import ifcopenshell.api as api
+
+    model = ifcopenshell.open(str(mixed_ifc))
+    wall = model.by_type("IfcWall")[0]
+    pset = api.run("pset.add_pset", model, product=wall, name="Custom")
+    pset.HasProperties = [
+        model.createIfcPropertyEnumeratedValue("Status", None, [model.createIfcLabel("NEW"), model.createIfcLabel("EXISTING")], None),
+        model.createIfcPropertyListValue("Sizes", None, [model.createIfcInteger(1), model.createIfcInteger(2)], None),
+        model.createIfcPropertyBoundedValue("Load", None, model.createIfcReal(2.5), model.createIfcReal(1.5), None, None),
+    ]
+    strings = rhino._user_strings(wall, rhino._PropertySets(model))
+    assert strings["Custom.Status"] == "NEW, EXISTING"
+    assert strings["Custom.Sizes"] == "1, 2"
+    assert strings["Custom.Load.UpperBoundValue"] == "2.5" and strings["Custom.Load.LowerBoundValue"] == "1.5"
+    assert "Custom.Load" not in strings
+
+
 # ------------------------------------------------------------------------ user text
 
 
@@ -607,9 +627,11 @@ def test_document_user_text_names_source_schema_and_georeferencing(wall_ifc):
 
     model = ifcopenshell.open(str(wall_ifc))
     context = model.by_type("IfcGeometricRepresentationContext")[0]
-    millimetre = model.createIfcSIUnit(None, "LENGTHUNIT", "MILLI", "METRE")
-    crs = model.createIfcProjectedCRS("EPSG:25832", None, None, None, None, None, millimetre)
-    model.createIfcMapConversion(context, crs, 512345678.0, 5423456789.0, 312500.0, 0.0, 1.0, 1.0)
+    metre = model.createIfcSIUnit(None, "LENGTHUNIT", None, "METRE")
+    crs = model.createIfcProjectedCRS("EPSG:25832", None, None, None, None, None, metre)
+    # The project is in millimetres (the fixture's default units), the map in metres: a scale of
+    # 0.001 takes project coordinates to the map, as in the bSI infrastructure samples.
+    model.createIfcMapConversion(context, crs, 512345.678, 5423456.789, 312.5, 0.0, 1.0, 0.001)
     model.write(str(wall_ifc))
 
     strings = dict(_read(convert(wall_ifc, fmt="3dm").output).Strings)
@@ -621,6 +643,7 @@ def test_document_user_text_names_source_schema_and_georeferencing(wall_ifc):
     assert strings["IfcMapConversion.Northings"] == "5423456.789"
     assert strings["IfcMapConversion.OrthogonalHeight"] == "312.5"
     assert strings["IfcMapConversion.Rotation"] == "90.0"
+    # The scale as it applies to the metre geometry: the raw 0.001 belongs to millimetre coordinates.
     assert strings["IfcMapConversion.Scale"] == "1.0"
     assert strings["IfcProjectedCRS.Name"] == "EPSG:25832"
     # The coordinates stay in the project's own system.
@@ -809,11 +832,37 @@ def test_cli_blocks_flag(mixed_ifc, tmp_path):
     target = tmp_path / "mixed.3dm"
     assert main([str(mixed_ifc), "-f", "3dm", "-o", str(target), "--blocks"]) == 0
     assert len(_read(target).InstanceDefinitions) == 1
-    assert main([str(mixed_ifc), "-f", "3dm", "-o", str(target)]) == 0
+    assert main([str(mixed_ifc), "-f", "3dm", "-o", str(target), "--overwrite"]) == 0
     assert len(_read(target).InstanceDefinitions) == 0
 
 
 # --------------------------------------------------------------- crashing worker processes
+
+
+def test_a_pool_found_broken_when_submitting_is_replaced_and_its_batch_isolated(monkeypatch):
+    """A worker that died between two batches breaks the pool before the next submit: that batch
+    goes to a worker of its own, element by element, and the pool is started anew (not: everything
+    from here on in this process, where the element that killed the worker would end the conversion)."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    class Broken:
+        def submit(self, function, jobs):
+            raise BrokenProcessPool("a worker died")
+
+        def shutdown(self, **kwargs):
+            pass
+
+    made = []
+    monkeypatch.setattr(rhino, "_pool", lambda workers: made.append(workers) or Broken())
+    isolated = []
+    monkeypatch.setattr(rhino._Builder, "_build_isolated",
+                        lambda self, job: isolated.append(job[0]) or ("built", job[0]))
+    builder = rhino._Builder(workers=2)
+    deferred = [builder._submit((number, False, b"", b"", b"", b"")) for number in (1, 2)]
+    builder.flush()
+    assert isolated == [1, 2] and made == [2]
+    assert builder._workers == 2 and builder._restarts == 1 and builder._pool is None and not builder._in_process
+    assert builder.result(deferred[0]._batch) == [("built", 1), ("built", 2)]
 
 
 @pytest.mark.parametrize("mode", ["brep", "always"])

@@ -607,6 +607,23 @@ TEXTS: dict[str, str] = {
         'Te weinig vrije ruimte in de tijdelijke map voor een werkkopie van het bestand ({needed} nodig, {free} vrij).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Het IFC-bestand lijkt afgekapt (geen END-ISO-10303-21 aan het einde): de uitvoer kan onvolledig zijn.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'Sleep IFC-bestand(en) of mappen in dit venster en druk op Enter.',
+    'Finished files go to: {folder}': 'Klare bestanden komen in: {folder}',
+    '{first} or {last}': '{first} of {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Formaat wisselen: {formats} invoeren.  Afsluiten: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Een lopende conversie afbreken: Ctrl+C',
+    'Computing power: {resources}': 'Rekenkracht: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': 'Alleen gebouwschil: elementen binnen het gebouw (binnenwanden, meubels, inrichting, leidingen en kanalen) worden weggelaten.',
+    '[{fmt}] Drop a file here > ': '[{fmt}] Bestand hierheen slepen > ',
+    'The format is {fmt} now.': 'Het formaat is nu {fmt}.',
+    '✗ No IFC file found: {path}': '✗ Geen IFC-bestand gevonden: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Uitvoermap kan niet worden aangemaakt: {error}',
+    '… converting {name}': '… {name} wordt geconverteerd',
+    '■ Cancelled: {name}': '■ Afgebroken: {name}',
+    ' ({count} more not converted)': ' ({count} andere niet geconverteerd)',
+    ', {count} without geometry': ', {count} zonder geometrie',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Klaar: {output}  ({count} elementen{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Kan niet schrijven naar de uitvoermap {folder} ({error})",
     "Show edges (E)": "Randen tonen (E)",

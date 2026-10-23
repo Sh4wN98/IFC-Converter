@@ -31,7 +31,7 @@ from ifc_converter import converter, i18n
 from ifc_converter.converter import (
     DEFAULT_KERNEL, MAX_DEFAULT_THREADS, ConversionResult, ProgressCallback, convert, default_threads, size_text,
 )
-from ifc_converter.i18n import tr
+from ifc_converter.i18n import decimal_text, tr
 
 # "spawn" starts a fresh interpreter on every platform: no forked copy of the GUI's threads and
 # memory, and the same behaviour on Linux as on Windows and macOS (where it is the only/default way).
@@ -865,7 +865,7 @@ def _run_child(
 
 
 def _gb(size: int) -> str:
-    return f"{size / 1024 ** 3:.1f}".replace(".", ",")
+    return decimal_text(size / 1024 ** 3)
 
 
 def _memory_limit_message(limit: int) -> str:

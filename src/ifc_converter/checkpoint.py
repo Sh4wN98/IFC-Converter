@@ -47,14 +47,22 @@ class Checkpoint:
         """The finished chunks, in the order they were written: their product ids and their shapes.
 
         A file that cannot be read (e.g. the disk is full) ends the replay: what follows it is
-        computed again.
+        computed again, so it and the files after it go, and the next chunk takes its place (else
+        it would be written after them and never replayed either).
         """
-        for path in self._files():
+        files = self._files()
+        for index, path in enumerate(files):
             try:
                 with open(path, "rb") as file:
                     ids, records = _load(file)
             except (OSError, pickle.UnpicklingError, EOFError, ValueError, TypeError) as exc:
                 log.warning(tr("Checkpoint {name} not readable ({error}), computed again", name=path.name, error=exc))
+                for later in files[index:]:
+                    try:
+                        later.unlink()
+                    except OSError:
+                        pass
+                self._next = index
                 return
             yield ids, [_ReplayShape(*record) for record in records] if shapes else []
 
@@ -149,11 +157,6 @@ class _Geometry:
     @property
     def edges(self) -> tuple[int, ...]:
         return tuple(numpy.frombuffer(self.edges_buffer, dtype=numpy.int32).tolist())
-
-    @property
-    def verts(self) -> bytes:
-        """Only tested for emptiness, as the kernel's tuple of coordinates is."""
-        return self.verts_buffer
 
 
 class _ReplayShape:

@@ -608,6 +608,23 @@ TEXTS: dict[str, str] = {
         'Dosyanın çalışma kopyası için geçici klasörde yeterli boş alan yok ({needed} gerekli, {free} boş).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'IFC dosyası kesilmiş görünüyor (sonunda END-ISO-10303-21 yok): çıktı eksik olabilir.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'IFC dosyalarını veya klasörleri bu pencereye sürükleyin, sonra Enter.',
+    'Finished files go to: {folder}': 'Biten dosyalar şuraya gider: {folder}',
+    '{first} or {last}': '{first} veya {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Formatı değiştirmek için {formats} yazın.  Çıkış: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Süren bir dönüştürmeyi iptal etme: Ctrl+C',
+    'Computing power: {resources}': 'İşlem gücü: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': 'Yalnızca bina kabuğu: binanın içindeki öğeler (iç duvarlar, mobilya, donatı, borular ve kanallar) atlanır.',
+    '[{fmt}] Drop a file here > ': '[{fmt}] Dosyayı buraya sürükleyin > ',
+    'The format is {fmt} now.': 'Format artık {fmt}.',
+    '✗ No IFC file found: {path}': '✗ IFC dosyası bulunamadı: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Çıktı klasörü oluşturulamıyor: {error}',
+    '… converting {name}': '… {name} dönüştürülüyor',
+    '■ Cancelled: {name}': '■ İptal edildi: {name}',
+    ' ({count} more not converted)': ' ({count} tanesi daha dönüştürülmedi)',
+    ', {count} without geometry': ', {count} geometrisiz',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Bitti: {output}  ({count} öğe{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Çıktı klasörüne {folder} yazılamıyor ({error})",
     "Show edges (E)": "Kenarları göster (E)",

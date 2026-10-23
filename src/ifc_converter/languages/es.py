@@ -611,6 +611,23 @@ TEXTS: dict[str, str] = {
         'No hay suficiente espacio libre en la carpeta temporal para una copia de trabajo del archivo ({needed} necesarios, {free} libres).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'El archivo IFC parece estar truncado (sin END-ISO-10303-21 al final): la salida puede estar incompleta.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'Arrastre archivos IFC o carpetas a esta ventana y pulse Intro.',
+    'Finished files go to: {folder}': 'Los archivos terminados van a: {folder}',
+    '{first} or {last}': '{first} o {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Cambiar el formato: escriba {formats}.  Salir: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Cancelar una conversión en curso: Ctrl+C',
+    'Computing power: {resources}': 'Potencia de cálculo: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': 'Solo la envolvente del edificio: los elementos interiores (tabiques, mobiliario, equipamiento, tuberías y conductos) se omiten.',
+    '[{fmt}] Drop a file here > ': '[{fmt}] Arrastre un archivo aquí > ',
+    'The format is {fmt} now.': 'El formato ahora es {fmt}.',
+    '✗ No IFC file found: {path}': '✗ No se encontró ningún archivo IFC: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ No se puede crear la carpeta de salida: {error}',
+    '… converting {name}': '… convirtiendo {name}',
+    '■ Cancelled: {name}': '■ Cancelado: {name}',
+    ' ({count} more not converted)': ' ({count} más sin convertir)',
+    ', {count} without geometry': ', {count} sin geometría',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Terminado: {output}  ({count} elementos{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "No se puede escribir en la carpeta de salida {folder} ({error})",
     "Show edges (E)": "Mostrar aristas (E)",

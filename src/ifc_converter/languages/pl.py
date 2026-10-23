@@ -606,6 +606,23 @@ TEXTS: dict[str, str] = {
         'Za mało wolnego miejsca w folderze tymczasowym na kopię roboczą pliku (potrzeba {needed}, wolne {free}).',
     'The IFC file seems to be cut off (no END-ISO-10303-21 at its end): the output may be incomplete.':
         'Plik IFC wydaje się ucięty (brak END-ISO-10303-21 na końcu): wynik może być niekompletny.',
+    # interactive.py (drag-and-drop terminal mode)
+    'Drop IFC file(s) or folders into this window, then press Enter.': 'Przeciągnij plik(i) IFC lub foldery do tego okna, potem Enter.',
+    'Finished files go to: {folder}': 'Gotowe pliki trafiają do: {folder}',
+    '{first} or {last}': '{first} lub {last}',
+    "Change the format: enter {formats}.  Quit: 'q'": "Zmiana formatu: wpisz {formats}.  Wyjście: 'q'",
+    'Cancel a running conversion: Ctrl+C': 'Przerwanie trwającej konwersji: Ctrl+C',
+    'Computing power: {resources}': 'Moc obliczeniowa: {resources}',
+    'Building hull only: elements inside the building (interior walls, furniture, fittings, pipes and ducts) are left out.': 'Tylko powłoka budynku: elementy wewnątrz budynku (ściany wewnętrzne, meble, wyposażenie, rury i kanały) są pomijane.',
+    '[{fmt}] Drop a file here > ': '[{fmt}] Przeciągnij plik tutaj > ',
+    'The format is {fmt} now.': 'Format to teraz {fmt}.',
+    '✗ No IFC file found: {path}': '✗ Nie znaleziono pliku IFC: {path}',
+    '✗ The output folder cannot be created: {error}': '✗ Nie można utworzyć folderu wyjściowego: {error}',
+    '… converting {name}': '… konwersja {name}',
+    '■ Cancelled: {name}': '■ Przerwano: {name}',
+    ' ({count} more not converted)': ' ({count} kolejnych nie przekonwertowano)',
+    ', {count} without geometry': ', {count} bez geometrii',
+    '✓ Finished: {output}  ({count} elements{skipped}{inside})': '✓ Gotowe: {output}  ({count} elementów{skipped}{inside})',
     # interactive.py (night-app)
     "Cannot write to the output folder {folder} ({error})": "Nie można zapisać do folderu wyjściowego {folder} ({error})",
     "Show edges (E)": "Pokaż krawędzie (E)",
