@@ -658,6 +658,12 @@ def convert_in_child(
     if skipped:
         log.warning(tr("Known from earlier conversions of this file, skipped (the geometry kernel crashed on it or "
                        "hung) ({count}):\n  {elements}", count=len(skipped), elements="\n  ".join(skipped.values())))
+    if options.get("envelope") and not options.get("hull_kernel") and (hull_kernel := load_hull_kernel(quarantine)):
+        # The hybrid kernel hung or crashed in the hull's pre-computation of this file before (see
+        # _recover): OpenCASCADE does it from the start, instead of hanging for the limit once more.
+        options["hull_kernel"] = hull_kernel
+        log.warning(tr("Known from earlier conversions of this file: the hull's rough pre-computation is done with "
+                       "OpenCASCADE (the hybrid kernel hung or crashed there)"))
     checkpoint = _checkpoint_dir(input_path) if fmt == "3dm" else None
     try:
         with keep_awake():
@@ -677,10 +683,10 @@ def convert_in_child(
                 except (ConversionCrashed, ConversionStalled) as failure:
                     known = len(skipped)
                     skipped.update(hung)  # skipped at once in the next attempt, like crashed ones
-                    kernel_before = options.get("kernel")
+                    kernel_before, hull_before = options.get("kernel"), options.get("hull_kernel")
                     message = _recover(failure, options, isolate, skipped, attempt + 2, opencascade_first)
-                    if len(skipped) > known:
-                        save_quarantine(quarantine, skipped)
+                    if len(skipped) > known or options.get("hull_kernel") != hull_before:
+                        save_quarantine(quarantine, skipped, hull_kernel=options.get("hull_kernel"))
                     if message is None or attempt == MAX_RECOVERIES:
                         raise
                     if checkpoint and options.get("kernel") != kernel_before:
@@ -1095,15 +1101,26 @@ def load_quarantine(key: str | None) -> dict[int, str]:
     return known
 
 
-def save_quarantine(key: str | None, elements: dict[int, str]) -> None:
-    """Remember ``elements`` ({step id: label}) for the file with ``key``; errors are only logged."""
+def load_hull_kernel(key: str | None) -> str | None:
+    """The kernel remembered for the hull's rough pre-computation of the file with ``key`` ("opencascade"
+    once the hybrid kernel hung or crashed there), or None."""
+    entry = _read_quarantine().get(key) if key else None
+    kernel = entry.get("hull_kernel") if isinstance(entry, dict) else None
+    return kernel if kernel == "opencascade" else None
+
+
+def save_quarantine(key: str | None, elements: dict[int, str], hull_kernel: str | None = None) -> None:
+    """Remember ``elements`` ({step id: label}) and, if given, the kernel of the hull's pre-computation
+    for the file with ``key`` (else the one remembered stays); errors are only logged."""
     if not key:
         return
     data = {name: entry for name, entry in _read_quarantine().items() if isinstance(entry, dict)}
+    hull_kernel = hull_kernel or load_hull_kernel(key)
     data.pop(key, None)
     data[key] = {
         "elements": {str(id_): label for id_, label in list(elements.items())[:QUARANTINE_ELEMENTS]},
         "used": time.time(),
+        **({"hull_kernel": hull_kernel} if hull_kernel else {}),
     }
     def used(name: str) -> float:
         value = data[name].get("used")

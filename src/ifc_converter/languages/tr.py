@@ -90,6 +90,8 @@ TEXTS: dict[str, str] = {
         "dışarıda bırakıldı (ızgara {voxel} m)",
     "; {count} without pre-computed geometry taken over to be safe":
         "; ön hesaplanmış geometrisi olmayan {count} eleman güvenli tarafta kalmak için alındı",
+    "; {count} marked as exterior (IsExternal) left out as well: nearly every element the outside air does not reach is marked so, which tells nothing":
+        '; dış olarak işaretli (IsExternal) {count} öğe de atlandı: dış havanın ulaşmadığı hemen her öğe böyle işaretli, bu hiçbir şey söylemiyor',
     "; {count} marked as exterior (IsExternal) taken over":
         "; dış olarak işaretlenmiş (IsExternal) {count} eleman alındı",
     "; {count} massing volumes (envelopes around the model) not counted as opaque":
@@ -153,6 +155,8 @@ TEXTS: dict[str, str] = {
         "Dönüştürme: {input} ({size}) -> {output}, biçim {fmt}, {threads} iş parçacığı{options}{priority}",
     "(next to the IFC file)": "(IFC dosyasının yanına)",
     ", normal priority": ", normal öncelik",
+    "Known from earlier conversions of this file: the hull's rough pre-computation is done with OpenCASCADE (the hybrid kernel hung or crashed there)":
+        'Bu dosyanın önceki dönüştürmelerinden biliniyor: kabuğun kaba ön hesabı OpenCASCADE ile yapılıyor (hibrit çekirdek orada takıldı veya çöktü)',
     "Known from earlier conversions of this file, skipped (the geometry kernel crashed on it or hung) ({count}):\n"
     "  {elements}":
         "Bu dosyanın önceki dönüştürmelerinden biliniyor, atlanıyor (geometri çekirdeği bunlarda çöktü veya "

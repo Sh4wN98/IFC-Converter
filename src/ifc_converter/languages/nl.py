@@ -91,6 +91,8 @@ TEXTS: dict[str, str] = {
         "binnenliggende weggelaten (raster {voxel} m)",
     "; {count} without pre-computed geometry taken over to be safe":
         "; {count} zonder voorberekende geometrie voor de zekerheid overgenomen",
+    "; {count} marked as exterior (IsExternal) left out as well: nearly every element the outside air does not reach is marked so, which tells nothing":
+        '; {count} als buiten gemarkeerde (IsExternal) ook weggelaten: bijna elk element dat de buitenlucht niet bereikt is zo gemarkeerd, dat zegt niets',
     "; {count} marked as exterior (IsExternal) taken over":
         "; {count} als buiten gemarkeerd (IsExternal) overgenomen",
     "; {count} massing volumes (envelopes around the model) not counted as opaque":
@@ -154,6 +156,8 @@ TEXTS: dict[str, str] = {
         "Conversie: {input} ({size}) -> {output}, formaat {fmt}, {threads} threads{options}{priority}",
     "(next to the IFC file)": "(naast het IFC-bestand)",
     ", normal priority": ", normale prioriteit",
+    "Known from earlier conversions of this file: the hull's rough pre-computation is done with OpenCASCADE (the hybrid kernel hung or crashed there)":
+        'Bekend uit eerdere conversies van dit bestand: de grove voorberekening van de schil gebeurt met OpenCASCADE (de hybride kernel bleef daar hangen of crashte)',
     "Known from earlier conversions of this file, skipped (the geometry kernel crashed on it or hung) ({count}):\n"
     "  {elements}":
         "Bekend uit eerdere conversies van dit bestand, wordt overgeslagen (de geometriekern crashte erop of liep "

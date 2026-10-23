@@ -69,6 +69,12 @@ EXPOSURE = 0.0
 # property sets decide, since the fill sees every product from outside. (The count of products the
 # fill leaves out is no criterion: a shell model with nothing inside is closed all the same.)
 OPEN_HULL_AIR = 0.25
+# Products the fill does not reach but that are marked IsExternal = True are kept to be safe (a
+# window behind a canopy). When nearly every product the fill does not reach is marked so (at least
+# MARKS_UNTRUSTED of them, and at least MARKS_UNTRUSTED_MIN), the file marks everything external
+# (a 1.5 GB model: 65,197 of 65,197) and the marks tell nothing: the fill alone decides then.
+MARKS_UNTRUSTED = 0.9
+MARKS_UNTRUSTED_MIN = 50
 # Products whose centre lies further than this from the bulk of the model (survey points, stray
 # site elements kilometres away) are left out of the grid and kept as unknown: they would blow the
 # grid up without telling anything about the hull.
@@ -112,6 +118,7 @@ class Selection:
     inside: int = 0  # products left out as interior
     unknown: int = 0  # products without geometry in the coarse pass, kept to be safe
     flagged: int = 0  # products kept because IsExternal = True although not exposed
+    marks_ignored: int = 0  # products not exposed left out although IsExternal = True (see MARKS_UNTRUSTED)
     voxel: float = VOXEL  # the sampled cell actually used
     coarse: float = VOXEL * FINE  # the cell of the whole-model fill
     exposure: dict[int, float] = field(default_factory=dict)  # product id -> exposed share
@@ -143,6 +150,9 @@ class Selection:
             text += tr("; {count} without pre-computed geometry taken over to be safe", count=_count(self.unknown))
         if self.flagged:
             text += tr("; {count} marked as exterior (IsExternal) taken over", count=_count(self.flagged))
+        if self.marks_ignored:
+            text += tr("; {count} marked as exterior (IsExternal) left out as well: nearly every element the outside "
+                       "air does not reach is marked so, which tells nothing", count=_count(self.marks_ignored))
         if self.masses:
             text += tr("; {count} massing volumes (envelopes around the model) not counted as opaque",
                        count=_count(self.masses))
@@ -198,18 +208,10 @@ def select(
     selection.exposure = exposure
     selection.masses = len(sampler.masses)
     marks = external_marks(model)
-    for product_id in ids:
-        share = exposure.get(product_id)
-        if share is None:
-            selection.unknown += 1
-            selection.keep.add(product_id)
-        elif share > EXPOSURE:
-            selection.keep.add(product_id)
-        elif marks.get(product_id):
-            selection.flagged += 1
-            selection.keep.add(product_id)
-        else:
-            selection.inside += 1
+    _classify(selection, ids, exposure, marks)
+    if selection.flagged >= max(MARKS_UNTRUSTED_MIN, MARKS_UNTRUSTED * (selection.flagged + selection.inside)):
+        selection.marks_ignored = selection.flagged
+        _classify(selection, ids, exposure, {})
     if sampler.enclosed < OPEN_HULL_AIR * sampler.solid:
         _select_by_marks(selection, products, marks, exposure)
     for product in products:
@@ -225,6 +227,23 @@ def select(
         coarse_seconds=f"{coarse_seconds:.0f}", hull_seconds=f"{time.monotonic() - started - coarse_seconds:.0f}",
     ))
     return selection
+
+
+def _classify(selection: Selection, ids: set[int], exposure: dict[int, float], marks: dict[int, bool]) -> None:
+    """Sort the products into kept (exposed, unknown or marked external) and interior."""
+    selection.keep, selection.unknown, selection.flagged, selection.inside = set(), 0, 0, 0
+    for product_id in ids:
+        share = exposure.get(product_id)
+        if share is None:
+            selection.unknown += 1
+            selection.keep.add(product_id)
+        elif share > EXPOSURE:
+            selection.keep.add(product_id)
+        elif marks.get(product_id):
+            selection.flagged += 1
+            selection.keep.add(product_id)
+        else:
+            selection.inside += 1
 
 
 def _origin(model: ifcopenshell.file) -> numpy.ndarray | None:

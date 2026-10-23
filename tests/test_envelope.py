@@ -63,6 +63,36 @@ def _names(model, ids) -> set[str]:
     return {model.by_id(id_).Name for id_ in ids}
 
 
+def _mark_external(model, *names) -> None:
+    for product in model.by_type("IfcProduct"):
+        if product.Name in names:
+            psets = ifcopenshell.util.element.get_psets(product)
+            name = f"Pset_{product.is_a()[3:]}Common"
+            pset = model.by_id(psets[name]["id"]) if name in psets else api.run("pset.add_pset", model, product=product, name=name)
+            api.run("pset.edit_pset", model, pset=pset, properties={"IsExternal": True})
+
+
+def test_marks_that_cover_nearly_every_unexposed_element_are_ignored(house_ifc, monkeypatch):
+    """A file that marks everything IsExternal = True (seen on a 1.5 GB model: 65,197 of 65,197
+    unexposed elements) would keep the whole building: then the fill alone decides."""
+    model = ifcopenshell.open(str(house_ifc))
+    _mark_external(model, "Inner", "Table")  # both unexposed and marked: 2 of 2
+    products = shape_products(model, EXCLUDED_CLASSES)
+    selection = envelope.select(model, 2, products)
+    assert selection.flagged == 2 and selection.inside == 0 and not selection.marks_ignored  # too few to judge
+    monkeypatch.setattr(envelope, "MARKS_UNTRUSTED_MIN", 2)
+    selection = envelope.select(model, 2, products)
+    assert _names(model, selection.keep) == {"South", "North", "West", "East", "Floor", "Roof", "Column"}
+    assert (selection.flagged, selection.inside, selection.marks_ignored) == (0, 2, 2)
+    assert "2 als außen gekennzeichnete (IsExternal) ebenfalls weggelassen" in selection.note
+    # One unexposed element without the mark (1 of 3 marked): the marks still count.
+    monkeypatch.setattr(envelope, "MARKS_UNTRUSTED_MIN", 1)
+    pset = ifcopenshell.util.element.get_psets(next(p for p in products if p.Name == "Table"))["Pset_FurnitureCommon"]
+    api.run("pset.edit_pset", model, pset=model.by_id(pset["id"]), properties={"IsExternal": False})
+    selection = envelope.select(model, 2, products)
+    assert (selection.flagged, selection.inside, selection.marks_ignored) == (1, 1, 0)
+
+
 def test_the_hull_of_a_house(house_ifc):
     model = ifcopenshell.open(str(house_ifc))
     products = shape_products(model, EXCLUDED_CLASSES)

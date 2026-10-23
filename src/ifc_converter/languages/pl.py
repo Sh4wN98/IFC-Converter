@@ -91,6 +91,8 @@ TEXTS: dict[str, str] = {
         "{inside} wewnętrznych (siatka {voxel} m)",
     "; {count} without pre-computed geometry taken over to be safe":
         "; {count} bez wstępnie obliczonej geometrii przejęto dla bezpieczeństwa",
+    "; {count} marked as exterior (IsExternal) left out as well: nearly every element the outside air does not reach is marked so, which tells nothing":
+        '; {count} oznaczonych jako zewnętrzne (IsExternal) również pominięto: prawie każdy element, do którego powietrze zewnętrzne nie dociera, ma to oznaczenie, więc nic ono nie mówi',
     "; {count} marked as exterior (IsExternal) taken over":
         "; {count} oznaczonych jako zewnętrzne (IsExternal) przejęto",
     "; {count} massing volumes (envelopes around the model) not counted as opaque":
@@ -154,6 +156,8 @@ TEXTS: dict[str, str] = {
         "Konwersja: {input} ({size}) -> {output}, format {fmt}, wątki: {threads}{options}{priority}",
     "(next to the IFC file)": "(obok pliku IFC)",
     ", normal priority": ", normalny priorytet",
+    "Known from earlier conversions of this file: the hull's rough pre-computation is done with OpenCASCADE (the hybrid kernel hung or crashed there)":
+        'Znane z wcześniejszych konwersji tego pliku: zgrubne obliczenie wstępne powłoki wykonuje OpenCASCADE (jądro hybrydowe zawiesiło się tam lub uległo awarii)',
     "Known from earlier conversions of this file, skipped (the geometry kernel crashed on it or hung) ({count}):\n"
     "  {elements}":
         "Znane z wcześniejszych konwersji tego pliku, pomijane (jądro geometrii uległo na nich awarii lub się "
