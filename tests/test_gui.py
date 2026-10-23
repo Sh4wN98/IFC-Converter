@@ -121,6 +121,17 @@ def test_format_size():
     assert format_size(3 * 1024 * 1024) == "3,0 MB"
 
 
+def test_the_row_menu_forgets_the_remembered_skipped_elements_of_a_file(window, wall_ifc, tmp_path, monkeypatch):
+    monkeypatch.setattr(process, "quarantine_path", lambda: tmp_path / "state" / process.QUARANTINE_NAME)
+    process.save_quarantine(process._quarantine_key(wall_ifc, "accurate"), {1: "IfcWall a"}, hull_kernel="opencascade")
+    window.add_paths([wall_ifc])
+    assert process.remembered_elements(wall_ifc) == 1
+    window.forget_remembered(0)
+    assert process.remembered_elements(wall_ifc) == 0
+    assert process.load_hull_kernel(process._quarantine_key(wall_ifc, "accurate")) == "opencascade"
+    assert "1 gemerkte übersprungene Bauteile von wall.ifc vergessen" in window.log_view.toPlainText()
+
+
 def test_window_add_paths_updates_table(window, wall_ifc, tmp_path):
     other = tmp_path / "foto.jpg"
     other.write_text("x")

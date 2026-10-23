@@ -157,6 +157,34 @@ def test_anonymised_copy_of_all_log_files(user_dirs, monkeypatch):
     ]
 
 
+def test_the_crash_log_gets_a_dated_header_per_start_and_is_cut_back(user_dirs, monkeypatch):
+    enabled = []
+    monkeypatch.setattr(app.faulthandler, "enable", lambda file: enabled.append(file))
+    monkeypatch.setattr(app, "_crash_file", None)
+    logs = app.log_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "crash.log").write_text("x" * (app.CRASH_LOG_LIMIT + 10) + "\nold crash\n", encoding="utf-8")
+    app.enable_crash_log()
+    try:
+        assert enabled == [app._crash_file]
+        text = (logs / "crash.log").read_text(encoding="utf-8")
+        assert len(text) <= app.CRASH_LOG_KEEP + 200 and "old crash\n===== IFC Converter" in text
+        assert text.rstrip().endswith("=====") and f"IFC Converter {app.__version__} started 20" in text
+        assert not app.holds_a_crash(app.crash_log_header()) and app.holds_a_crash(app.crash_log_header() + "Thread 0x1\n")
+    finally:
+        app._crash_file.close()
+        app._crash_file = None
+
+
+def test_a_crash_log_holding_only_start_headers_is_not_copied(user_dirs, monkeypatch):
+    monkeypatch.setattr(app, "log_files", lambda: [app.log_dir() / "ifc-converter.log"])
+    logs = app.log_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "ifc-converter.log").write_text("neu\n", encoding="utf-8")
+    (logs / "crash.log").write_text(app.crash_log_header() + app.crash_log_header(), encoding="utf-8")
+    assert app.write_anonymized_log(logs / "copy.txt").read_text(encoding="utf-8") == "neu\n"
+
+
 def test_the_copy_includes_the_crash_log_of_the_window(user_dirs, monkeypatch):
     monkeypatch.setenv("USERNAME", USER)
     logs = user_dirs / "logs"

@@ -476,6 +476,10 @@ TEXTS: dict[str, str] = {
     "Take the selected files off the list (Del). The files themselves are left untouched.": "Retire les fichiers sélectionnés de la liste (Suppr). Les fichiers eux-mêmes restent intacts.",
     "Clear list": "Vider la liste",
     "Take all files off the list.": "Retire tous les fichiers de la liste.",
+    'Try the skipped elements again ({count} remembered for this file)':
+        'Réessayer les éléments ignorés ({count} mémorisés pour ce fichier)',
+    '{count} remembered skipped elements of {name} forgotten; they are tried again at the next conversion':
+        '{count} éléments ignorés mémorisés de {name} oubliés ; ils seront réessayés à la prochaine conversion',
     "Skipped elements…": "Éléments ignorés…",
     "Lists the elements of the selected file that were not converted, with class, GlobalId and name (also by right-clicking the row).": "Liste les éléments du fichier sélectionné qui n'ont pas été convertis, avec classe, GlobalId et nom (aussi par clic droit sur la ligne).",
     "Drag to divide the room between list and preview": "Glisser\u202f: répartir la place entre liste et aperçu",
