@@ -1,6 +1,6 @@
 # Exact versions for CI tests and the Windows build, so a release contains exactly what was tested.
 # Update deliberately (and re-check dimensional accuracy against real models), not by accident.
-ifcopenshell==0.9.0
+ifcopenshell==0.9.0.post1
 rhino3dm==8.35.0
 PySide6-Essentials==6.11.2
 shiboken6==6.11.2
