@@ -481,7 +481,7 @@ def test_workers_exit_when_their_process_is_killed(tmp_path):
         try:
             with open(f"/proc/{pid}/stat") as stat:
                 return stat.read().split(")")[-1].split()[0] != "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):  # gone before the open, or between open and read
             return False
 
     deadline = time.monotonic() + 10
