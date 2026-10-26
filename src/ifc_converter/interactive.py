@@ -311,14 +311,18 @@ DETAIL_PHASES = ("envelope", "fill", "deep", "write", "copy")
 class ProgressLine:
     """One terminal line with a conversion's progress, rewritten in place after a carriage return.
 
-    Only shown if the stream is a terminal; redirected output gets no progress at all.
+    Only shown if the stream is a terminal; redirected output gets no progress at all, unless the
+    environment variable IFC_CONVERTER_PROGRESS is ``lines``: then each change is one line for programs
+    that run ``ifc-convert`` (the Rhino plugin), ``@status <text>``, ``@percent <n>`` and
+    ``@phase <phase> <text>``, without the label.
     """
 
     def __init__(self, label: str = "", stream: TextIO | None = None):
         self.stream = stream or sys.stdout
         self.label = label
+        self.lines = os.environ.get("IFC_CONVERTER_PROGRESS") == "lines"
         try:
-            self.enabled = self.stream.isatty()
+            self.enabled = self.lines or self.stream.isatty()
         except (AttributeError, ValueError, OSError):  # no stdout (pythonw) or a closed one
             self.enabled = False
         self._text: str | None = None
@@ -330,6 +334,9 @@ class ProgressLine:
         if not self.enabled or text == self._text:
             return
         self._text = text
+        if self.lines:
+            self._line(f"@status {text}")
+            return
         line = self.label + text
         # Pad with spaces to overwrite a longer previous text; ANSI erase codes need not work on Windows.
         self.stream.write("\r" + line.ljust(self._width))
@@ -337,6 +344,11 @@ class ProgressLine:
         self._width = max(self._width, len(line))
 
     def percent(self, value: int) -> None:
+        if self.lines:
+            if self.enabled and value != self._percent:
+                self._line(f"@percent {value}")
+            self._percent = value
+            return
         self._percent = value
         self.show(f"{value} %" + (f" – {self._detail}" if self._detail else ""))
 
@@ -344,10 +356,24 @@ class ProgressLine:
         """The long phases in which the percentage says little (the hull's coarse pass, deeply nested
         elements, writing, copying) are shown next to the percentage."""
         self._detail = text if phase in DETAIL_PHASES else ""
+        if self.lines:
+            if self.enabled:
+                self._line(f"@phase {phase} {text}".rstrip())
+            return
         if self._percent is not None:
             self.percent(self._percent)
 
+    def _line(self, text: str) -> None:
+        try:
+            self.stream.write(text.replace("\n", " ") + "\n")
+            self.stream.flush()
+        except (ValueError, OSError):  # the reading program went away
+            pass
+
     def clear(self) -> None:
+        if self.lines:
+            self._text, self._percent, self._detail = None, None, ""
+            return
         if self._width:
             self.stream.write("\r" + " " * self._width + "\r")
             self.stream.flush()
