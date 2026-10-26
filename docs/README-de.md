@@ -249,6 +249,7 @@ Optionen:
 - `--normal-priority`: mit normaler statt niedriger Priorität umwandeln
 - `--kernel {accurate,hybrid,opencascade}`: Geometriekern (Standard: `accurate`, siehe „Geometriekern“)
 - `--lang {en,de,fr,es,it,pt,nl,pl,tr}`: Sprache der Hinweise zu den Umwandlungen (Standard: `IFC_CONVERTER_LANG`, sonst Englisch; siehe „Sprache der Oberfläche“)
+- Umgebungsvariable `IFC_CONVERTER_PROGRESS=lines`: der Fortschritt kommt auch bei umgeleiteter Ausgabe an (für Programme, die `ifc-convert` aufrufen, z. B. das [Rhino-Plugin](https://github.com/Sh4wN98/Rhino-IFC-Plugin)), eine Zeile je Änderung auf stdout: `@status <Text>`, `@percent <n>`, `@phase <Phase> <Text>`
 
 Strg+C (bzw. Strg+Untbr) bricht ab: Exit-Code 130, halbe Ausgabedateien und Zwischendateien werden entfernt.
 

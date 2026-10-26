@@ -201,6 +201,8 @@ ifc-convert *.ifc -d output/               # several files into one folder
 | `--kernel {accurate,hybrid,opencascade}` | geometry kernel (default `accurate`) |
 | `--lang {en,de,fr,es,it,pt,nl,pl,tr}` | language of the conversion messages (default `IFC_CONVERTER_LANG`, else English) |
 
+With the environment variable `IFC_CONVERTER_PROGRESS=lines` the progress also reaches programs that run `ifc-convert` with redirected output (the [Rhino plugin](https://github.com/Sh4wN98/Rhino-IFC-Plugin)): one line per change on stdout, `@status <text>`, `@percent <n>` and `@phase <phase> <text>`.
+
 Ctrl+C cancels: exit code 130, half-written output and temporary files are removed. Without arguments (double-click) `ifc-convert` starts a terminal mode: drop files into the console window, press Enter, type `3dm`, `glb` or `obj` to switch the format, `q` to quit.
 
 From Python:

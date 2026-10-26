@@ -268,6 +268,22 @@ def test_progress_line_is_silent_without_a_terminal():
     assert not interactive.ProgressLine(stream=None).enabled or sys.stdout.isatty()
 
 
+def test_progress_line_writes_lines_for_programs(monkeypatch):
+    monkeypatch.setenv("IFC_CONVERTER_PROGRESS", "lines")
+    stream = io.StringIO()
+    line = interactive.ProgressLine("a: ", stream)
+    line.show("IFC wird gelesen …")
+    line.percent(5)
+    line.percent(5)
+    line.phase("write", "Datei wird geschrieben …")
+    line.clear()
+    line.show("IFC wird gelesen …")
+    assert stream.getvalue() == (
+        "@status IFC wird gelesen …\n@percent 5\n@phase write Datei wird geschrieben …\n"
+        "@status IFC wird gelesen …\n"
+    )
+
+
 def test_cli_shows_skipped_elements(wall_ifc, tmp_path, monkeypatch, capsys):
     from ifc_converter.cli import main
 
