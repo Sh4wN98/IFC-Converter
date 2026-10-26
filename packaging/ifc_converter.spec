@@ -98,11 +98,11 @@ def version_info(filename: str):
         ffi=FixedFileInfo(filevers=numbers, prodvers=numbers),
         kids=[
             StringFileInfo([StringTable("040704B0", [
-                StringStruct("CompanyName", "Jonas Kleinert"),
+                StringStruct("CompanyName", "Jonas"),
                 StringStruct("FileDescription", APP_NAME),
                 StringStruct("FileVersion", VERSION),
                 StringStruct("InternalName", APP_NAME),
-                StringStruct("LegalCopyright", "Jonas Kleinert"),
+                StringStruct("LegalCopyright", "Jonas"),
                 StringStruct("OriginalFilename", filename),
                 StringStruct("ProductName", APP_NAME),
                 StringStruct("ProductVersion", VERSION),
